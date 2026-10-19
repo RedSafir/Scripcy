@@ -84,6 +84,9 @@ class TestDashboardFlow:
         assert "projects" in output
         assert "new" in output
         assert "open" in output
+        assert "models" in output
+        assert "settings" in output
+        assert "status" in output
 
     def test_dashboard_status(self, test_console: Console, project_manager: ProjectManager, tmp_path: Path) -> None:
         cfg = ScrpcyConfig(default_model="gemini/gemini-2.5-pro")
@@ -263,13 +266,38 @@ class TestProjectCommands:
         cli_studio.cmd_style("ieee")
         assert cli_studio.config.citation.style == "ieee"
 
-    def test_cmd_config(self, cli_studio: CLIStudio) -> None:
+    def test_cmd_models_and_settings(self, cli_studio: CLIStudio) -> None:
+        # Test models list
+        cli_studio.cmd_models("list")
+        output = cli_studio.console.file.getvalue()
+        assert "Model & Provider" in output
+
+        # Test set-key
+        cli_studio.cmd_models("set-key gemini test-key-secret-999")
+        assert cli_studio.config.api_keys["gemini"] == "test-key-secret-999"
+
+        # Test 9Router setup
+        cli_studio.cmd_models("9router")
+        assert cli_studio.config.default_model == "9router/gpt-4o"
+        assert "9router" in cli_studio.config.api_bases
+
+        # Test tokens
+        cli_studio.cmd_models("tokens")
+        tok_out = cli_studio.console.file.getvalue()
+        assert "Token Consumption" in tok_out
+
+        # Test settings show and set-citation
+        cli_studio.cmd_settings("show")
+        set_out = cli_studio.console.file.getvalue()
+        assert "Workspace & Citation Settings" in set_out
+
+        cli_studio.cmd_settings("set-citation apa")
+        assert cli_studio.config.citation.style == "apa"
+
+    def test_cmd_config_compatibility_alias(self, cli_studio: CLIStudio) -> None:
         cli_studio.cmd_config("show")
         output = cli_studio.console.file.getvalue()
-        assert "scrpcy Configuration" in output
-
-        cli_studio.cmd_config("set-key gemini test-key-secret-999")
-        assert cli_studio.config.api_keys["gemini"] == "test-key-secret-999"
+        assert "Model & Provider" in output
 
     def test_cmd_docx_export(self, cli_studio: CLIStudio, temp_workspace: WorkspaceManager) -> None:
         meta = DocumentMetadata(

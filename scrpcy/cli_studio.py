@@ -227,8 +227,9 @@ class CLIStudio:
         table.add_row("open", "<# | name | folder_path>", "Open an existing project folder")
         table.add_row("delete", "<# | name>", "Remove project from Scrpcy (alias: remove, rm)")
         table.add_row("skills", "", "List available AI persona skills (alias: skill)")
-        table.add_row("status", "", "View LLM model, API key status, and system settings")
-        table.add_row("config", "[set-key <prov> <key>]", "Manage API keys and default model")
+        table.add_row("status", "[project_name]", "View research project status and token consumption")
+        table.add_row("models", "[list | use | 9router | tokens]", "Manage LLM models, API keys, 9Router, and token usage")
+        table.add_row("settings", "[show | set-citation]", "Manage workspace path and citation preferences")
         table.add_row("clear", "", "Clear terminal screen")
         table.add_row("exit", "", "Exit the studio (alias: quit, q)")
 
@@ -260,6 +261,8 @@ class CLIStudio:
             self.dashboard_status(args)
         elif cmd in ("models", "model", "config"):
             self.cmd_models(" ".join(args))
+        elif cmd in ("settings", "setting"):
+            self.cmd_settings(" ".join(args))
         elif cmd == "clear":
             self.clear_screen()
         else:
@@ -623,9 +626,9 @@ class CLIStudio:
             ("findpaper", "[topic]", "Search & scout literature on OpenAlex/S2 (alias: /scout)"),
             ("/skills", "", "List available research skill personas (alias: /skill)"),
             ("/skill", "[# | name]", "Switch active research persona by number or name (e.g. /skill 2)"),
-            ("/model", "<model_name>", "Switch default LLM model"),
-            ("/style", "<apa|ieee>", "Change citation formatting style"),
-            ("/status", "", "View system and project status"),
+            ("/models", "[list | use | 9router | tokens]", "Manage LLM models, API keys, 9Router, and token usage (alias: /model)"),
+            ("/settings", "[show | set-citation]", "Manage workspace and citation settings (alias: /style)"),
+            ("/status", "", "View project status, vault count, and token consumption"),
             ("/web", "[port]", "Launch Web Studio for this project in browser"),
             ("/dashboard", "", "Return to Dashboard (alias: /close, /back)"),
             ("/delete", "[# | name]", "Remove project from Scrpcy (alias: /remove, /rm)"),
@@ -684,12 +687,10 @@ class CLIStudio:
             self.cmd_download(args)
         elif cmd in ("/skills", "/skill"):
             self.cmd_skill(args)
-        elif cmd == "/model":
-            self.cmd_model(args)
-        elif cmd == "/style":
-            self.cmd_style(args)
-        elif cmd in ("/models", "/config"):
+        elif cmd in ("/models", "/model", "/config"):
             self.cmd_models(args)
+        elif cmd in ("/settings", "/setting", "/style"):
+            self.cmd_settings(args)
         elif cmd in ("/docx", "/export"):
             self.cmd_docx(args)
         elif cmd in ("/status", "/info"):
@@ -2030,60 +2031,108 @@ class CLIStudio:
             self.console.print(f"[bold red][x] Skill '{arg}' not found.[/bold red] Available skills: {available}\n")
 
     def cmd_model(self, arg: str) -> None:
-        """Switch current default LLM model."""
+        """Alias for /models use <model>."""
         if not arg:
-            self.console.print(f"[dim]Current model:[/dim] [bold cyan]{self.config.default_model}[/bold cyan]\n")
-            return
-
-        self.config_manager.update(default_model=arg)
-        self.config = self.config_manager.config
-        self.console.print(f"[bold green][✓] Default model updated to:[/bold green] [bold bright_white]{arg}[/bold bright_white]\n")
+            self.cmd_models("list")
+        else:
+            self.cmd_models(f"use {arg}")
 
     def cmd_style(self, arg: str) -> None:
-        """Switch citation style between APA and IEEE."""
-        style = arg.lower().strip()
-        if style not in ("apa", "ieee"):
-            self.console.print("[yellow]Usage: /style <apa | ieee>[/yellow]\n")
-            return
+        """Alias for /settings set-citation <style>."""
+        if not arg:
+            self.cmd_settings("show")
+        else:
+            self.cmd_settings(f"set-citation {arg}")
 
-        self.config.citation.style = style
-        self.console.print(f"[bold green][✓] Citation formatting style set to:[/bold green] [bold cyan]{style.upper()}[/bold cyan]\n")
+    def cmd_models(self, arg: str = "") -> None:
+        """Manage LLM models, API keys, 9Router gateway, and token usage."""
+        parts = shlex.split(arg) if arg else []
+        sub = parts[0].lower() if parts else "list"
 
-    def cmd_models(self, arg: str) -> None:
-        """Display model configuration, API keys, 9Router, and token consumption."""
-        if not arg or arg in ("show", "list", "ls"):
+        if sub in ("list", "show", "ls") or not parts:
             r9_base = self.config.api_bases.get("9router", "http://localhost:20128/v1")
             r9_key = self.config.get_api_key("9router")
-            r9_status = "Configured" if r9_key else "Standby"
+            r9_status = "[bold green][Configured][/bold green]" if r9_key else "[dim][Standby / Not Configured][/dim]"
+
+            all_keys = []
+            for provider, val in self.config.api_keys.items():
+                if val:
+                    masked = f"{val[:3]}...{val[-4:]}" if len(val) > 8 else "***"
+                    all_keys.append(f"{provider} ({masked})")
+            keys_display = ", ".join(all_keys) if all_keys else "[dim]No API keys stored locally[/dim]"
 
             proj_tokens_str = "None"
             if self.workspace:
                 p_tok = TokenTracker.get_project_tokens(self.workspace.root_dir)
                 proj_tokens_str = f"{p_tok.total_tokens:,} tokens (In: {p_tok.input_tokens:,}, Out: {p_tok.output_tokens:,})"
 
+            self.console.print()
             self.console.print(Panel(
-                f"[bold cyan]Default Model [/bold cyan]: {self.config.default_model}\n"
-                f"[bold cyan]9Router Proxy [/bold cyan]: {r9_base} [{r9_status}]\n"
-                f"[bold cyan]Workspace Path[/bold cyan]: {self.config.workspace_path}\n"
-                f"[bold cyan]Skills Dir    [/bold cyan]: {self.config.skills_dir}\n"
-                f"[bold cyan]Citation Style[/bold cyan]: {self.config.citation.style}\n"
-                f"[bold cyan]API Keys      [/bold cyan]: {', '.join(k for k, v in self.config.api_keys.items() if v) or 'None'}\n"
-                f"[bold cyan]Project Tokens[/bold cyan]: {proj_tokens_str}",
-                title="scrpcy Configuration",
+                f"[bold cyan]Active Default Model [/bold cyan]: {self.config.default_model}\n"
+                f"[bold cyan]9Router Gateway      [/bold cyan]: {r9_base} {r9_status}\n"
+                f"[bold cyan]Configured API Keys  [/bold cyan]: {keys_display}\n"
+                f"[bold cyan]Current Project Token[/bold cyan]: {proj_tokens_str}",
+                title="scrpcy Model & Provider Inventory",
                 border_style="cyan",
             ))
-            self.console.print("[dim]Commands: models use <model> | models set-key <provider> <key> | models 9router | models tokens[/dim]\n")
+            self.console.print("[dim]Commands: models use <model> | models set-key <provider> <key> | models 9router [port] | models tokens[/dim]\n")
             return
 
-        parts = shlex.split(arg)
-        sub = parts[0].lower()
-
         if sub in ("tokens", "usage"):
-            summary = TokenTracker().get_summary()
-            self.console.print(f"[bold cyan]Total Global Tokens:[/bold cyan] {summary.total_tokens:,} (In: {summary.total_input_tokens:,}, Out: {summary.total_output_tokens:,})")
-            if self.workspace:
+            filter_proj = parts[1] if len(parts) > 1 else None
+            tracker = TokenTracker()
+            summary = tracker.get_summary()
+
+            self.console.print()
+            table = Table(
+                title="Global Token Consumption Summary",
+                title_style="bold cyan",
+                border_style="cyan",
+                header_style="bold bright_cyan",
+            )
+            table.add_column("Metric", style="bold white", width=24)
+            table.add_column("Count", justify="right", style="bold green")
+            table.add_row("Total Input Tokens", f"{summary.total_input_tokens:,}")
+            table.add_row("Total Output Tokens", f"{summary.total_output_tokens:,}")
+            table.add_row("Grand Total Tokens", f"[bold bright_green]{summary.total_tokens:,}[/bold bright_green]")
+            table.add_row("Total Requests", f"{summary.total_requests:,}")
+            self.console.print(table)
+            self.console.print()
+
+            if summary.projects:
+                p_table = Table(
+                    title="Token Usage Breakdown by Project",
+                    title_style="bold magenta",
+                    border_style="magenta",
+                    header_style="bold bright_magenta",
+                )
+                p_table.add_column("Project Name", style="bold white", width=22)
+                p_table.add_column("Input", justify="right", style="cyan")
+                p_table.add_column("Output", justify="right", style="cyan")
+                p_table.add_column("Total", justify="right", style="bold green")
+                p_table.add_column("Requests", justify="right", style="dim", width=10)
+                p_table.add_column("Last Active (UTC)", style="dim", width=20)
+
+                for p_name, p_sum in summary.projects.items():
+                    if filter_proj and filter_proj.lower() not in p_name.lower():
+                        continue
+                    last_act = p_sum.last_active.replace("T", " ")[:19] if p_sum.last_active else "-"
+                    p_table.add_row(
+                        p_name,
+                        f"{p_sum.input_tokens:,}",
+                        f"{p_sum.output_tokens:,}",
+                        f"{p_sum.total_tokens:,}",
+                        f"{p_sum.request_count:,}",
+                        last_act,
+                    )
+                self.console.print(p_table)
+                self.console.print()
+            elif self.workspace:
                 p_tok = TokenTracker.get_project_tokens(self.workspace.root_dir)
                 self.console.print(f"[bold green]Current Project Tokens:[/bold green] {p_tok.total_tokens:,} (In: {p_tok.input_tokens:,}, Out: {p_tok.output_tokens:,})\n")
+            else:
+                self.console.print("[dim]No token consumption recorded yet.[/dim]\n")
+
         elif sub == "9router":
             port = 20128
             if len(parts) >= 2 and parts[1].isdigit():
@@ -2091,26 +2140,86 @@ class CLIStudio:
             self.config_manager.config.setup_9router(port=port)
             self.config_manager.save()
             self.config = self.config_manager.config
+            if self.engine:
+                self.engine.default_model = self.config.default_model
             self.console.print(f"[bold green][✓] Configured 9Router gateway at http://localhost:{port}/v1 with default model '9router/gpt-4o'.[/bold green]\n")
-        elif len(parts) >= 3 and sub == "set-key":
+
+        elif sub == "set-key":
+            if len(parts) < 3:
+                self.console.print("[yellow]Usage: models set-key <provider> <key>[/yellow]\n")
+                return
             provider, key = parts[1], parts[2]
             self.config_manager.config.set_api_key(provider, key)
             self.config_manager.save()
             self.config = self.config_manager.config
             self.console.print(f"[bold green][✓] Successfully saved API key for provider '{provider}'.[/bold green]\n")
-        elif len(parts) >= 2 and sub in ("use", "set", "set-model"):
+
+        elif sub in ("use", "set", "set-model"):
+            if len(parts) < 2:
+                self.console.print("[yellow]Usage: models use <model_name>[/yellow]\n")
+                return
             model = parts[1]
             self.config_manager.update(default_model=model)
             self.config = self.config_manager.config
-            self.console.print(f"[bold green][✓] Updated default model to '{model}'.[/bold green]\n")
-        elif len(parts) >= 3 and sub == "set-base":
+            if self.engine:
+                self.engine.default_model = model
+            self.console.print(f"[bold green][✓] Updated active model to:[/bold green] [bold cyan]{model}[/bold cyan]\n")
+
+        elif sub == "set-base":
+            if len(parts) < 3:
+                self.console.print("[yellow]Usage: models set-base <provider> <url>[/yellow]\n")
+                return
             provider, url = parts[1], parts[2]
             self.config_manager.config.set_api_base(provider, url)
             self.config_manager.save()
             self.config = self.config_manager.config
             self.console.print(f"[bold green][✓] Set custom base URL for '{provider}' -> {url}[/bold green]\n")
+
         else:
-            self.console.print("[yellow]Usage: models [list | use <model> | set-key <provider> <key> | 9router | tokens][/yellow]\n")
+            self.console.print("[yellow]Usage: models [list | use <model> | set-key <provider> <key> | 9router [port] | tokens][/yellow]\n")
+
+    def cmd_settings(self, arg: str = "") -> None:
+        """Display or update general workspace and citation settings."""
+        parts = shlex.split(arg) if arg else []
+        sub = parts[0].lower() if parts else "show"
+
+        if sub in ("show", "list", "ls") or not parts:
+            self.console.print()
+            self.console.print(Panel(
+                f"[bold cyan]Workspace Path[/bold cyan] : {self.config.workspace_path}\n"
+                f"[bold cyan]Skills Dir    [/bold cyan] : {self.config.skills_dir}\n"
+                f"[bold cyan]Citation Style[/bold cyan] : {self.config.citation.style.upper()}\n"
+                f"[bold cyan]Include DOI   [/bold cyan] : {self.config.citation.include_doi}\n"
+                f"[bold cyan]Max Evidence  [/bold cyan] : {self.config.citation.max_evidence_chunks} chunks",
+                title="scrpcy Workspace & Citation Settings",
+                border_style="cyan",
+            ))
+            self.console.print("[dim]Commands: settings set-citation <apa|ieee> | settings set-workspace <path>[/dim]\n")
+            return
+
+        if sub in ("set-citation", "citation", "style"):
+            if len(parts) < 2:
+                self.console.print("[yellow]Usage: settings set-citation <apa | ieee>[/yellow]\n")
+                return
+            new_style = parts[1].lower().strip()
+            if new_style not in ("apa", "ieee", "bibtex"):
+                self.console.print("[yellow]Supported styles: apa, ieee, bibtex[/yellow]\n")
+                return
+            self.config_manager.config.citation.style = new_style
+            self.config_manager.save()
+            self.config = self.config_manager.config
+            self.console.print(f"[bold green][✓] Citation formatting style set to:[/bold green] [bold cyan]{new_style.upper()}[/bold cyan]\n")
+        elif sub in ("set-workspace", "workspace"):
+            if len(parts) < 2:
+                self.console.print("[yellow]Usage: settings set-workspace <path>[/yellow]\n")
+                return
+            new_path = parts[1].strip()
+            self.config_manager.config.workspace_path = new_path
+            self.config_manager.save()
+            self.config = self.config_manager.config
+            self.console.print(f"[bold green][✓] Workspace path set to:[/bold green] [bold cyan]{new_path}[/bold cyan]\n")
+        else:
+            self.console.print("[yellow]Usage: settings [show | set-citation <apa|ieee> | set-workspace <path>][/yellow]\n")
 
     def cmd_config(self, arg: str) -> None:
         """Alias for backward compatibility directing to cmd_models."""
@@ -2234,7 +2343,7 @@ class CLIStudio:
             self.console.print(Panel(
                 f"[bold yellow][!] No API key configured for model '{model_name}'.[/bold yellow]\n\n"
                 f"To enable live AI generation, run:\n"
-                f"  [bold cyan]/config set-key gemini <YOUR_API_KEY>[/bold cyan]\n\n"
+                f"  [bold cyan]/models set-key gemini <YOUR_API_KEY>[/bold cyan]\n\n"
                 f"[dim]Tips: Dapatkan kunci API Gemini resmi 100% gratis tanpa kartu kredit di:\n"
                 f"https://aistudio.google.com/apikey[/dim]",
                 title="API Key Required for Live LLM",
