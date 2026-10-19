@@ -457,3 +457,81 @@ class TestProjectDeletionFlow:
         assert "Deletion canceled." in output
         assert studio.current_project is not None
         assert len(project_manager.list_projects()) == 1
+
+
+class TestNewProjectWizardFlow:
+    """Tests for interactive 'new' project creation wizard."""
+
+    def test_wizard_custom_path_success(
+        self,
+        test_console: Console,
+        project_manager: ProjectManager,
+        tmp_path: Path,
+    ) -> None:
+        custom_folder = tmp_path / "custom_location"
+        studio = CLIStudio(console=test_console, project_manager=project_manager)
+
+        with patch.object(
+            studio.console,
+            "input",
+            side_effect=["my_wizard_study", "2", str(custom_folder)],
+        ):
+            studio.handle_dashboard_command("new")
+
+        output = test_console.file.getvalue()
+        assert "New Project Wizard" in output
+        assert "my_wizard_study" in output
+        assert "initialized and connected" in output
+        assert studio.current_project is not None
+        assert studio.current_project.name == "my_wizard_study"
+        assert custom_folder.is_dir()
+        assert (custom_folder / "vault").is_dir()
+
+    def test_wizard_default_dir_success(
+        self,
+        test_console: Console,
+        project_manager: ProjectManager,
+    ) -> None:
+        studio = CLIStudio(console=test_console, project_manager=project_manager)
+
+        with patch.object(
+            studio.console,
+            "input",
+            side_effect=["quick_study", "3"],
+        ):
+            studio.handle_dashboard_command("new")
+
+        output = test_console.file.getvalue()
+        assert "quick_study" in output
+        assert studio.current_project is not None
+        assert studio.current_project.name == "quick_study"
+
+    def test_wizard_cancel_at_name(
+        self,
+        test_console: Console,
+        project_manager: ProjectManager,
+    ) -> None:
+        studio = CLIStudio(console=test_console, project_manager=project_manager)
+
+        with patch.object(studio.console, "input", side_effect=["q"]):
+            studio.handle_dashboard_command("new")
+
+        output = test_console.file.getvalue()
+        assert "Project creation canceled." in output
+        assert studio.current_project is None
+        assert len(project_manager.list_projects()) == 0
+
+    def test_wizard_cancel_at_location(
+        self,
+        test_console: Console,
+        project_manager: ProjectManager,
+    ) -> None:
+        studio = CLIStudio(console=test_console, project_manager=project_manager)
+
+        with patch.object(studio.console, "input", side_effect=["valid_name", "q"]):
+            studio.handle_dashboard_command("new")
+
+        output = test_console.file.getvalue()
+        assert "Project creation canceled." in output
+        assert studio.current_project is None
+        assert len(project_manager.list_projects()) == 0

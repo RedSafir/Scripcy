@@ -275,12 +275,65 @@ class CLIStudio:
 
     def dashboard_new_project(self, args: list[str]) -> None:
         """Create a new master project folder and activate it."""
-        if not args:
-            self.console.print("[yellow]Usage: new <project_name> [folder_path][/yellow]\n")
-            return
+        name = args[0].strip() if args else ""
+        custom_path: str | None = args[1].strip() if len(args) > 1 else None
 
-        name = args[0].strip()
-        custom_path = args[1].strip() if len(args) > 1 else None
+        # Step 1: Interactive prompt for project name if not provided
+        if not name:
+            self.console.print()
+            self.console.print(Panel(
+                "[bold bright_white]Create New Master Research Project[/bold bright_white]\n\n"
+                "Project master folder will organize your research papers, cache, synthesis notes, and drafts.",
+                title="[bold cyan]New Project Wizard[/bold cyan]",
+                border_style="cyan",
+            ))
+            try:
+                name = self.console.input("[bold cyan]project name[/bold cyan] [bold green]❯[/bold green] ").strip()
+            except (KeyboardInterrupt, EOFError):
+                self.console.print("\n[yellow]Project creation canceled.[/yellow]\n")
+                return
+
+            if not name or name.lower() in ("q", "quit", "cancel"):
+                self.console.print("[yellow]Project creation canceled.[/yellow]\n")
+                return
+
+        # Step 2: Interactive location selection if not explicitly provided as 2nd arg
+        if custom_path is None:
+            clean_name = re.sub(r"[^\w\-_]", "_", name.strip().lower())
+            curr_dir = Path.cwd() / clean_name
+            default_dir = Path.home() / ".scrpcy" / "projects" / clean_name
+
+            self.console.print()
+            self.console.print("[bold bright_white]Pilih lokasi penyimpanan master project:[/bold bright_white]")
+            self.console.print(f"  [bold cyan][1][/bold cyan] Folder saat ini      : [dim]{curr_dir}[/dim]")
+            self.console.print(f"  [bold cyan][2][/bold cyan] Folder lain / kustom : [dim]Tentukan path sendiri (misal: D:\\Riset\\{clean_name})[/dim]")
+            self.console.print(f"  [bold cyan][3][/bold cyan] Folder default Scrpcy: [dim]{default_dir}[/dim]")
+            self.console.print()
+
+            try:
+                choice = self.console.input("[bold cyan]pilih lokasi [1/2/3, default: 1][/bold cyan] [bold green]❯[/bold green] ").strip()
+            except (KeyboardInterrupt, EOFError):
+                self.console.print("\n[yellow]Project creation canceled.[/yellow]\n")
+                return
+
+            if choice.lower() in ("q", "quit", "cancel"):
+                self.console.print("[yellow]Project creation canceled.[/yellow]\n")
+                return
+
+            if choice == "2":
+                try:
+                    custom_path = self.console.input("[bold cyan]path folder tujuan[/bold cyan] [bold green]❯[/bold green] ").strip()
+                except (KeyboardInterrupt, EOFError):
+                    self.console.print("\n[yellow]Project creation canceled.[/yellow]\n")
+                    return
+                if not custom_path or custom_path.lower() in ("q", "quit", "cancel"):
+                    self.console.print("[yellow]Project creation canceled.[/yellow]\n")
+                    return
+            elif choice == "3":
+                custom_path = str(default_dir)
+            else:
+                # Default option: current directory
+                custom_path = str(curr_dir)
 
         with self.console.status(f"[cyan]Initializing master project directory for '{name}'...[/cyan]"):
             try:
