@@ -621,3 +621,45 @@ class TestNewProjectWizardFlow:
         assert "Project creation canceled." in output
         assert studio.current_project is None
         assert len(project_manager.list_projects()) == 0
+
+    def test_handle_suggested_actions_confirm(
+        self,
+        cli_studio: CLIStudio,
+    ) -> None:
+        executed_cmds: list[str] = []
+        with patch.object(cli_studio, "handle_project_interaction", side_effect=lambda cmd: executed_cmds.append(cmd)):
+            with patch.object(cli_studio.console, "input", side_effect=["y"]):
+                response = (
+                    "Berdasarkan analisis, kita perlu paper tambahan:\n"
+                    "```scrpcy\n"
+                    "findpaper machine learning 2023\n"
+                    "```\n"
+                    "Silakan jalankan aksi di atas."
+                )
+                cli_studio._handle_suggested_actions(response)
+
+        assert len(executed_cmds) == 1
+        assert executed_cmds[0] == "findpaper machine learning 2023"
+        output = cli_studio.console.file.getvalue()
+        assert "Aksi Scrpcy Disarankan AI" in output
+        assert "Menjalankan aksi" in output
+
+    def test_handle_suggested_actions_decline(
+        self,
+        cli_studio: CLIStudio,
+    ) -> None:
+        executed_cmds: list[str] = []
+        with patch.object(cli_studio, "handle_project_interaction", side_effect=lambda cmd: executed_cmds.append(cmd)):
+            with patch.object(cli_studio.console, "input", side_effect=["n"]):
+                response = (
+                    "Tinjauan selesai:\n"
+                    "```scrpcy\n"
+                    "docx bab1.docx\n"
+                    "```\n"
+                )
+                cli_studio._handle_suggested_actions(response)
+
+        assert len(executed_cmds) == 0
+        output = cli_studio.console.file.getvalue()
+        assert "Aksi Scrpcy Disarankan AI" in output
+        assert "Aksi dilewati" in output

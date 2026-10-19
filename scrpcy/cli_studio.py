@@ -2652,5 +2652,37 @@ class CLIStudio:
                 "response": full_response,
             })
 
+            self._handle_suggested_actions(full_response)
+
         except Exception as exc:
             self.console.print(f"\n[bold red][x] Generation error:[/bold red] {exc}\n")
+
+    def _handle_suggested_actions(self, response_text: str) -> None:
+        """Detect and offer interactive execution for Scrpcy action blocks in AI response."""
+        pattern = re.compile(r"```scrpcy\r?\n(.*?)\r?\n```", re.DOTALL | re.IGNORECASE)
+        matches = pattern.findall(response_text)
+        if not matches:
+            return
+
+        actions = [cmd.strip() for m in matches for cmd in m.splitlines() if cmd.strip() and not cmd.strip().startswith("#")]
+        if not actions:
+            return
+
+        for action in actions:
+            self.console.print()
+            self.console.print(
+                f"[bold cyan]✦ Aksi Scrpcy Disarankan AI:[/bold cyan] [bold green]{action}[/bold green]"
+            )
+            try:
+                confirm = self.console.input(
+                    "  [bold bright_white]Jalankan aksi ini sekarang?[/bold bright_white] [dim](Tekan Enter/y untuk eksekusi, n untuk lewati):[/dim] "
+                ).strip().lower()
+            except (KeyboardInterrupt, EOFError):
+                self.console.print()
+                break
+
+            if confirm in ("", "y", "yes", "ya", "ok"):
+                self.console.print(f"[bold cyan]❯ Menjalankan aksi:[/bold cyan] [bold green]{action}[/bold green]\n")
+                self.handle_project_interaction(action)
+            else:
+                self.console.print("[dim]Aksi dilewati.[/dim]\n")

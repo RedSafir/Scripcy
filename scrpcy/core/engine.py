@@ -305,8 +305,13 @@ class LLMEngine:
                 f"### RESEARCH QUESTION / INSTRUCTION:\n{query}"
             )
 
+        sys_prompt = skill.system_prompt
+        if "### SCRPCY ENVIRONMENT & SEAMLESS ACTION PROTOCOL:" not in sys_prompt:
+            from scrpcy.core.skills import SCRPCY_AGENTIC_PROTOCOL
+            sys_prompt = f"{sys_prompt}\n\n{SCRPCY_AGENTIC_PROTOCOL}"
+
         messages = [
-            {"role": "system", "content": skill.system_prompt},
+            {"role": "system", "content": sys_prompt},
             {"role": "user", "content": user_content},
         ]
 
