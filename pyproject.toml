@@ -22,6 +22,10 @@ dependencies = [
     "uvicorn>=0.22.0",
     "python-multipart>=0.0.6",
     "pyalex>=0.21.0",
+    "markitdown>=0.1.0",
+    "google-api-python-client>=2.0.0",
+    "google-auth-httplib2>=0.2.0",
+    "google-auth-oauthlib>=1.0.0",
 ]
 
 [project.scripts]

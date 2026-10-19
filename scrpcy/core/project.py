@@ -256,3 +256,46 @@ class ProjectManager:
             self._save_registry_data(data)
             return True
         return False
+
+    def rename_project(self, identifier: str | int, new_name: str) -> ProjectInfo:
+        """Rename an existing project in the registry.
+
+        Args:
+            identifier: Current project name or 1-based index.
+            new_name: Proposed new name for the project.
+
+        Returns:
+            Updated ProjectInfo.
+        """
+        clean_new = re.sub(r"[^\w\-_]", "_", new_name.strip())
+        if not clean_new:
+            raise ValueError("New project name cannot be empty.")
+
+        target = self.get_project(identifier)
+        if not target:
+            raise FileNotFoundError(f"Project '{identifier}' not found in registry.")
+
+        if clean_new.lower() == target.name.lower():
+            return target
+
+        # Check for collision
+        existing = self.get_project(clean_new)
+        if existing and existing.name != target.name:
+            raise ValueError(f"A project named '{clean_new}' already exists.")
+
+        data = self._load_registry_data()
+        projects = data.get("projects", {})
+        old_name = target.name
+
+        if old_name in projects:
+            p_data = projects.pop(old_name)
+            p_data["name"] = clean_new
+            projects[clean_new] = p_data
+
+            if data.get("active_project") == old_name:
+                data["active_project"] = clean_new
+
+            self._save_registry_data(data)
+            return ProjectInfo.model_validate(p_data)
+
+        raise FileNotFoundError(f"Project '{old_name}' not found in registry data.")
