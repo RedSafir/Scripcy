@@ -61,7 +61,7 @@ class TestBigAsciiBanner:
     """Tests for large stylized ASCII logo and version rendering."""
 
     def test_big_ascii_logo_structure(self) -> None:
-        assert "_____" in SCRPCY_LOGO
+        assert "██" in SCRPCY_LOGO
         assert SCRPCY_VERSION.startswith("v")
 
     def test_banner_rendering(self, test_console: Console, project_manager: ProjectManager) -> None:

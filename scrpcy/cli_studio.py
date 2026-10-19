@@ -42,13 +42,19 @@ if sys.platform == "win32":
     except Exception:
         pass
 
+from scrpcy.ui.interactive import (
+    _format_model_display_name,
+    interactive_model_selector,
+    interactive_skill_selector,
+)
+
 SCRPCY_LOGO = r"""
-   _____ _____ _____  _____   _______     __
-  / ____/ ____|  __ \|  __ \ / ____\ \   / /
- | (___| |    | |__) | |__) | |     \ \_/ / 
-  \___ \ |    |  _  /|  ___/| |      \   /  
-  ____) | |___| | \ \| |    | |____   | |   
- |_____/ \_____|_|  \_\_|     \_____|  |_|   
+  ███████╗ ██████╗██████╗ ██████╗  ██████╗██╗   ██╗
+  ██╔════╝██╔════╝██╔══██╗██╔══██╗██╔════╝╚██╗ ██╔╝
+  ███████╗██║     ██████╔╝██████╔╝██║      ╚████╔╝ 
+  ╚════██║██║     ██╔══██╗██╔═══╝ ██║       ╚██╔╝  
+  ███████║╚██████╗██║  ██║██║     ╚██████╗   ██║   
+  ╚══════╝ ╚═════╝╚═╝  ╚═╝╚═╝      ╚═════╝   ╚═╝   
 """
 SCRPCY_VERSION = "v0.1.0"
 
@@ -138,6 +144,12 @@ class CLIStudio:
             return self.current_project.model
         return self.config.default_model
 
+    def get_active_project_effort(self) -> str:
+        """Get the reasoning effort level configured for current project."""
+        if self.current_project:
+            return self.project_manager.get_project_effort(self.current_project.name)
+        return "high"
+
     def _ensure_active_chat_session(self) -> ChatSession:
         """Ensure there is an active chat session bound, creating chat1 if none exists."""
         if not self.chat_manager:
@@ -170,8 +182,8 @@ class CLIStudio:
 
     def print_banner(self) -> None:
         """Render the large ASCII art logo with version and direct command prompt."""
-        self.console.print(f"[bold cyan]{SCRPCY_LOGO}[/bold cyan]")
-        self.console.print(f" [dim]{SCRPCY_VERSION} - Local-First Academic Research Studio[/dim]\n")
+        self.console.print(f"[bold cyan]{SCRPCY_LOGO.strip()}[/bold cyan]\n")
+        self.console.print(f" [dim]{SCRPCY_VERSION} • Local-First Academic Research Studio[/dim]\n")
 
     def run(self) -> None:
         """Main interaction loop handling Dashboard and Project modes."""
@@ -185,19 +197,30 @@ class CLIStudio:
         while True:
             try:
                 if self.current_project:
+                    effort = self.get_active_project_effort()
+                    m_label = _format_model_display_name(self.get_active_project_model())
                     if self.sub_mode == "vault":
                         prompt = f"[bold green]{self.current_project.name}[/bold green][dim]/[/dim][bold yellow]vault[/bold yellow][bold cyan]>[/bold cyan] "
                     elif self.sub_mode == "processing":
                         prompt = f"[bold green]{self.current_project.name}[/bold green][dim]/[/dim][bold magenta]processing[/bold magenta][bold cyan]>[/bold cyan] "
                     elif self.sub_mode == "chat":
-                        session_name = self.active_chat_session.name if self.active_chat_session else "chat1"
-                        prompt = f"[bold green]{self.current_project.name}[/bold green][dim]/[/dim][bold cyan]{session_name}[/bold cyan][bold cyan]>[/bold cyan] "
+                        self.console.print("[dim]│ esc to dismiss[/dim]")
+                        prompt = "[bold cyan]>[/bold cyan] "
                     else:
                         prompt = f"[bold green]{self.current_project.name}[/bold green][bold cyan]>[/bold cyan] "
                 else:
                     prompt = "[bold cyan]>[/bold cyan] "
 
                 raw_input = self.console.input(prompt).strip()
+
+                if self.sub_mode == "chat" and self.current_project:
+                    effort = self.get_active_project_effort()
+                    m_label = _format_model_display_name(self.get_active_project_model())
+                    # Display status footer like Gemini Antigravity
+                    self.console.print(
+                        f"[dim]? for shortcuts[/dim]"
+                        f"[dim align=right]{self.current_project.name} • {m_label} • {effort}[/dim]"
+                    )
 
                 if not raw_input:
                     continue
@@ -513,39 +536,28 @@ class CLIStudio:
             self.print_project_banner()
 
     def print_project_banner(self) -> None:
-        """Render distinct visual status panel confirming active Project Workspace mode."""
+        """Render distinct visual status confirming active Project Workspace mode without heavy boxing."""
         if not self.current_project or not self.workspace:
             return
 
         cached_count = len(self._get_cached_stems())
         active_count = len(self.active_documents)
         model_name = self.get_active_project_model()
+        effort = self.get_active_project_effort()
+        model_label = _format_model_display_name(model_name)
 
-        panel_content = (
-            f"[bold bright_white]MODE       :[/bold bright_white] [bold green]● PROJECT WORKSPACE (Active)[/bold green]\n"
-            f"[bold bright_white]PROJECT    :[/bold bright_white] [bold cyan]{self.current_project.name}[/bold cyan]\n"
-            f"[bold bright_white]MASTER PATH:[/bold bright_white] {self.current_project.path}\n"
-            f"[bold bright_white]VAULT      :[/bold bright_white] {cached_count} indexed resource(s) ({active_count} active in citation context)\n"
-            f"[bold bright_white]LLM MODEL  :[/bold bright_white] {model_name}\n\n"
-            f"[bold bright_yellow]Quick Commands & Sub-Modes:[/bold bright_yellow]\n"
-            f"  • [bold cyan]vault[/bold cyan]       -> Kelola berkas (MarkItDown, GDrive, arsip) [{self.current_project.name}/vault>]\n"
-            f"  • [bold cyan]processing[/bold cyan]  -> Pantau background task (unduh, riset) [{self.current_project.name}/processing>]\n"
-            f"  • [bold cyan]chat[/bold cyan]        -> Sesi diskusi riset AI multi-turn (new/resume) [{self.current_project.name}/chat1>]\n"
-            f"  • [bold cyan]findpaper[/bold cyan]   -> Cari & kurasi paper via OpenAlex & Semantic Scholar\n"
-            f"  • [bold cyan]rename[/bold cyan]      -> Ganti nama project aktif (misal: rename tesis)\n"
-            f"  • [bold cyan]/skills[/bold cyan]     -> Ganti persona/keahlian riset AI (/skill 1-4)\n"
-            f"  • [bold cyan]/help[/bold cyan]       -> Tampilkan seluruh daftar perintah\n"
-            f"  • [bold yellow]/back[/bold yellow]       -> Kembali ke Dashboard (prompt '>')\n"
-            f"  • [dim]Ketik pertanyaan riset Anda langsung di prompt untuk sintesis AI cepat.[/dim]"
+        self.console.print()
+        self.console.print(
+            f" [bold green]◆[/bold green] [bold bright_white]{self.current_project.name}[/bold bright_white]  "
+            f"[dim]•[/dim]  [bold cyan]{model_label}[/bold cyan] [dim]({effort} effort)[/dim]  "
+            f"[dim]•[/dim]  [dim]vault: {cached_count} indexed ({active_count} active)[/dim]"
         )
-
-        self.console.print()
-        self.console.print(Panel(
-            panel_content,
-            title=f"[bold green] PROJECT: {self.current_project.name} [/bold green]",
-            border_style="green",
-        ))
-        self.console.print()
+        self.console.print(
+            f" [dim]  Location: {self.current_project.path}[/dim]"
+        )
+        self.console.print(
+            " [dim]  Type [cyan]/help[/cyan] for commands, [cyan]models[/cyan] to switch model, or ask a question directly.[/dim]\n"
+        )
 
     # =========================================================================
     # PROJECT MODE HANDLERS
@@ -1968,8 +1980,9 @@ class CLIStudio:
         title = "Available Research Personas / Skills" if is_project_mode else "Installed AI Research Personas / Skills"
         table = Table(
             title=title,
-            title_style="bold cyan",
-            border_style="cyan",
+            box=None,
+            padding=(0, 2),
+            show_header=True,
             header_style="bold bright_cyan",
         )
         table.add_column("#", justify="right", style="dim", width=3)
@@ -1993,19 +2006,37 @@ class CLIStudio:
 
         self.console.print(table)
         if is_project_mode:
-            self.console.print("[dim]Switch persona: [bold cyan]/skill <# | name>[/bold cyan] (e.g. [bold cyan]/skill 2[/bold cyan] or [bold cyan]/skill methodology_critic[/bold cyan])[/dim]")
+            self.console.print("[dim]Switch persona: [bold cyan]/skill <# | name>[/bold cyan] (e.g. [bold cyan]/skill 2[/bold cyan])[/dim]")
         else:
             self.console.print("[dim]Activate persona inside a project: open or create a project, then run [bold cyan]/skill <# | name>[/bold cyan][/dim]")
         self.console.print(f"[dim]Add custom persona: Create a markdown file (.md) in [bold white]{self.skills_loader.skills_dir}[/bold white][/dim]\n")
 
     def cmd_skills(self) -> None:
-        """List all available research persona skills."""
+        """List or interactively select research persona skills."""
+        if sys.stdin.isatty():
+            skills = self.skills_loader.list_skills()
+            chosen = interactive_skill_selector(self.active_skill_name, skills, console=self.console)
+            if chosen:
+                self.active_skill_name = chosen
+                if self.active_chat_session and self.chat_manager:
+                    self.chat_manager.update_session_skill(self.active_chat_session.id, chosen)
+                self.console.print(f"\n[bold green][✓] Switched active persona to:[/bold green] [bold cyan]{chosen}[/bold cyan]\n")
+                return
         self.render_skills_catalog(is_project_mode=True)
 
     def cmd_skill(self, arg: str) -> None:
         """Switch current active persona skill, or view catalog if no argument given."""
         arg = arg.strip()
         if not arg:
+            if sys.stdin.isatty():
+                skills = self.skills_loader.list_skills()
+                chosen = interactive_skill_selector(self.active_skill_name, skills, console=self.console)
+                if chosen:
+                    self.active_skill_name = chosen
+                    if self.active_chat_session and self.chat_manager:
+                        self.chat_manager.update_session_skill(self.active_chat_session.id, chosen)
+                    self.console.print(f"\n[bold green][✓] Switched active persona to:[/bold green] [bold cyan]{chosen}[/bold cyan]\n")
+                    return
             self.render_skills_catalog(is_project_mode=True)
             return
 
@@ -2056,10 +2087,51 @@ class CLIStudio:
         parts = shlex.split(arg) if arg else []
         sub = parts[0].lower() if parts else "list"
 
-        if sub in ("list", "show", "ls") or not parts:
+        if sub in ("list", "show", "ls", "switch") or not parts:
             r9_base = self.config.api_bases.get("9router", "http://localhost:20128/v1")
             r9_key = self.config.get_api_key("9router") or detect_9router_key()
             live_r9_models = fetch_9router_models(r9_base)
+
+            # If interactive terminal, launch the Antigravity TUI selector
+            if sys.stdin.isatty() and (not parts or sub in ("switch", "list")):
+                all_options: list[str] = [f"9router/{m}" for m in live_r9_models]
+                presets = [
+                    "gemini/gemini-2.5-flash",
+                    "gemini/gemini-2.5-pro",
+                    "anthropic/claude-3-5-sonnet",
+                    "deepseek/deepseek-chat",
+                    "openai/gpt-4o",
+                ]
+                for p in presets:
+                    if p not in all_options:
+                        all_options.append(p)
+
+                curr_m = self.get_active_project_model()
+                curr_eff = self.get_active_project_effort()
+                chosen = interactive_model_selector(
+                    current_model=curr_m,
+                    current_effort=curr_eff,
+                    available_models=all_options,
+                    console=self.console,
+                )
+                if chosen:
+                    chosen_m, chosen_eff = chosen
+                    target_proj = self.current_project or self.project_manager.get_active_project()
+                    if target_proj:
+                        self.project_manager.set_project_model(target_proj.name, chosen_m)
+                        self.project_manager.set_project_effort(target_proj.name, chosen_eff)
+                        m_label = _format_model_display_name(chosen_m)
+                        self.console.print(
+                            f"\n[bold green][✓] Active model updated to:[/bold green] [bold cyan]{m_label}[/bold cyan] [dim]({chosen_eff} effort)[/dim]\n"
+                        )
+                    else:
+                        self.config.default_model = chosen_m
+                        self.config.save()
+                        self.console.print(
+                            f"\n[bold green][✓] Updated global fallback model to:[/bold green] [bold cyan]{chosen_m}[/bold cyan]\n"
+                        )
+                    return
+
             if live_r9_models:
                 r9_status = f"[bold green][Online - {len(live_r9_models)} models detected][/bold green]"
             elif r9_key:
@@ -2077,37 +2149,44 @@ class CLIStudio:
             keys_display = ", ".join(all_keys) if all_keys else "[dim]No API keys stored locally[/dim]"
 
             self.console.print()
-            panel_lines = []
+            table = Table(
+                title="scrpcy Model & Provider Inventory",
+                box=None,
+                padding=(0, 2),
+                show_header=True,
+                header_style="bold bright_cyan",
+            )
+            table.add_column("Property", style="bold cyan")
+            table.add_column("Configuration / Status", style="white")
+
             if self.current_project:
                 active_m = self.get_active_project_model()
-                panel_lines.append(f"[bold cyan]Active Project      [/bold cyan]: [bold green]{self.current_project.name}[/bold green]")
-                panel_lines.append(f"[bold cyan]Project Model       [/bold cyan]: [bold bright_cyan]{active_m}[/bold bright_cyan]")
+                eff = self.get_active_project_effort()
+                table.add_row("Active Project", f"[bold green]{self.current_project.name}[/bold green]")
+                table.add_row("Project Model", f"[bold bright_cyan]{active_m}[/bold bright_cyan] [dim]({eff} effort)[/dim]")
                 if self.workspace:
                     p_tok = TokenTracker.get_project_tokens(self.workspace.root_dir)
-                    panel_lines.append(f"[bold cyan]Project Token Usage [/bold cyan]: {p_tok.total_tokens:,} tokens (In: {p_tok.input_tokens:,}, Out: {p_tok.output_tokens:,})")
+                    table.add_row("Project Token Usage", f"{p_tok.total_tokens:,} tokens (In: {p_tok.input_tokens:,}, Out: {p_tok.output_tokens:,})")
             else:
                 projects = self.project_manager.list_projects()
                 if projects:
                     proj_lines = [f"{p.name}: [cyan]{p.model or 'Not assigned'}[/cyan]" for p in projects[:5]]
-                    panel_lines.append(f"[bold cyan]Project Models      [/bold cyan]: {', '.join(proj_lines)}")
+                    table.add_row("Project Models", ", ".join(proj_lines))
                 else:
-                    panel_lines.append("[bold cyan]Project Models      [/bold cyan]: [dim]None registered yet[/dim]")
+                    table.add_row("Project Models", "[dim]None registered yet[/dim]")
 
-            panel_lines.append(f"[bold cyan]9Router Local Gateway[/bold cyan]: {r9_base} {r9_status}")
-            panel_lines.append(f"[bold cyan]Configured API Keys  [/bold cyan]: {keys_display}")
-
-            self.console.print(Panel(
-                "\n".join(panel_lines),
-                title="scrpcy Model & Provider Inventory",
-                border_style="cyan",
-            ))
+            table.add_row("9Router Local Gateway", f"{r9_base} {r9_status}")
+            table.add_row("Configured API Keys", keys_display)
+            self.console.print(table)
+            self.console.print()
 
             # 1. Live 9Router Models Table (if 9Router is active)
             if live_r9_models:
                 r9_table = Table(
                     title=f"Live 9Router Models Detected (at {r9_base})",
-                    title_style="bold green",
-                    border_style="green",
+                    box=None,
+                    padding=(0, 2),
+                    show_header=True,
                     header_style="bold bright_green",
                 )
                 r9_table.add_column("#", justify="right", style="dim", width=3)
@@ -2121,73 +2200,47 @@ class CLIStudio:
                 self.console.print(r9_table)
                 self.console.print()
 
-            # 2. Supported Model Presets Catalog (Request 4)
+            # 2. Supported Model Presets Catalog
             cat_table = Table(
                 title="Katalog Model yang Didukung (Supported Model Catalog)",
-                title_style="bold magenta",
-                border_style="magenta",
+                box=None,
+                padding=(0, 2),
+                show_header=True,
                 header_style="bold bright_magenta",
             )
             cat_table.add_column("Provider / Router", style="bold white", width=18)
             cat_table.add_column("Contoh Model Identifiers", style="cyan")
             cat_table.add_column("Keterangan & Kebutuhan Kunci", style="dim")
 
-            cat_table.add_row(
-                "9Router (Local)",
-                "9router/<model_id> (contoh di atas)",
-                "Proxy lokal :20128, multi-provider otomatis"
-            )
-            cat_table.add_row(
-                "Google Gemini",
-                "gemini/gemini-2.5-flash, gemini/gemini-2.5-pro, gemini/gemini-2.0-flash",
-                "Gratis di aistudio.google.com (GEMINI_API_KEY)"
-            )
-            cat_table.add_row(
-                "Anthropic Claude",
-                "anthropic/claude-3-5-sonnet, anthropic/claude-3-5-haiku",
-                "ANTHROPIC_API_KEY"
-            )
-            cat_table.add_row(
-                "DeepSeek",
-                "deepseek/deepseek-chat, deepseek/deepseek-reasoner",
-                "DEEPSEEK_API_KEY"
-            )
-            cat_table.add_row(
-                "OpenAI",
-                "openai/gpt-4o, openai/gpt-4o-mini, openai/o3-mini",
-                "OPENAI_API_KEY"
-            )
-            cat_table.add_row(
-                "Groq (Ultra-Fast)",
-                "groq/llama-3.3-70b-versatile, groq/mixtral-8x7b-32768",
-                "GROQ_API_KEY"
-            )
-            cat_table.add_row(
-                "Ollama (Local)",
-                "ollama/llama3.2, ollama/qwen2.5, ollama/deepseek-r1",
-                "Server Ollama lokal (:11434)"
-            )
+            cat_table.add_row("9Router (Local)", "9router/<model_id>", "Proxy lokal :20128, multi-provider otomatis")
+            cat_table.add_row("Google Gemini", "gemini/gemini-2.5-flash, gemini/gemini-2.5-pro", "Gratis di aistudio.google.com (GEMINI_API_KEY)")
+            cat_table.add_row("Anthropic Claude", "anthropic/claude-3-5-sonnet", "ANTHROPIC_API_KEY")
+            cat_table.add_row("DeepSeek", "deepseek/deepseek-chat, deepseek/deepseek-reasoner", "DEEPSEEK_API_KEY")
+            cat_table.add_row("OpenAI", "openai/gpt-4o, openai/gpt-4o-mini", "OPENAI_API_KEY")
+            cat_table.add_row("Groq", "groq/llama-3.3-70b-versatile", "GROQ_API_KEY")
+            cat_table.add_row("Ollama", "ollama/llama3.2", "Server Ollama lokal (:11434)")
 
             self.console.print(cat_table)
             self.console.print()
 
-            # 3. Descriptive Commands Table (Request 5)
+            # 3. Descriptive Commands Table
             cmd_table = Table(
                 title="Panduan Perintah 'models' (Commands Guide)",
-                title_style="bold yellow",
-                border_style="yellow",
+                box=None,
+                padding=(0, 2),
+                show_header=True,
                 header_style="bold bright_yellow",
             )
             cmd_table.add_column("Perintah", style="bold green", width=34)
             cmd_table.add_column("Deskripsi & Contoh", style="white")
 
-            cmd_table.add_row("models list", "Menampilkan katalog model, status 9Router, dan daftar API keys")
-            cmd_table.add_row("models use <model> [project]", "Mengatur model LLM untuk project (contoh: models use 9router/ag/gemini-3.8-flash)")
-            cmd_table.add_row("models 9router [port] [model]", "Menghubungkan 9Router lokal, memindai model aktif, dan memilih model")
+            cmd_table.add_row("models", "Buka menu pemilihan model interaktif (cursor & effort)")
+            cmd_table.add_row("models list", "Menampilkan katalog model teks lengkap")
+            cmd_table.add_row("models use <model> [project]", "Mengatur model LLM (contoh: models use 9router/ag/gemini-3.8-flash)")
+            cmd_table.add_row("models 9router [port] [model]", "Menghubungkan 9Router lokal dan memindai model aktif")
             cmd_table.add_row("models set-key <provider> <key>", "Menyimpan API key (contoh: models set-key 9router <key>)")
-            cmd_table.add_row("models set-base <provider> <url>", "Mengatur custom endpoint URL (contoh: models set-base 9router http://localhost:20128/v1)")
             cmd_table.add_row("models tokens [project]", "Melihat statistik token input, output, dan riwayat sintesis")
-            cmd_table.add_row("models status [project]", "Melihat status project, model aktif, dan vault rujukan")
+            cmd_table.add_row("models status [project]", "Melihat status project dan model aktif")
 
             self.console.print(cmd_table)
             self.console.print()
@@ -2502,19 +2555,16 @@ class CLIStudio:
 
         model_name = self.get_active_project_model()
         api_key = self.config.get_api_key_for_model(model_name)
+        effort = self.get_active_project_effort()
+        model_label = _format_model_display_name(model_name)
 
         if not api_key:
             provider_hint = "9router" if model_name.startswith("9router/") else (model_name.split("/")[0] if "/" in model_name else "gemini")
             self.console.print()
-            self.console.print(Panel(
-                f"[bold yellow][!] No API key configured for model '{model_name}'.[/bold yellow]\n\n"
-                f"To configure API key, run:\n"
-                f"  [bold cyan]/models set-key {provider_hint} <YOUR_API_KEY>[/bold cyan]\n\n"
-                f"[dim]Tips: Jika menggunakan 9Router lokal, periksa kunci di dasbor 9Router (http://localhost:20128).[/dim]",
-                title="API Key Required for Live LLM",
-                border_style="yellow",
-            ))
-            self.console.print()
+            self.console.print(f"[bold yellow][!] No API key configured for model '{model_name}'.[/bold yellow]")
+            self.console.print(f"  To configure API key, run:")
+            self.console.print(f"    [bold cyan]/models set-key {provider_hint} <YOUR_API_KEY>[/bold cyan]")
+            self.console.print(f"  [dim]Tips: Jika menggunakan 9Router lokal, periksa http://localhost:20128[/dim]\n")
             return
 
         session = self._ensure_active_chat_session()
@@ -2522,8 +2572,9 @@ class CLIStudio:
             self.chat_manager.add_message(session.id, "user", query)
 
         accumulated_tokens: list[str] = []
-        self.console.print()
+        self.console.print(f"\n[bold cyan]✦ {model_label}[/bold cyan] [dim]({self.active_skill_name} • {effort} effort)[/dim]")
 
+        start_time = time.time()
         try:
             async def _stream_chat() -> None:
                 async for token in self.engine.stream_query(
@@ -2537,9 +2588,14 @@ class CLIStudio:
                     sys.stdout.flush()
 
             asyncio.run(_stream_chat())
+            elapsed = time.time() - start_time
             self.console.print("\n")
 
             full_response = "".join(accumulated_tokens)
+            approx_tokens = len(full_response.split()) * 4 // 3
+            style_name = self.config.citation.style.upper()
+            self.console.print(f"[dim]── {approx_tokens} tokens • {elapsed:.1f}s • {style_name} style ──[/dim]\n")
+
             if self.chat_manager:
                 self.chat_manager.add_message(session.id, "assistant", full_response)
             self.conversation_history.append({
