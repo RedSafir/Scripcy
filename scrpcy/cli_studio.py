@@ -14,6 +14,7 @@ from typing import Any
 import webbrowser
 
 from rich.console import Console
+from rich.markup import escape
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
@@ -204,7 +205,16 @@ class CLIStudio:
                     elif self.sub_mode == "processing":
                         prompt = f"[bold green]{self.current_project.name}[/bold green][dim]/[/dim][bold magenta]processing[/bold magenta][bold cyan]>[/bold cyan] "
                     elif self.sub_mode == "chat":
-                        self.console.print("[dim]│ esc to dismiss[/dim]")
+                        effort = self.get_active_project_effort()
+                        m_label = _format_model_display_name(self.get_active_project_model())
+                        grid = Table.grid(expand=True)
+                        grid.add_column(justify="left")
+                        grid.add_column(justify="right")
+                        grid.add_row(
+                            "[dim]│ esc to dismiss (ketik 'back' untuk kembali)[/dim]",
+                            f"[dim]{self.active_skill_name} • {m_label} • {effort}[/dim]",
+                        )
+                        self.console.print(grid)
                         prompt = "[bold cyan]>[/bold cyan] "
                     else:
                         prompt = f"[bold green]{self.current_project.name}[/bold green][bold cyan]>[/bold cyan] "
@@ -213,19 +223,10 @@ class CLIStudio:
 
                 raw_input = self.console.input(prompt).strip()
 
-                if self.sub_mode == "chat" and self.current_project:
-                    effort = self.get_active_project_effort()
-                    m_label = _format_model_display_name(self.get_active_project_model())
-                    # Display status footer like Gemini Antigravity
-                    self.console.print(
-                        f"[dim]? for shortcuts[/dim]"
-                        f"[dim align=right]{self.current_project.name} • {m_label} • {effort}[/dim]"
-                    )
-
                 if not raw_input:
                     continue
 
-                if raw_input in ("/exit", "/quit", "exit", "quit", "q"):
+                if self.sub_mode is None and raw_input in ("/exit", "/quit", "exit", "quit", "q"):
                     self.console.print("\n[bold cyan]Closing scrpcy research studio. Goodbye![/bold cyan]")
                     break
 
@@ -234,11 +235,18 @@ class CLIStudio:
                 else:
                     self.handle_project_interaction(raw_input)
 
-            except (KeyboardInterrupt, EOFError):
+            except KeyboardInterrupt:
+                if self.sub_mode is not None:
+                    self.sub_mode = None
+                    self.console.print(f"\n[dim]Returned to project root: {self.current_project.name if self.current_project else 'dashboard'}>[/dim]\n")
+                    continue
+                self.console.print("\n\n[bold cyan]Session terminated. Goodbye![/bold cyan]")
+                break
+            except EOFError:
                 self.console.print("\n\n[bold cyan]Session terminated. Goodbye![/bold cyan]")
                 break
             except Exception as exc:
-                self.console.print(f"[bold red][!] Error:[/bold red] {exc}\n")
+                self.console.print(f"[bold red][!] Error:[/bold red] {escape(str(exc))}\n")
 
     # =========================================================================
     # DASHBOARD MODE HANDLERS

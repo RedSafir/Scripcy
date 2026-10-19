@@ -165,6 +165,35 @@ class TestChatSubmodeOperations:
         cli_studio_submodes.handle_chat_root_command("resume chat1")
         assert cli_studio_submodes.active_chat_session.name == "chat1"
 
+    def test_chat_enter_and_back_in_run_loop(self, cli_studio_submodes: CLIStudio) -> None:
+        from unittest.mock import patch
+        with patch.object(
+            cli_studio_submodes.console,
+            "input",
+            side_effect=["chat new chat_run_test", "back", "exit"],
+        ):
+            cli_studio_submodes.run()
+
+        output = cli_studio_submodes.console.file.getvalue()
+        assert "Sesi chat baru dibuat: chat_run_test" in output
+        assert "Returned to project root: skripsi>" in output
+        assert "Closing scrpcy research studio" in output
+        assert cli_studio_submodes.sub_mode is None
+
+    def test_chat_keyboard_interrupt_dismisses_submode(self, cli_studio_submodes: CLIStudio) -> None:
+        from unittest.mock import patch
+        cli_studio_submodes.sub_mode = "chat"
+        with patch.object(
+            cli_studio_submodes.console,
+            "input",
+            side_effect=[KeyboardInterrupt(), "exit"],
+        ):
+            cli_studio_submodes.run()
+
+        assert cli_studio_submodes.sub_mode is None
+        output = cli_studio_submodes.console.file.getvalue()
+        assert "Returned to project root: skripsi>" in output
+
 
 class TestProjectRename:
     """Tests for project renaming."""
