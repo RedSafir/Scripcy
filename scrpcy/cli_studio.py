@@ -850,21 +850,57 @@ class CLIStudio:
             self.console.print("[dim]No valid paper numbers selected.[/dim]\n")
             return
 
-        for num in to_download_indices:
-            paper_to_dl = curated[num]
-            if not paper_to_dl.has_pdf:
-                self.console.print(f"[yellow][!] Paper #{num + 1} '{paper_to_dl.title[:45]}...' is paywalled (no open-access PDF).[/yellow]")
+        selected_papers = [curated[i] for i in to_download_indices]
+        task = self.task_manager.submit(
+            name=f"Ingest {len(selected_papers)} paper(s) to vault",
+            task_type="download",
+            target_fn=self._background_download_worker,
+            papers=selected_papers,
+        )
+        self.console.print()
+        self.console.print(
+            f"[bold green][✓] Background Download Agent Dispatched:[/bold green] [bold cyan]{task.id}[/bold cyan] ({len(selected_papers)} paper(s) queued)"
+        )
+        self.console.print(
+            " [dim]• Aktivitas Anda tidak ter-block: Anda dapat langsung melanjutkan chat, riset, atau membaca draft.[/dim]"
+        )
+        self.console.print(
+            " [dim]• Ketik [bold cyan]processing[/bold cyan] atau [bold cyan]proc[/bold cyan] untuk memantau progres unduhan & log real-time.[/dim]\n"
+        )
+
+    def _background_download_worker(self, task_id: str, papers: list[ScoutResult]) -> str:
+        """Background agent worker downloading and ingesting academic papers into vault."""
+        total = len(papers)
+        success = 0
+        failed = 0
+
+        for idx, paper in enumerate(papers, 1):
+            if not paper.has_pdf or not paper.pdf_url:
+                self.task_manager.log(task_id, f"[-] Skipped #{idx} '{paper.title[:45]}': No open-access PDF available.")
+                failed += 1
                 continue
 
-            with self.console.status(f"[cyan]Downloading '{paper_to_dl.title[:40]}...' into project vault...[/cyan]"):
-                try:
-                    dl_path = asyncio.run(self.scout.download_scout_paper(paper_to_dl))
-                    self.active_documents.add(dl_path.stem)
-                    self.console.print(f"[bold green][✓] Added to project vault & active rujukan:[/bold green] {paper_to_dl.title}")
-                except Exception as exc:
-                    self.console.print(f"[bold red][x] Failed to download #{num + 1}:[/bold red] {exc}")
+            self.task_manager.log(task_id, f"[{idx}/{total}] Downloading: '{paper.title[:45]}...'")
 
-        self.console.print()
+            try:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                try:
+                    dl_path = loop.run_until_complete(self.scout.download_scout_paper(paper))
+                finally:
+                    loop.close()
+
+                self.active_documents.add(dl_path.stem)
+                self._sync_vault_cache()
+                self.task_manager.log(task_id, f"[✓] Added #{idx} to vault & indexed: {paper.title[:50]}")
+                success += 1
+            except Exception as exc:
+                self.task_manager.log(task_id, f"[x] Error downloading #{idx} '{paper.title[:40]}': {exc}")
+                failed += 1
+
+        summary = f"Downloaded {success}/{total} paper(s) into vault ({failed} failed/skipped)."
+        self.task_manager.log(task_id, f"Finished: {summary}")
+        return summary
 
     def cmd_return_dashboard(self) -> None:
         """Disconnect from active project and return to dashboard."""

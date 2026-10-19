@@ -84,12 +84,12 @@ class TaskManager:
         def _worker_wrapper() -> None:
             self.log(task_id, f"Started task: '{name}'")
             try:
-                # Pass cancel_event to target_fn if it accepts cancel_event parameter
-                if "cancel_event" in kwargs or any(
-                    param.name == "cancel_event"
-                    for param in __import__("inspect").signature(target_fn).parameters.values()
-                ):
+                # Pass cancel_event and task_id to target_fn if it accepts them
+                sig_params = __import__("inspect").signature(target_fn).parameters.values()
+                if "cancel_event" in kwargs or any(param.name == "cancel_event" for param in sig_params):
                     kwargs["cancel_event"] = cancel_event
+                if "task_id" not in kwargs and any(param.name == "task_id" for param in sig_params):
+                    kwargs["task_id"] = task_id
 
                 result = target_fn(*args, **kwargs)
 

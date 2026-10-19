@@ -458,7 +458,14 @@ class TestCLIStudioScoutCommand:
             side_effect=["paper transformers 2022", "1"],
         ):
             studio.cmd_scout()
+            for future in list(studio.task_manager._futures.values()):
+                future.result(timeout=5)
             output = test_console.file.getvalue()
             assert "Literature Scout" in output
             assert "Transformer Attention Models" in output
-            assert "Added to project vault" in output
+            assert "Background Download Agent Dispatched" in output
+            assert "test" in studio.active_documents
+            tasks = studio.task_manager.list_tasks()
+            assert len(tasks) > 0
+            assert tasks[0].status == "completed"
+            assert "Added #1 to vault & indexed" in "\n".join(tasks[0].logs)
