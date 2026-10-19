@@ -193,10 +193,58 @@ class TestProjectCommands:
     def test_cmd_skills_and_switch(self, cli_studio: CLIStudio) -> None:
         cli_studio.cmd_skills()
         output = cli_studio.console.file.getvalue()
+        assert "Available Research Personas / Skills" in output
         assert "academic_writer" in output
+        assert "literature_synthesizer" in output
+        assert "[Active]" in output
 
+        # Switch by name
         cli_studio.cmd_skill("literature_synthesizer")
         assert cli_studio.active_skill_name == "literature_synthesizer"
+
+    def test_cmd_skill_without_args_renders_catalog(self, cli_studio: CLIStudio) -> None:
+        cli_studio.cmd_skill("")
+        output = cli_studio.console.file.getvalue()
+        assert "Available Research Personas / Skills" in output
+        assert "Add custom persona:" in output
+
+    def test_cmd_skill_switch_by_numeric_index(self, cli_studio: CLIStudio) -> None:
+        skills = cli_studio.skills_loader.list_skills()
+        assert len(skills) >= 2
+
+        # Switch to skill 2 by number
+        target_skill_2 = skills[1].name
+        cli_studio.cmd_skill("2")
+        assert cli_studio.active_skill_name == target_skill_2
+
+        # Switch back to skill 1 by number
+        target_skill_1 = skills[0].name
+        cli_studio.cmd_skill("1")
+        assert cli_studio.active_skill_name == target_skill_1
+
+    def test_cmd_skill_invalid_index(self, cli_studio: CLIStudio) -> None:
+        cli_studio.cmd_skill("99")
+        output = cli_studio.console.file.getvalue()
+        assert "Invalid skill number: 99" in output
+
+    def test_dashboard_skills_catalog(self, test_console: Console, project_manager: ProjectManager) -> None:
+        studio = CLIStudio(console=test_console, project_manager=project_manager)
+        studio.handle_dashboard_command("skills")
+        output = test_console.file.getvalue()
+        assert "Installed AI Research Personas / Skills" in output
+        assert "[Installed]" in output
+        assert "academic_writer" in output
+
+    def test_project_slash_skill_routing(self, cli_studio: CLIStudio) -> None:
+        # Route /skills
+        cli_studio.handle_project_command("/skills")
+        output = cli_studio.console.file.getvalue()
+        assert "Available Research Personas / Skills" in output
+
+        # Route /skill 2
+        skills = cli_studio.skills_loader.list_skills()
+        cli_studio.handle_project_command("/skill 2")
+        assert cli_studio.active_skill_name == skills[1].name
 
     def test_cmd_model_and_style(self, cli_studio: CLIStudio) -> None:
         cli_studio.cmd_model("openai/gpt-4o")

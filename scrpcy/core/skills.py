@@ -33,6 +33,16 @@ Highlight methodologies, consensus findings, contradictions, and open research p
 Use precise in-text citations for all synthesized assertions.
 """
 
+DEFAULT_METHODOLOGY_CRITIC_PROMPT = """You are an expert peer reviewer and research methodology critic.
+Critically evaluate the methodology, study design, sample size, potential confounding factors, and internal/external validity of the academic evidence provided.
+Highlight potential methodological flaws, measurement biases, or unaddressed limitations in the cited literature.
+"""
+
+DEFAULT_GAP_FINDER_PROMPT = """You are an academic gap analysis and research opportunity specialist.
+Examine the synthesized literature to detect unexplored questions, empirical blindspots, theoretical conflicts, and contradictory findings across studies.
+Formulate clear, impactful research gaps and propose concrete novel hypotheses for future investigation.
+"""
+
 
 class Skill(BaseModel):
     """Represents a dynamic persona or skill prompt loaded from Markdown."""
@@ -80,6 +90,16 @@ class SkillsLoader:
                 "description": "Systematic literature review and cross-paper comparison.",
                 "prompt": DEFAULT_LITERATURE_SYNTHESIZER_PROMPT,
                 "temperature": 0.1,
+            },
+            "methodology_critic": {
+                "description": "Evaluates research methodology, sampling rigor, and validity.",
+                "prompt": DEFAULT_METHODOLOGY_CRITIC_PROMPT,
+                "temperature": 0.1,
+            },
+            "gap_finder": {
+                "description": "Uncovers research gaps, inconsistencies, and future opportunities.",
+                "prompt": DEFAULT_GAP_FINDER_PROMPT,
+                "temperature": 0.2,
             },
         }
 

@@ -181,6 +181,7 @@ class CLIStudio:
         table.add_row("new", "<name> [folder_path]", "Create and connect a master project folder")
         table.add_row("open", "<# | name | folder_path>", "Open an existing project folder")
         table.add_row("delete", "<# | name>", "Remove project from Scrpcy (alias: remove, rm)")
+        table.add_row("skills", "", "List available AI persona skills (alias: skill)")
         table.add_row("status", "", "View LLM model, API key status, and system settings")
         table.add_row("config", "[set-key <prov> <key>]", "Manage API keys and default model")
         table.add_row("clear", "", "Clear terminal screen")
@@ -208,6 +209,8 @@ class CLIStudio:
             self.dashboard_open_project(args)
         elif cmd in ("delete", "remove", "rm"):
             self.dashboard_delete_project(args)
+        elif cmd in ("skills", "skill"):
+            self.render_skills_catalog(is_project_mode=False)
         elif cmd in ("status", "info"):
             self.dashboard_status()
         elif cmd == "config":
@@ -498,8 +501,8 @@ class CLIStudio:
             ("/search", "<keywords>", "Search literature across Semantic Scholar & ArXiv"),
             ("/download", "<#>", "Download paper into this project's master vault"),
             ("/docx", "[filename]", "Compile current draft into Word (.docx) in drafts/"),
-            ("/skills", "", "List available research skill personas"),
-            ("/skill", "<name>", "Switch active research skill"),
+            ("/skills", "", "List available research skill personas (alias: /skill)"),
+            ("/skill", "[# | name]", "Switch active research persona by number or name (e.g. /skill 2)"),
             ("/model", "<model_name>", "Switch default LLM model"),
             ("/style", "<apa|ieee>", "Change citation formatting style"),
             ("/dashboard", "", "Return to Dashboard (alias: /close, /back)"),
@@ -542,9 +545,7 @@ class CLIStudio:
             self.cmd_search(args)
         elif cmd == "/download":
             self.cmd_download(args)
-        elif cmd == "/skills":
-            self.cmd_skills()
-        elif cmd == "/skill":
+        elif cmd in ("/skills", "/skill"):
             self.cmd_skill(args)
         elif cmd == "/model":
             self.cmd_model(args)
@@ -1063,39 +1064,80 @@ class CLIStudio:
         async with PaperSearcher(workspace=self.workspace) as searcher:
             return await searcher.download_paper(paper)
 
-    def cmd_skills(self) -> None:
-        """List all available skill markdown prompt files."""
+    def render_skills_catalog(self, is_project_mode: bool = True) -> None:
+        """Render a formatted table catalog of available research persona skills."""
         skills = self.skills_loader.list_skills()
+        title = "Available Research Personas / Skills" if is_project_mode else "Installed AI Research Personas / Skills"
         table = Table(
-            title="Available Research Skills / Personas",
+            title=title,
             title_style="bold cyan",
             border_style="cyan",
             header_style="bold bright_cyan",
         )
-        table.add_column("Skill Name", style="bold green")
-        table.add_column("Active", justify="center", width=8)
+        table.add_column("#", justify="right", style="dim", width=3)
+        table.add_column("Persona / Skill", style="bold green", width=24)
+        table.add_column("Status", justify="center", width=12)
         table.add_column("Description", style="white")
 
-        for s in skills:
-            is_active = "[bold green][Active][/bold green]" if s.name == self.active_skill_name else ""
-            table.add_row(s.name, is_active, s.description or s.title or "Standard skill prompt")
+        for idx, s in enumerate(skills, start=1):
+            if is_project_mode:
+                is_active = (s.name == self.active_skill_name)
+                status = "[bold green][Active][/bold green]" if is_active else "[dim][Standby][/dim]"
+            else:
+                status = "[bold cyan][Installed][/bold cyan]"
+
+            table.add_row(
+                str(idx),
+                s.name,
+                status,
+                s.description or "Standard research persona",
+            )
 
         self.console.print(table)
-        self.console.print("[dim]Use [bold cyan]/skill <name>[/bold cyan] to switch persona.[/dim]\n")
+        if is_project_mode:
+            self.console.print("[dim]Switch persona: [bold cyan]/skill <# | name>[/bold cyan] (e.g. [bold cyan]/skill 2[/bold cyan] or [bold cyan]/skill methodology_critic[/bold cyan])[/dim]")
+        else:
+            self.console.print("[dim]Activate persona inside a project: open or create a project, then run [bold cyan]/skill <# | name>[/bold cyan][/dim]")
+        self.console.print(f"[dim]Add custom persona: Create a markdown file (.md) in [bold white]{self.skills_loader.skills_dir}[/bold white][/dim]\n")
+
+    def cmd_skills(self) -> None:
+        """List all available research persona skills."""
+        self.render_skills_catalog(is_project_mode=True)
 
     def cmd_skill(self, arg: str) -> None:
-        """Switch current active persona skill."""
+        """Switch current active persona skill, or view catalog if no argument given."""
+        arg = arg.strip()
         if not arg:
-            self.console.print(f"[dim]Current active skill:[/dim] [bold cyan]{self.active_skill_name}[/bold cyan]\n")
+            self.render_skills_catalog(is_project_mode=True)
             return
 
-        try:
-            self.skills_loader.get_skill(arg)
-            self.active_skill_name = arg
-            self.console.print(f"[bold green][✓] Switched active skill to:[/bold green] [bold cyan]{arg}[/bold cyan]\n")
-        except Exception:
-            available = ", ".join(s.name for s in self.skills_loader.list_skills())
-            self.console.print(f"[red][x] Skill '{arg}' not found. Available skills: {available}[/red]\n")
+        skills = self.skills_loader.list_skills()
+        target_skill_name = None
+
+        if arg.isdigit():
+            idx = int(arg) - 1
+            if 0 <= idx < len(skills):
+                target_skill_name = skills[idx].name
+            else:
+                self.console.print(f"[bold red][x] Invalid skill number: {arg}.[/bold red] Choose a number between 1 and {len(skills)}.\n")
+                return
+        else:
+            norm_arg = arg.lower().replace(" ", "_").replace("-", "_")
+            for s in skills:
+                if s.name == arg or s.name.lower() == norm_arg:
+                    target_skill_name = s.name
+                    break
+
+        if target_skill_name:
+            try:
+                self.skills_loader.get_skill(target_skill_name)
+                self.active_skill_name = target_skill_name
+                self.console.print(f"[bold green][✓] Switched active skill to:[/bold green] [bold cyan]{target_skill_name}[/bold cyan]\n")
+            except Exception as exc:
+                self.console.print(f"[bold red][x] Error loading skill '{target_skill_name}':[/bold red] {exc}\n")
+        else:
+            available = ", ".join(f"{i}. {s.name}" for i, s in enumerate(skills, start=1))
+            self.console.print(f"[bold red][x] Skill '{arg}' not found.[/bold red] Available skills: {available}\n")
 
     def cmd_model(self, arg: str) -> None:
         """Switch current default LLM model."""
