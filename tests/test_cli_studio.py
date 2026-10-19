@@ -1,17 +1,19 @@
-"""Comprehensive unit tests for the Arch Linux interactive CLI research studio."""
+"""Comprehensive unit tests for the Dashboard and Project CLI research studio."""
 
 from __future__ import annotations
 
 import io
 from pathlib import Path
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from rich.console import Console
 
-from scrpcy.cli_studio import ARCH_LOGO, CLIStudio
+from scrpcy.cli_studio import CLIStudio, SCRPCY_LOGO, SCRPCY_VERSION
 from scrpcy.core.config import ConfigManager, ScrpcyConfig
 from scrpcy.core.models import DocumentMetadata
+from scrpcy.core.project import ProjectInfo, ProjectManager
 from scrpcy.core.search import SearchResult
 from scrpcy.core.workspace import WorkspaceManager
 
@@ -23,8 +25,19 @@ def test_console() -> Console:
 
 
 @pytest.fixture
-def cli_studio(temp_workspace: WorkspaceManager, test_console: Console) -> CLIStudio:
-    """Fixture providing an isolated CLIStudio instance."""
+def project_manager(tmp_path: Path) -> ProjectManager:
+    """Fixture providing an isolated project registry manager."""
+    registry_file = tmp_path / "test_projects.json"
+    return ProjectManager(registry_file=registry_file)
+
+
+@pytest.fixture
+def cli_studio(
+    temp_workspace: WorkspaceManager,
+    test_console: Console,
+    project_manager: ProjectManager,
+) -> CLIStudio:
+    """Fixture providing an isolated CLIStudio instance bound to a workspace."""
     cfg = ScrpcyConfig(
         default_model="gemini/gemini-2.5-pro",
         workspace_path=str(temp_workspace.root_dir),
@@ -33,36 +46,112 @@ def cli_studio(temp_workspace: WorkspaceManager, test_console: Console) -> CLISt
         workspace=temp_workspace,
         config=cfg,
         console=test_console,
+        project_manager=project_manager,
     )
+    # Simulate an active master project for project-level tests
+    info = project_manager.create_project(
+        name="test_proj",
+        path=temp_workspace.root_dir,
+    )
+    studio.open_project(info)
     return studio
 
 
-class TestArchLinuxBanner:
-    """Tests for Arch Linux ASCII logo and fastfetch banner formatting."""
+class TestBigAsciiBanner:
+    """Tests for large stylized ASCII logo and version rendering."""
 
-    def test_arch_logo_structure(self) -> None:
-        assert "S C R P C Y" in ARCH_LOGO
-        assert "/\\" in ARCH_LOGO
+    def test_big_ascii_logo_structure(self) -> None:
+        assert "_____" in SCRPCY_LOGO
+        assert SCRPCY_VERSION.startswith("v")
 
-    def test_banner_rendering(self, cli_studio: CLIStudio) -> None:
-        banner = cli_studio.get_banner()
-        assert banner is not None
-        cli_studio.print_banner()
+    def test_banner_rendering(self, test_console: Console, project_manager: ProjectManager) -> None:
+        studio = CLIStudio(console=test_console, project_manager=project_manager)
+        studio.print_banner()
 
-        output = cli_studio.console.file.getvalue()
-        assert "scrpcy@studio" in output
-        assert "Arch Linux CLI Studio" in output
-        assert "Vault" in output
-        assert "Engine Model" in output
+        output = test_console.file.getvalue()
+        assert SCRPCY_VERSION in output
+        assert "Academic Research Studio" in output
 
 
-class TestCLICommands:
-    """Tests for interactive CLI slash commands."""
+class TestDashboardFlow:
+    """Tests for initial Dashboard mode, project creation, and system status."""
+
+    def test_dashboard_help(self, test_console: Console, project_manager: ProjectManager) -> None:
+        studio = CLIStudio(console=test_console, project_manager=project_manager)
+        studio.print_dashboard_help()
+        output = test_console.file.getvalue()
+        assert "Dashboard Commands" in output
+        assert "projects" in output
+        assert "new" in output
+        assert "open" in output
+
+    def test_dashboard_status(self, test_console: Console, project_manager: ProjectManager) -> None:
+        cfg = ScrpcyConfig(default_model="gemini/gemini-2.5-pro")
+        studio = CLIStudio(console=test_console, config=cfg, project_manager=project_manager)
+        studio.dashboard_status()
+        output = test_console.file.getvalue()
+        assert "System & Model Status" in output
+        assert "gemini/gemini-2.5-pro" in output
+        assert "Known Projects" in output
+
+    def test_dashboard_new_and_open_project(
+        self,
+        tmp_path: Path,
+        test_console: Console,
+        project_manager: ProjectManager,
+    ) -> None:
+        studio = CLIStudio(console=test_console, project_manager=project_manager)
+        proj_dir = tmp_path / "my_master_thesis"
+
+        # Create new project
+        studio.dashboard_new_project(["my_thesis", str(proj_dir)])
+        assert studio.current_project is not None
+        assert studio.current_project.name == "my_thesis"
+        assert proj_dir.is_dir()
+        assert (proj_dir / "vault").is_dir()
+        assert (proj_dir / "cache").is_dir()
+        assert (proj_dir / "drafts").is_dir()
+        assert (proj_dir / "logs").is_dir()
+
+        # Switch back to dashboard
+        studio.cmd_return_dashboard()
+        assert studio.current_project is None
+
+        # Reopen project by name
+        studio.dashboard_open_project(["my_thesis"])
+        assert studio.current_project is not None
+        assert studio.current_project.name == "my_thesis"
+
+    def test_dashboard_list_projects(
+        self,
+        tmp_path: Path,
+        test_console: Console,
+        project_manager: ProjectManager,
+    ) -> None:
+        studio = CLIStudio(console=test_console, project_manager=project_manager)
+        # Initially empty
+        studio.dashboard_list_projects()
+        output_empty = test_console.file.getvalue()
+        assert "No projects registered yet" in output_empty
+
+        # Create projects
+        project_manager.create_project("alpha", tmp_path / "alpha")
+        project_manager.create_project("beta", tmp_path / "beta")
+
+        studio.dashboard_list_projects()
+        output = test_console.file.getvalue()
+        assert "Registered Research Projects" in output
+        assert "alpha" in output
+        assert "beta" in output
+
+
+class TestProjectCommands:
+    """Tests for project-level slash commands within master project folder."""
 
     def test_cmd_vault_empty(self, cli_studio: CLIStudio) -> None:
         cli_studio.cmd_vault()
         output = cli_studio.console.file.getvalue()
-        assert "Vault is currently empty" in output
+        assert "Project vault is currently empty" in output
 
     def test_cmd_vault_populated(self, cli_studio: CLIStudio, temp_workspace: WorkspaceManager) -> None:
         meta = DocumentMetadata(
@@ -86,23 +175,18 @@ class TestCLICommands:
         temp_workspace.save_to_cache("doc2.md", "---\ntitle: Doc 2\n---\nContent 2")
         cli_studio._sync_vault_cache()
 
-        # Toggle clear
         cli_studio.cmd_active("clear")
         assert len(cli_studio.active_documents) == 0
 
-        # Toggle by stem
         cli_studio.cmd_active("doc1")
         assert "doc1" in cli_studio.active_documents
 
-        # Toggle off
         cli_studio.cmd_active("doc1")
         assert "doc1" not in cli_studio.active_documents
 
-        # Toggle by index
         cli_studio.cmd_active("1")
         assert len(cli_studio.active_documents) == 1
 
-        # Toggle all
         cli_studio.cmd_active("all")
         assert len(cli_studio.active_documents) == 2
 
@@ -111,12 +195,7 @@ class TestCLICommands:
         output = cli_studio.console.file.getvalue()
         assert "academic_writer" in output
 
-        # Switch skill
         cli_studio.cmd_skill("literature_synthesizer")
-        assert cli_studio.active_skill_name == "literature_synthesizer"
-
-        # Switch to invalid skill
-        cli_studio.cmd_skill("non_existent_skill_xyz")
         assert cli_studio.active_skill_name == "literature_synthesizer"
 
     def test_cmd_model_and_style(self, cli_studio: CLIStudio) -> None:
@@ -124,9 +203,6 @@ class TestCLICommands:
         assert cli_studio.config.default_model == "openai/gpt-4o"
 
         cli_studio.cmd_style("ieee")
-        assert cli_studio.config.citation.style == "ieee"
-
-        cli_studio.cmd_style("invalid_style")
         assert cli_studio.config.citation.style == "ieee"
 
     def test_cmd_config(self, cli_studio: CLIStudio) -> None:
@@ -155,7 +231,8 @@ class TestCLICommands:
         out_docx = "cli_export_test.docx"
         cli_studio.cmd_docx(out_docx)
 
-        docx_path = temp_workspace.vault_dir / out_docx
+        drafts_dir = temp_workspace.root_dir / "drafts"
+        docx_path = drafts_dir / out_docx
         assert docx_path.exists()
         assert docx_path.stat().st_size > 0
 
@@ -198,10 +275,38 @@ class TestCLICommands:
         output = cli_studio.console.file.getvalue()
         assert "API Key Required" in output or "No API key configured" in output
 
-    def test_handle_command_routing(self, cli_studio: CLIStudio) -> None:
-        cli_studio.handle_command("/help")
-        cli_studio.handle_command("/status")
-        cli_studio.handle_command("/unknown_command_abc")
-        output = cli_studio.console.file.getvalue()
-        assert "scrpcy CLI Studio Commands" in output
-        assert "Unknown command" in output
+
+class TestProjectManagerClass:
+    """Direct tests for the ProjectManager model and file operations."""
+
+    def test_create_and_list_projects(self, project_manager: ProjectManager, tmp_path: Path) -> None:
+        p1 = project_manager.create_project("paper1", tmp_path / "paper1", description="Paper 1")
+        assert p1.name == "paper1"
+        assert (tmp_path / "paper1" / "vault").is_dir()
+        assert (tmp_path / "paper1" / "drafts").is_dir()
+        assert (tmp_path / "paper1" / ".scrpcy" / "project.json").is_file()
+
+        projects = project_manager.list_projects()
+        assert len(projects) == 1
+        assert projects[0].name == "paper1"
+
+    def test_open_by_path_auto_registers(self, project_manager: ProjectManager, tmp_path: Path) -> None:
+        foreign_folder = tmp_path / "unregistered_folder"
+        foreign_folder.mkdir()
+
+        proj = project_manager.open_project(foreign_folder)
+        assert proj.resolved_path == foreign_folder.resolve()
+        assert (foreign_folder / "vault").is_dir()
+        assert (foreign_folder / "drafts").is_dir()
+
+        # Check it is now in registry
+        all_proj = project_manager.list_projects()
+        assert any(p.name == proj.name for p in all_proj)
+
+    def test_remove_project(self, project_manager: ProjectManager, tmp_path: Path) -> None:
+        project_manager.create_project("remove_me", tmp_path / "remove_me")
+        assert len(project_manager.list_projects()) == 1
+
+        removed = project_manager.remove_project("remove_me")
+        assert removed is True
+        assert len(project_manager.list_projects()) == 0

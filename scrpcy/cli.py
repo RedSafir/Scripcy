@@ -30,11 +30,11 @@ app.add_typer(config_app, name="config")
 
 @app.command()
 def start(
-    dir: str = typer.Option(
-        "~/.scrpcy/workspace",
+    dir: str | None = typer.Option(
+        None,
         "--dir",
         "-d",
-        help="Workspace storage directory path.",
+        help="Optional master project or workspace directory path to open directly.",
     ),
     web: bool = typer.Option(
         False,
@@ -60,14 +60,15 @@ def start(
         help="Whether to open the web browser automatically in web mode.",
     ),
 ) -> None:
-    """Launch the scrpcy local research studio in interactive Linux CLI mode or Web UI."""
-    resolved_dir = str(Path(dir).expanduser().resolve())
-    os.environ["SCRPCY_WORKSPACE"] = resolved_dir
-
-    workspace = WorkspaceManager(root_dir=resolved_dir)
-    workspace.ensure_directories()
+    """Launch the scrpcy local research studio in interactive CLI Dashboard or Web UI."""
+    initial_path = str(Path(dir).expanduser().resolve()) if dir else None
 
     if web:
+        workspace_dir = initial_path or str(Path.home() / ".scrpcy" / "workspace")
+        os.environ["SCRPCY_WORKSPACE"] = workspace_dir
+        workspace = WorkspaceManager(root_dir=workspace_dir)
+        workspace.ensure_directories()
+
         typer.echo(f"Starting scrpcy academic studio at http://{host}:{port}")
         typer.echo(f"Workspace directory: {workspace.root_dir}")
 
@@ -85,7 +86,7 @@ def start(
     else:
         from scrpcy.cli_studio import CLIStudio
 
-        studio = CLIStudio(workspace=workspace)
+        studio = CLIStudio(initial_project=initial_path)
         studio.run()
 
 

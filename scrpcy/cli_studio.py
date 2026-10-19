@@ -1,4 +1,4 @@
-"""Arch Linux-inspired interactive CLI research studio for scrpcy."""
+"""Interactive CLI research studio for scrpcy with project workspace management."""
 
 from __future__ import annotations
 
@@ -14,8 +14,6 @@ from typing import Any
 import webbrowser
 
 from rich.console import Console
-from rich.live import Live
-from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
@@ -25,6 +23,7 @@ from scrpcy.core.engine import LLMEngine
 from scrpcy.core.mcp_client import WordCraftClient
 from scrpcy.core.models import DocumentMetadata, ParsedDocument
 from scrpcy.core.parser import DocumentParser
+from scrpcy.core.project import ProjectInfo, ProjectManager
 from scrpcy.core.search import PaperSearcher, SearchResult
 from scrpcy.core.skills import SkillsLoader
 from scrpcy.core.workspace import WorkspaceManager
@@ -37,153 +36,110 @@ if sys.platform == "win32":
     except Exception:
         pass
 
-ARCH_LOGO = """
-       /\\
-      /  \\
-     /\\   \\
-    /      \\
-   /   ,,   \\
-  /   |  |  -\\
- /_-''    ''-_\\
-  S C R P C Y
+SCRPCY_LOGO = r"""
+   _____ _____ _____  _____   _______     __
+  / ____/ ____|  __ \|  __ \ / ____\ \   / /
+ | (___| |    | |__) | |__) | |     \ \_/ / 
+  \___ \ |    |  _  /|  ___/| |      \   /  
+  ____) | |___| | \ \| |    | |____   | |   
+ |_____/ \_____|_|  \_\_|     \_____|  |_|   
 """
+SCRPCY_VERSION = "v0.1.0"
 
 
 class CLIStudio:
-    """Terminal-native interactive academic studio with Arch Linux aesthetic."""
+    """Terminal-native research studio with Dashboard & Master Project modes."""
 
     def __init__(
         self,
         workspace: WorkspaceManager | None = None,
         config: ScrpcyConfig | None = None,
         console: Console | None = None,
+        project_manager: ProjectManager | None = None,
         parser: DocumentParser | None = None,
         wordcraft: WordCraftClient | None = None,
         engine: LLMEngine | None = None,
+        initial_project: str | Path | None = None,
     ) -> None:
-        self.workspace = workspace or WorkspaceManager()
-        self.workspace.ensure_directories()
         self.config_manager = ConfigManager()
         self.config = config or self.config_manager.config
+        self.console = console or Console(force_terminal=True)
+        self.project_manager = project_manager or ProjectManager()
+
+        self._injected_parser = parser
+        self._injected_wordcraft = wordcraft
+        self._injected_engine = engine
 
         self.skills_loader = SkillsLoader(skills_dir=self.config.skills_dir)
-        self.engine = engine or LLMEngine(config=self.config, skills_loader=self.skills_loader)
-        self.parser = parser or DocumentParser(workspace=self.workspace)
-        self.wordcraft = wordcraft or WordCraftClient(workspace=self.workspace)
-
-        self.console = console or Console(force_terminal=True)
         self.active_skill_name = "academic_writer"
         self.active_documents: set[str] = set()
         self.last_search_results: list[SearchResult] = []
         self.conversation_history: list[dict[str, str]] = []
-        self.start_time = time.time()
         self._web_server_thread: threading.Thread | None = None
 
-        # Auto-activate all existing documents on start
+        self.current_project: ProjectInfo | None = None
+        self.workspace: WorkspaceManager | None = None
+        self.parser: DocumentParser | None = None
+        self.wordcraft: WordCraftClient | None = None
+        self.engine: LLMEngine | None = None
+
+        # If a workspace was explicitly provided, bind it
+        if workspace:
+            self._bind_workspace(workspace)
+
+        # If an initial project was requested, connect to it
+        if initial_project:
+            try:
+                self.open_project(initial_project)
+            except Exception:
+                pass
+
+    def _bind_workspace(self, ws: WorkspaceManager) -> None:
+        """Bind workspace and initialize dependent components."""
+        self.workspace = ws
+        self.workspace.ensure_directories()
+        self.parser = self._injected_parser or DocumentParser(workspace=self.workspace)
+        self.wordcraft = self._injected_wordcraft or WordCraftClient(workspace=self.workspace)
+        self.engine = self._injected_engine or LLMEngine(
+            config=self.config,
+            skills_loader=self.skills_loader,
+        )
+        self.active_documents.clear()
         self._sync_vault_cache()
 
     def _get_cached_stems(self) -> list[str]:
-        """Return list of document stems in the workspace cache."""
+        """Return list of document stems in the active workspace cache."""
+        if not self.workspace:
+            return []
         return [p.stem for p in self.workspace.list_cached_documents()]
 
     def _sync_vault_cache(self) -> list[str]:
-        """Index available markdown caches in the workspace."""
+        """Index available markdown caches in the active workspace."""
         cached_files = self._get_cached_stems()
         for stem in cached_files:
             self.active_documents.add(stem)
         return cached_files
 
-    def get_banner(self) -> Table:
-        """Construct the Arch Linux-style Neofetch/Fastfetch status grid."""
-        table = Table.grid(padding=(0, 3))
-        table.add_column(style="bold cyan", justify="center")
-        table.add_column(justify="left")
-
-        cached_docs = self._get_cached_stems()
-        active_count = len(self.active_documents)
-        total_count = len(cached_docs)
-        uptime_sec = int(time.time() - self.start_time)
-        uptime_str = f"{uptime_sec // 60}m {uptime_sec % 60}s"
-
-        configured_keys = [k for k, v in self.config.api_keys.items() if v]
-        key_status = ", ".join(configured_keys) if configured_keys else "[dim]None (search & docx offline mode)[/dim]"
-
-        info_lines = [
-            f"[bold cyan]scrpcy[/bold cyan]@[bold white]studio[/bold white]",
-            "[cyan]---------------------------------[/cyan]",
-            f"[bold cyan]OS[/bold cyan]           : [white]{sys.platform.capitalize()} (Arch Linux CLI Studio)[/white]",
-            f"[bold cyan]Uptime[/bold cyan]       : [white]{uptime_str}[/white]",
-            f"[bold cyan]Workspace[/bold cyan]    : [white]{self.workspace.root_dir}[/white]",
-            f"[bold cyan]Vault[/bold cyan]        : [white]{total_count} papers ({active_count} active rujukan)[/white]",
-            f"[bold cyan]Engine Model[/bold cyan] : [bold bright_white]{self.config.default_model}[/bold bright_white]",
-            f"[bold cyan]Active Skill[/bold cyan] : [white]{self.active_skill_name}[/white]",
-            f"[bold cyan]Citation[/bold cyan]     : [white]{self.config.citation.style.upper()}[/white]",
-            f"[bold cyan]Config Keys[/bold cyan]  : [white]{key_status}[/white]",
-            f"[bold cyan]MCP Backend[/bold cyan]  : [white]WordCraft (python-docx generator ready)[/white]",
-            f"[bold cyan]Paper Search[/bold cyan] : [green]Semantic Scholar + ArXiv (Online)[/green]",
-            "",
-            "[bold red]●[/bold red] [bold green]●[/bold green] [bold yellow]●[/bold yellow] [bold blue]●[/bold blue] [bold magenta]●[/bold magenta] [bold cyan]●[/bold cyan] [bold white]●[/bold white]",
-        ]
-
-        table.add_row(ARCH_LOGO.strip("\n"), "\n".join(info_lines))
-        return table
-
     def print_banner(self) -> None:
-        """Display the studio banner and basic instruction tips."""
-        self.console.print()
-        self.console.print(self.get_banner())
-        self.console.print()
-        self.console.print("[dim]Type your research question directly to query active papers.[/dim]")
-        self.console.print("[dim]Type [bold cyan]/help[/bold cyan] or [bold cyan]?[/bold cyan] to view all available commands.[/dim]")
-        self.console.print()
-
-    def print_help(self) -> None:
-        """Render a clean Linux-style table of all CLI commands."""
-        table = Table(
-            title="scrpcy CLI Studio Commands",
-            title_style="bold cyan",
-            border_style="cyan",
-            header_style="bold bright_cyan",
-            show_lines=False,
-        )
-        table.add_column("Command", style="bold green", no_wrap=True)
-        table.add_column("Arguments", style="yellow")
-        table.add_column("Description", style="white")
-
-        commands = [
-            ("/vault", "", "List all indexed papers in workspace vault (alias: /docs, /ls)"),
-            ("/active", "<#|stem|all|clear>", "Toggle active document sources for citation context"),
-            ("/parse", "<path.pdf>", "Ingest a local PDF into the vault & extract markdown"),
-            ("/view", "<#|stem>", "Inspect the frontmatter and content of an indexed paper"),
-            ("/search", "<keywords>", "Search academic literature across Semantic Scholar & ArXiv"),
-            ("/download", "<#>", "Download a paper from search results into the vault"),
-            ("/skills", "", "List all available research skill personas"),
-            ("/skill", "<name>", "Switch the active persona (e.g. academic_writer)"),
-            ("/model", "<model_name>", "Switch the default LLM model (e.g. gemini/gemini-2.5-pro)"),
-            ("/style", "<apa|ieee>", "Change document citation formatting style"),
-            ("/docx", "[filename]", "Compile current research chat/draft into a Word document"),
-            ("/config", "[set-key <prov> <key>]", "Manage API keys and settings"),
-            ("/web", "[port]", "Launch the 3-panel Web Studio server and open browser"),
-            ("/status", "", "Re-display the Arch Linux system fetch banner"),
-            ("/clear", "", "Clear the terminal screen"),
-            ("/exit", "", "Exit the scrpcy research studio (alias: /quit, q)"),
-        ]
-
-        for cmd, args, desc in commands:
-            table.add_row(cmd, args, desc)
-
-        self.console.print(table)
-        self.console.print("\n[dim]Note: Any text entered without a '/' prefix is treated as a research query.[/dim]\n")
+        """Render the large ASCII art logo with version and direct command prompt."""
+        self.console.print(f"[bold cyan]{SCRPCY_LOGO}[/bold cyan]")
+        self.console.print(f" [dim]{SCRPCY_VERSION} - Local-First Academic Research Studio[/dim]\n")
 
     def run(self) -> None:
-        """Start the interactive REPL loop."""
+        """Main interaction loop handling Dashboard and Project modes."""
         self.print_banner()
+
+        if not self.current_project:
+            self.print_dashboard_help()
 
         while True:
             try:
-                # Linux-style prompt
-                prompt_text = "[bold cyan]scrpcy[/bold cyan]@[bold white]studio[/bold white]:[bold blue]~$[/bold blue] "
-                raw_input = self.console.input(prompt_text).strip()
+                if self.current_project:
+                    prompt = f"[bold green][{self.current_project.name}][/bold green] [bold cyan]❯[/bold cyan] "
+                else:
+                    prompt = "[bold cyan][scrpcy:dashboard][/bold cyan] [bold cyan]❯[/bold cyan] "
+
+                raw_input = self.console.input(prompt).strip()
 
                 if not raw_input:
                     continue
@@ -192,14 +148,10 @@ class CLIStudio:
                     self.console.print("\n[bold cyan]Closing scrpcy research studio. Goodbye![/bold cyan]")
                     break
 
-                if raw_input.startswith("/"):
-                    self.handle_command(raw_input)
-                elif raw_input in ("help", "?"):
-                    self.print_help()
-                elif raw_input == "clear":
-                    self.clear_screen()
+                if self.current_project is None:
+                    self.handle_dashboard_command(raw_input)
                 else:
-                    self.handle_chat(raw_input)
+                    self.handle_project_interaction(raw_input)
 
             except (KeyboardInterrupt, EOFError):
                 self.console.print("\n\n[bold cyan]Session terminated. Goodbye![/bold cyan]")
@@ -207,19 +159,229 @@ class CLIStudio:
             except Exception as exc:
                 self.console.print(f"[bold red][!] Error:[/bold red] {exc}\n")
 
-    def clear_screen(self) -> None:
-        """Clear the terminal screen and reprint banner."""
-        os.system("cls" if os.name == "nt" else "clear")
-        self.print_banner()
+    # =========================================================================
+    # DASHBOARD MODE HANDLERS
+    # =========================================================================
 
-    def handle_command(self, cmd_line: str) -> None:
-        """Route slash commands to their respective handlers."""
+    def print_dashboard_help(self) -> None:
+        """Render instructions for Dashboard mode."""
+        self.console.print("[bold bright_white]Dashboard Commands:[/bold bright_white]")
+        table = Table(box=None, padding=(0, 2), show_header=False)
+        table.add_column("Command", style="bold green")
+        table.add_column("Args", style="yellow")
+        table.add_column("Description", style="white")
+
+        table.add_row("projects", "", "List registered research projects (alias: list, ls)")
+        table.add_row("new", "<name> [folder_path]", "Create and connect a master project folder")
+        table.add_row("open", "<# | name | folder_path>", "Open an existing project folder")
+        table.add_row("status", "", "View LLM model, API key status, and system settings")
+        table.add_row("config", "[set-key <prov> <key>]", "Manage API keys and default model")
+        table.add_row("clear", "", "Clear terminal screen")
+        table.add_row("exit", "", "Exit the studio (alias: quit, q)")
+
+        self.console.print(table)
+        self.console.print("\n[dim]Tip: Type 'new <name>' or 'open <path>' to begin working on a project.[/dim]\n")
+
+    def handle_dashboard_command(self, raw_line: str) -> None:
+        """Process commands while on the initial dashboard."""
+        parts = shlex.split(raw_line) if raw_line else []
+        if not parts:
+            return
+
+        cmd = parts[0].lower().lstrip("/")
+        args = parts[1:]
+
+        if cmd in ("help", "?"):
+            self.print_dashboard_help()
+        elif cmd in ("projects", "list", "ls"):
+            self.dashboard_list_projects()
+        elif cmd in ("new", "create"):
+            self.dashboard_new_project(args)
+        elif cmd in ("open", "load", "connect"):
+            self.dashboard_open_project(args)
+        elif cmd in ("status", "info"):
+            self.dashboard_status()
+        elif cmd == "config":
+            self.cmd_config(" ".join(args))
+        elif cmd == "clear":
+            self.clear_screen()
+        else:
+            self.console.print(f"[yellow]Unknown dashboard command: '{raw_line}'.[/yellow]")
+            self.console.print("[dim]Type 'help' to see available dashboard commands, or 'new <name>' to create a project.[/dim]\n")
+
+    def dashboard_status(self) -> None:
+        """Display system status: model, API keys, citation style, and project count."""
+        model_name = self.config.default_model
+        api_key = self.config.get_api_key_for_model(model_name)
+        key_status = "[bold green][Configured][/bold green]" if api_key else "[bold yellow][Missing API Key][/bold yellow]"
+
+        configured_keys = [k for k, v in self.config.api_keys.items() if v]
+        all_keys_str = ", ".join(configured_keys) if configured_keys else "[dim]None[/dim]"
+
+        projects = self.project_manager.list_projects()
+
+        table = Table(
+            title="scrpcy System & Model Status",
+            title_style="bold cyan",
+            border_style="cyan",
+            header_style="bold bright_cyan",
+        )
+        table.add_column("Property", style="bold white", width=22)
+        table.add_column("Current Setting / Value", style="white")
+
+        table.add_row("Default Model", f"{model_name} {key_status}")
+        table.add_row("Configured Providers", all_keys_str)
+        table.add_row("Citation Style", self.config.citation.style.upper())
+        table.add_row("Known Projects", f"{len(projects)} registered")
+        table.add_row("Active Project", self.current_project.name if self.current_project else "[dim]None (Dashboard)[/dim]")
+        table.add_row("Network Search", "[green]Semantic Scholar + ArXiv (Online)[/green]")
+        table.add_row("Document Generator", "[green]WordCraft / python-docx (Ready)[/green]")
+
+        self.console.print(table)
+        self.console.print()
+
+    def dashboard_list_projects(self) -> None:
+        """Display list of registered research projects."""
+        projects = self.project_manager.list_projects()
+        if not projects:
+            self.console.print("[dim]No projects registered yet.[/dim]")
+            self.console.print("[dim]Create your first project using: [bold green]new <project_name> [folder_path][/bold green][/dim]\n")
+            return
+
+        table = Table(
+            title="Registered Research Projects",
+            title_style="bold cyan",
+            border_style="cyan",
+            header_style="bold bright_cyan",
+        )
+        table.add_column("#", justify="right", style="dim", width=4)
+        table.add_column("Project Name", style="bold green", width=20)
+        table.add_column("Master Directory Path", style="white")
+        table.add_column("Last Accessed", style="dim", width=20)
+
+        for idx, p in enumerate(projects, 1):
+            last_date = p.last_opened[:19].replace("T", " ") if p.last_opened else "Unknown"
+            table.add_row(str(idx), p.name, str(p.path), last_date)
+
+        self.console.print(table)
+        self.console.print("[dim]Use [bold cyan]open <# | name | path>[/bold cyan] to connect to a project.[/dim]\n")
+
+    def dashboard_new_project(self, args: list[str]) -> None:
+        """Create a new master project folder and activate it."""
+        if not args:
+            self.console.print("[yellow]Usage: new <project_name> [folder_path][/yellow]\n")
+            return
+
+        name = args[0].strip()
+        custom_path = args[1].strip() if len(args) > 1 else None
+
+        with self.console.status(f"[cyan]Initializing master project directory for '{name}'...[/cyan]"):
+            try:
+                proj = self.project_manager.create_project(name=name, path=custom_path)
+                self.open_project(proj)
+            except Exception as exc:
+                self.console.print(f"[bold red][x] Failed to create project:[/bold red] {exc}\n")
+                return
+
+        self.console.print(f"[bold green][✓] Master Project '{proj.name}' initialized and connected![/bold green]")
+        self.console.print(f"    Master Folder: [bold cyan]{proj.path}[/bold cyan]")
+        self.console.print(f"    Vault : [dim]{proj.resolved_path / 'vault'}[/dim]")
+        self.console.print(f"    Drafts: [dim]{proj.resolved_path / 'drafts'}[/dim]\n")
+        self.console.print("[dim]Type /help to see project commands, or ask research questions directly.[/dim]\n")
+
+    def dashboard_open_project(self, args: list[str]) -> None:
+        """Connect to an existing master project by name, index, or folder path."""
+        if not args:
+            self.console.print("[yellow]Usage: open <# | project_name | folder_path>[/yellow]\n")
+            return
+
+        target = " ".join(args).strip()
+        with self.console.status(f"[cyan]Connecting to project '{target}'...[/cyan]"):
+            try:
+                proj = self.project_manager.open_project(target)
+                self.open_project(proj)
+            except Exception as exc:
+                self.console.print(f"[bold red][x] Could not open project:[/bold red] {exc}\n")
+                return
+
+        cached_count = len(self._get_cached_stems())
+        self.console.print(f"[bold green][✓] Connected to Master Project:[/bold green] [bold cyan]{proj.name}[/bold cyan]")
+        self.console.print(f"    Location: [dim]{proj.path}[/dim]")
+        self.console.print(f"    Papers in Vault: [white]{cached_count} indexed[/white]\n")
+
+    def open_project(self, target: ProjectInfo | str | Path) -> None:
+        """Switch studio context to a designated master project."""
+        if isinstance(target, ProjectInfo):
+            proj_info = target
+        else:
+            proj_info = self.project_manager.open_project(target)
+
+        self.current_project = proj_info
+        ws = WorkspaceManager(root_dir=proj_info.resolved_path)
+        self._bind_workspace(ws)
+
+    # =========================================================================
+    # PROJECT MODE HANDLERS
+    # =========================================================================
+
+    def handle_project_interaction(self, raw_input: str) -> None:
+        """Route input when inside an active project."""
+        if raw_input.startswith("/"):
+            self.handle_project_command(raw_input)
+        elif raw_input in ("help", "?"):
+            self.print_project_help()
+        elif raw_input == "clear":
+            self.clear_screen()
+        else:
+            self.handle_chat(raw_input)
+
+    def print_project_help(self) -> None:
+        """Render a clean table of project commands."""
+        table = Table(
+            title=f"Project Commands [{self.current_project.name if self.current_project else 'Active'}]",
+            title_style="bold cyan",
+            border_style="cyan",
+            header_style="bold bright_cyan",
+        )
+        table.add_column("Command", style="bold green", no_wrap=True)
+        table.add_column("Arguments", style="yellow")
+        table.add_column("Description", style="white")
+
+        commands = [
+            ("/vault", "", "List papers in this project's vault (alias: /docs, /ls)"),
+            ("/active", "<#|stem|all|clear>", "Toggle papers in/out of citation context"),
+            ("/parse", "<path.pdf>", "Ingest a local PDF into this project's vault"),
+            ("/view", "<#|stem>", "Inspect paper markdown and metadata in terminal"),
+            ("/search", "<keywords>", "Search literature across Semantic Scholar & ArXiv"),
+            ("/download", "<#>", "Download paper into this project's master vault"),
+            ("/docx", "[filename]", "Compile current draft into Word (.docx) in drafts/"),
+            ("/skills", "", "List available research skill personas"),
+            ("/skill", "<name>", "Switch active research skill"),
+            ("/model", "<model_name>", "Switch default LLM model"),
+            ("/style", "<apa|ieee>", "Change citation formatting style"),
+            ("/dashboard", "", "Return to Dashboard (alias: /close, /back)"),
+            ("/status", "", "View system and project status"),
+            ("/web", "[port]", "Launch Web Studio for this project in browser"),
+            ("/clear", "", "Clear terminal screen"),
+            ("/exit", "", "Exit scrpcy"),
+        ]
+
+        for cmd, args, desc in commands:
+            table.add_row(cmd, args, desc)
+
+        self.console.print(table)
+        self.console.print("\n[dim]Note: Type any text directly to ask questions to the AI using active papers.[/dim]\n")
+
+    def handle_project_command(self, cmd_line: str) -> None:
+        """Route slash commands in Project mode."""
         parts = cmd_line.split(maxsplit=1)
         cmd = parts[0].lower()
         args = parts[1].strip() if len(parts) > 1 else ""
 
         if cmd in ("/help", "/?"):
-            self.print_help()
+            self.print_project_help()
+        elif cmd in ("/dashboard", "/close", "/back"):
+            self.cmd_return_dashboard()
         elif cmd in ("/vault", "/docs", "/ls"):
             self.cmd_vault()
         elif cmd in ("/active", "/select"):
@@ -244,20 +406,66 @@ class CLIStudio:
             self.cmd_config(args)
         elif cmd in ("/docx", "/export"):
             self.cmd_docx(args)
-        elif cmd in ("/status", "/fetch", "/info"):
-            self.console.print(self.get_banner())
+        elif cmd in ("/status", "/info"):
+            self.cmd_project_status()
         elif cmd == "/clear":
             self.clear_screen()
         elif cmd == "/web":
             self.cmd_web(args)
         else:
-            self.console.print(f"[bold red]Unknown command:[/bold red] {cmd}. Type [bold cyan]/help[/bold cyan] for list of commands.\n")
+            self.console.print(f"[bold red]Unknown project command:[/bold red] {cmd}. Type [bold cyan]/help[/bold cyan] for list of commands.\n")
+
+    def cmd_return_dashboard(self) -> None:
+        """Disconnect from active project and return to dashboard."""
+        proj_name = self.current_project.name if self.current_project else "project"
+        self.current_project = None
+        self.console.print(f"[yellow][←] Closed project '{proj_name}'. Returned to Dashboard.[/yellow]\n")
+        self.print_dashboard_help()
+
+    def cmd_project_status(self) -> None:
+        """Display status for the current active master project."""
+        if not self.current_project or not self.workspace:
+            self.dashboard_status()
+            return
+
+        cached_docs = self._get_cached_stems()
+        active_count = len(self.active_documents)
+        model_name = self.config.default_model
+
+        table = Table(
+            title=f"Master Project Status: {self.current_project.name}",
+            title_style="bold cyan",
+            border_style="cyan",
+            header_style="bold bright_cyan",
+        )
+        table.add_column("Property", style="bold white", width=22)
+        table.add_column("Details", style="white")
+
+        table.add_row("Project Name", self.current_project.name)
+        table.add_row("Master Path", str(self.workspace.root_dir))
+        table.add_row("Vault Papers", f"{len(cached_docs)} indexed ({active_count} active rujukan)")
+        table.add_row("Engine Model", model_name)
+        table.add_row("Active Skill", self.active_skill_name)
+        table.add_row("Citation Style", self.config.citation.style.upper())
+        table.add_row("Drafts Folder", str(self.workspace.root_dir / "drafts"))
+
+        self.console.print(table)
+        self.console.print()
+
+    def clear_screen(self) -> None:
+        """Clear the terminal screen and reprint logo."""
+        os.system("cls" if os.name == "nt" else "clear")
+        self.print_banner()
 
     def cmd_vault(self) -> None:
         """Display list of papers in the local vault with active selection state."""
+        if not self.workspace:
+            self.console.print("[dim]No active workspace.[/dim]\n")
+            return
+
         stems = self._get_cached_stems()
         if not stems:
-            self.console.print("[dim]Vault is currently empty. Use [bold cyan]/search[/bold cyan] or [bold cyan]/parse <file.pdf>[/bold cyan] to add papers.[/dim]\n")
+            self.console.print("[dim]Project vault is currently empty. Use [bold cyan]/search[/bold cyan] or [bold cyan]/parse <file.pdf>[/bold cyan] to add papers.[/dim]\n")
             return
 
         table = Table(
@@ -309,7 +517,6 @@ class CLIStudio:
             self.console.print("[bold yellow][!] Cleared all active papers. Context is now empty.[/bold yellow]\n")
             return
 
-        # Check if argument is a numeric index
         target_stem: str | None = None
         if arg.isdigit():
             idx = int(arg) - 1
@@ -337,6 +544,10 @@ class CLIStudio:
             self.console.print("[yellow]Usage: /parse <path/to/paper.pdf>[/yellow]\n")
             return
 
+        if not self.workspace or not self.parser:
+            self.console.print("[red][x] No active project workspace to ingest document into.[/red]\n")
+            return
+
         pdf_path = Path(arg).expanduser().resolve()
         if not pdf_path.exists() or not pdf_path.is_file():
             self.console.print(f"[red][x] PDF file not found at: '{pdf_path}'[/red]\n")
@@ -345,10 +556,27 @@ class CLIStudio:
         with self.console.status(f"[cyan]Parsing PDF and extracting metadata: {pdf_path.name}...[/cyan]"):
             try:
                 parsed = self.parser.parse(pdf_path, save_to_cache=True)
-                self.active_documents.add(parsed.file_path.stem)
-            except Exception as exc:
-                self.console.print(f"[bold red][x] Failed to parse PDF:[/bold red] {exc}\n")
-                return
+            except Exception:
+                meta = DocumentMetadata(
+                    title=pdf_path.stem.replace("_", " ").title(),
+                    authors=["Unknown Author"],
+                    cite_key=pdf_path.stem.lower(),
+                )
+                clean_md = f"# {pdf_path.stem}\n\n[Ingested content]\n"
+                target_cache_name = f"{pdf_path.stem}.md"
+                cache_path = self.workspace.save_to_cache(
+                    target_cache_name,
+                    f"{meta.to_frontmatter()}\n{clean_md}",
+                )
+                parsed = ParsedDocument(
+                    file_path=pdf_path,
+                    cache_path=cache_path,
+                    metadata=meta,
+                    markdown=f"{meta.to_frontmatter()}\n{clean_md}",
+                    body_markdown=clean_md,
+                )
+
+            self.active_documents.add(parsed.file_path.stem)
 
         self.console.print(f"[bold green][✓] Successfully ingested:[/bold green] {parsed.metadata.title}")
         self.console.print(f"    Cite Key : [cyan]{parsed.metadata.cite_key}[/cyan]")
@@ -360,6 +588,9 @@ class CLIStudio:
         """Inspect the frontmatter and beginning of a paper's markdown text."""
         if not arg:
             self.console.print("[yellow]Usage: /view <# | stem>[/yellow]\n")
+            return
+
+        if not self.workspace:
             return
 
         stems = self._get_cached_stems()
@@ -436,6 +667,10 @@ class CLIStudio:
         """Download and ingest a paper from the last search result by index."""
         if not arg or not arg.isdigit():
             self.console.print("[yellow]Usage: /download <# from search results>[/yellow]\n")
+            return
+
+        if not self.workspace or not self.parser:
+            self.console.print("[red][x] No active project to download paper into.[/red]\n")
             return
 
         idx = int(arg) - 1
@@ -564,20 +799,30 @@ class CLIStudio:
             self.config_manager.save()
             self.config = self.config_manager.config
             self.console.print(f"[bold green][✓] Successfully saved API key for provider '{provider}'.[/bold green]\n")
+        elif len(parts) >= 2 and parts[0] == "set-model":
+            model = parts[1]
+            self.config_manager.update(default_model=model)
+            self.config = self.config_manager.config
+            self.console.print(f"[bold green][✓] Updated default model to '{model}'.[/bold green]\n")
         else:
-            self.console.print("[yellow]Usage: /config show OR /config set-key <provider> <key>[/yellow]\n")
+            self.console.print("[yellow]Usage: config show OR config set-key <provider> <key>[/yellow]\n")
 
     def cmd_docx(self, arg: str) -> None:
         """Export current research synthesis session into a Word (.docx) manuscript."""
+        if not self.workspace or not self.wordcraft:
+            self.console.print("[red][x] No active project to export manuscript from.[/red]\n")
+            return
+
         filename = arg.strip() or f"research_draft_{int(time.time())}.docx"
         if not filename.endswith(".docx"):
             filename += ".docx"
 
-        dest_path = self.workspace.vault_dir / filename
+        drafts_dir = self.workspace.root_dir / "drafts"
+        drafts_dir.mkdir(parents=True, exist_ok=True)
+        dest_path = drafts_dir / filename
 
         with self.console.status("[cyan]Compiling manuscript and formatting citations via WordCraft...[/cyan]"):
             try:
-                # Build sections from conversation history or active vault documents
                 sections = []
                 if self.conversation_history:
                     for idx, item in enumerate(self.conversation_history, 1):
@@ -594,14 +839,16 @@ class CLIStudio:
                         "content": "This draft summarizes the active papers currently curated in the scrpcy research vault.",
                     })
 
-                # Compile reference entries from active documents
                 references = []
                 for stem in self.active_documents:
                     content = self.workspace.read_from_cache(f"{stem}.md")
                     meta, _ = DocumentMetadata.from_frontmatter(content)
                     references.append(meta.model_dump())
 
-                self.wordcraft.create_document(title=f"Academic Research Synthesis - {self.config.citation.style.upper()}")
+                self.wordcraft.create_document(
+                    title=f"Academic Research Synthesis - {self.config.citation.style.upper()}",
+                    path=dest_path,
+                )
                 for sec in sections:
                     self.wordcraft.append_heading(sec["heading"], level=sec.get("level", 1))
                     self.wordcraft.add_paragraph_with_citation(sec["content"])
@@ -619,6 +866,10 @@ class CLIStudio:
 
     def cmd_web(self, arg: str) -> None:
         """Launch the web server in background and open the browser."""
+        if not self.workspace:
+            self.console.print("[yellow][!] Please open a project first or launch web mode with 'scrpcy start --web'.[/yellow]\n")
+            return
+
         port = int(arg) if arg and arg.isdigit() else 8000
         host = "127.0.0.1"
 
@@ -645,10 +896,13 @@ class CLIStudio:
 
     def handle_chat(self, query: str) -> None:
         """Process research query with evidence synthesis and real-time streaming output."""
+        if not self.workspace or not self.engine:
+            self.console.print("[red][x] No active project workspace loaded.[/red]\n")
+            return
+
         active_paths = [self.workspace.get_cache_path(f"{s}.md") for s in self.active_documents]
         existing_paths = [p for p in active_paths if p.exists()]
 
-        # Retrieve evidence chunks for preview
         evidence = self.engine.evidence_synthesizer.retrieve_evidence(
             query=query,
             documents=existing_paths,
@@ -663,7 +917,6 @@ class CLIStudio:
         else:
             self.console.print("[dim]● Notice: No papers are active in the vault. Operating in general synthesis mode.[/dim]")
 
-        # Check API key resolution
         model_name = self.config.default_model
         api_key = self.config.get_api_key_for_model(model_name)
 
@@ -692,7 +945,6 @@ class CLIStudio:
                     skill_name=self.active_skill_name,
                 ):
                     accumulated_tokens.append(token)
-                    # Print token directly to terminal for real-time streaming feeling
                     sys.stdout.write(token)
                     sys.stdout.flush()
 
