@@ -301,17 +301,15 @@ class CLIStudio:
         if custom_path is None:
             clean_name = re.sub(r"[^\w\-_]", "_", name.strip().lower())
             curr_dir = Path.cwd() / clean_name
-            default_dir = Path.home() / ".scrpcy" / "projects" / clean_name
 
             self.console.print()
             self.console.print("[bold bright_white]Pilih lokasi penyimpanan master project:[/bold bright_white]")
             self.console.print(f"  [bold cyan][1][/bold cyan] Folder saat ini      : [dim]{curr_dir}[/dim]")
             self.console.print(f"  [bold cyan][2][/bold cyan] Folder lain / kustom : [dim]Tentukan path sendiri (misal: D:\\Riset\\{clean_name})[/dim]")
-            self.console.print(f"  [bold cyan][3][/bold cyan] Folder default Scrpcy: [dim]{default_dir}[/dim]")
             self.console.print()
 
             try:
-                choice = self.console.input("[bold cyan]pilih lokasi [1/2/3, default: 1][/bold cyan] [bold green]❯[/bold green] ").strip()
+                choice = self.console.input("[bold cyan]pilih lokasi [1/2, default: 1][/bold cyan] [bold green]❯[/bold green] ").strip()
             except (KeyboardInterrupt, EOFError):
                 self.console.print("\n[yellow]Project creation canceled.[/yellow]\n")
                 return
@@ -329,8 +327,6 @@ class CLIStudio:
                 if not custom_path or custom_path.lower() in ("q", "quit", "cancel"):
                     self.console.print("[yellow]Project creation canceled.[/yellow]\n")
                     return
-            elif choice == "3":
-                custom_path = str(default_dir)
             else:
                 # Default option: current directory
                 custom_path = str(curr_dir)

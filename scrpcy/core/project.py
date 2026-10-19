@@ -107,7 +107,7 @@ class ProjectManager:
 
         Args:
             name: Project name slug.
-            path: Target directory path. If None, defaults to ~/.scrpcy/projects/<name>.
+            path: Target directory path. If None, defaults to current working directory ./<name>.
             description: Optional project notes.
 
         Returns:
@@ -120,7 +120,7 @@ class ProjectManager:
         if path:
             target_path = Path(path).expanduser().resolve()
         else:
-            target_path = Path.home() / ".scrpcy" / "projects" / clean_name
+            target_path = (Path.cwd() / clean_name).resolve()
 
         # Create master project structure
         target_path.mkdir(parents=True, exist_ok=True)

@@ -487,7 +487,7 @@ class TestNewProjectWizardFlow:
         assert custom_folder.is_dir()
         assert (custom_folder / "vault").is_dir()
 
-    def test_wizard_default_dir_success(
+    def test_wizard_current_dir_success(
         self,
         test_console: Console,
         project_manager: ProjectManager,
@@ -497,7 +497,7 @@ class TestNewProjectWizardFlow:
         with patch.object(
             studio.console,
             "input",
-            side_effect=["quick_study", "3"],
+            side_effect=["quick_study", "1"],
         ):
             studio.handle_dashboard_command("new")
 
