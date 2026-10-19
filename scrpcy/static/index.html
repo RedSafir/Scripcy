@@ -1,0 +1,628 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full bg-slate-950 text-slate-100">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>scrpcy &bull; Academic Research Studio</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['Inter', 'system-ui', 'sans-serif'],
+            mono: ['"JetBrains Mono"', 'monospace'],
+          },
+          colors: {
+            brand: {
+              50: '#f0fdf4',
+              500: '#22c55e',
+              600: '#16a34a',
+            }
+          }
+        }
+      }
+    }
+  </script>
+  <style>
+    /* Custom scrollbar and citation pill styles */
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: #0f172a; }
+    ::-webkit-scrollbar-thumb { background: #334155; border-radius: 3px; }
+    ::-webkit-scrollbar-thumb:hover { background: #475569; }
+    .citation-tag {
+      display: inline-flex;
+      align-items: center;
+      background: #1e293b;
+      border: 1px solid #334155;
+      color: #38bdf8;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.75rem;
+      padding: 0.1rem 0.4rem;
+      border-radius: 0.25rem;
+      margin: 0 0.15rem;
+      font-weight: 500;
+    }
+  </style>
+</head>
+<body class="h-full flex flex-col font-sans overflow-hidden">
+
+  <!-- Top App Navigation Bar -->
+  <header class="h-14 border-b border-slate-800 bg-slate-900/90 backdrop-blur px-4 flex items-center justify-between shrink-0">
+    <div class="flex items-center gap-3">
+      <div class="flex items-center gap-2">
+        <span class="w-3 h-3 rounded-full bg-emerald-500 animate-pulse"></span>
+        <span class="font-bold tracking-tight text-lg text-slate-100">scrpcy</span>
+      </div>
+      <span class="text-xs font-mono text-slate-400 bg-slate-800/80 px-2 py-0.5 rounded border border-slate-700">academic-studio</span>
+    </div>
+
+    <div class="flex items-center gap-3 text-xs">
+      <!-- Skill Selector -->
+      <div class="flex items-center gap-1.5 bg-slate-800/90 px-2.5 py-1.5 rounded-md border border-slate-700">
+        <span class="text-slate-400 font-medium">Skill:</span>
+        <select id="skillSelector" class="bg-transparent text-slate-200 outline-none cursor-pointer font-medium">
+          <option value="academic_writer">academic_writer</option>
+          <option value="literature_synthesizer">literature_synthesizer</option>
+        </select>
+      </div>
+
+      <!-- Citation Style Toggle -->
+      <div class="flex items-center gap-1.5 bg-slate-800/90 px-2.5 py-1.5 rounded-md border border-slate-700">
+        <span class="text-slate-400 font-medium">Style:</span>
+        <select id="styleSelector" class="bg-transparent text-slate-200 outline-none cursor-pointer font-medium">
+          <option value="apa">APA 7th</option>
+          <option value="ieee">IEEE</option>
+        </select>
+      </div>
+
+      <!-- Active Model Badge -->
+      <div id="modelBadge" class="bg-slate-800/60 border border-slate-700 text-slate-300 font-mono px-2 py-1.5 rounded-md text-[11px]">
+        gemini/gemini-2.5-pro
+      </div>
+    </div>
+  </header>
+
+  <!-- 3-Panel Main Workspace Container -->
+  <main class="flex-1 flex overflow-hidden">
+
+    <!-- PANEL 1: Left Panel (Sources, Library & Web Search) -->
+    <aside class="w-80 border-r border-slate-800 bg-slate-900/60 flex flex-col shrink-0">
+      <div class="p-3 border-b border-slate-800 flex items-center justify-between">
+        <div class="flex gap-1 bg-slate-950 p-0.5 rounded-md border border-slate-800 text-xs">
+          <button id="tabLibrary" class="px-3 py-1 font-medium rounded bg-slate-800 text-slate-100" onclick="switchLeftTab('library')">Library</button>
+          <button id="tabSearch" class="px-3 py-1 font-medium rounded text-slate-400 hover:text-slate-200" onclick="switchLeftTab('search')">Web Search</button>
+        </div>
+        <label class="cursor-pointer bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 px-2 py-1 rounded text-xs flex items-center gap-1 font-medium">
+          <span>+ Upload</span>
+          <input type="file" id="pdfUploadInput" accept=".pdf" class="hidden" onchange="uploadPdf(event)">
+        </label>
+      </div>
+
+      <!-- Library View -->
+      <div id="libraryView" class="flex-1 overflow-y-auto p-3 space-y-2">
+        <div class="text-[11px] font-mono uppercase tracking-wider text-slate-400 mb-1 flex items-center justify-between">
+          <span>Ingested Papers (<span id="docCount">0</span>)</span>
+          <span class="text-[10px] text-slate-400">check to include</span>
+        </div>
+        <div id="documentsList" class="space-y-2">
+          <!-- Dynamically populated document cards -->
+          <div class="text-xs text-slate-400 p-4 text-center">Loading workspace papers...</div>
+        </div>
+      </div>
+
+      <!-- Search View -->
+      <div id="searchView" class="hidden flex-1 flex-col overflow-hidden p-3">
+        <form onsubmit="searchPapers(event)" class="flex gap-1 mb-2">
+          <input id="searchInput" type="text" placeholder="Search Semantic Scholar / ArXiv..." class="flex-1 bg-slate-950 border border-slate-800 text-xs text-slate-200 px-2.5 py-1.5 rounded focus:outline-none focus:border-slate-600">
+          <button type="submit" class="bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs px-2.5 py-1.5 rounded text-slate-200 font-medium">Search</button>
+        </form>
+        <div id="searchResults" class="flex-1 overflow-y-auto space-y-2 pr-1">
+          <div class="text-xs text-slate-400 p-4 text-center">Search global literature to download open-access PDFs directly into vault.</div>
+        </div>
+      </div>
+    </aside>
+
+    <!-- PANEL 2: Center Panel (Academic Co-Pilot Chat & Streaming) -->
+    <section class="flex-1 flex flex-col bg-slate-950 overflow-hidden relative">
+      <div id="chatScrollArea" class="flex-1 overflow-y-auto p-6 space-y-6">
+        <!-- Welcome Banner -->
+        <div class="border border-slate-800/80 bg-slate-900/40 rounded-lg p-5 max-w-2xl mx-auto text-sm text-slate-300">
+          <h2 class="font-semibold text-slate-100 text-base mb-1.5 flex items-center gap-2">
+            <span>Welcome to scrpcy Studio</span>
+          </h2>
+          <p class="text-xs text-slate-400 leading-relaxed">
+            Your local-first academic research assistant. Select active source papers on the left, ask complex literature questions, and synthesize citation-backed manuscripts ready for Word export.
+          </p>
+        </div>
+
+        <!-- Chat Messages Container -->
+        <div id="chatMessages" class="max-w-3xl mx-auto space-y-5"></div>
+      </div>
+
+      <!-- Active Evidence Drawer (Collapsible) -->
+      <div id="evidenceDrawer" class="hidden border-t border-slate-800 bg-slate-900/90 p-3 max-h-40 overflow-y-auto text-xs font-mono text-slate-300">
+        <div class="flex items-center justify-between mb-1.5">
+          <span class="text-emerald-400 font-semibold uppercase text-[11px] tracking-wider">&bull; Retrieved Evidence Passages</span>
+          <button onclick="toggleEvidenceDrawer()" class="text-slate-400 hover:text-slate-200 text-xs">&times; Close</button>
+        </div>
+        <div id="evidenceList" class="space-y-1.5"></div>
+      </div>
+
+      <!-- Query Input Bar -->
+      <div class="border-t border-slate-800 bg-slate-900/90 p-4">
+        <div class="max-w-3xl mx-auto relative">
+          <textarea
+            id="promptInput"
+            rows="2"
+            placeholder="Ask literature question, compare methodologies, or synthesize findings..."
+            class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3.5 py-2.5 text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:border-slate-600 resize-none pr-24"
+            onkeydown="handleTextareaKeydown(event)"
+          ></textarea>
+          <div class="absolute right-2.5 bottom-3.5 flex items-center gap-2">
+            <span class="text-[10px] font-mono text-slate-400 hidden sm:inline">Enter to send</span>
+            <button
+              id="sendBtn"
+              onclick="submitQuery()"
+              class="bg-emerald-600 hover:bg-emerald-500 text-slate-950 font-semibold text-xs px-3 py-1.5 rounded transition-colors"
+            >
+              Ask
+            </button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- PANEL 3: Right Panel (Agent Status Log & Manuscript Export) -->
+    <aside class="w-80 border-l border-slate-800 bg-slate-900/60 flex flex-col shrink-0 overflow-hidden">
+      <!-- Section A: Live Agent Telemetry Log -->
+      <div class="h-1/2 border-b border-slate-800 flex flex-col overflow-hidden">
+        <div class="p-3 border-b border-slate-800 flex items-center justify-between bg-slate-900/80">
+          <span class="text-xs font-mono font-semibold uppercase tracking-wider text-slate-300 flex items-center gap-1.5">
+            <span class="w-2 h-2 rounded-full bg-sky-400"></span> Agent Tool Log
+          </span>
+          <button onclick="clearLogs()" class="text-[11px] text-slate-400 hover:text-slate-300">Clear</button>
+        </div>
+        <div id="agentLogs" class="flex-1 p-3 overflow-y-auto font-mono text-[11px] space-y-1.5 text-slate-300">
+          <div class="text-slate-500">[System] scrpcy studio initialized. Ready for research queries.</div>
+        </div>
+      </div>
+
+      <!-- Section B: Manuscript Drafting & Export -->
+      <div class="h-1/2 flex flex-col overflow-hidden">
+        <div class="p-3 border-b border-slate-800 bg-slate-900/80 flex items-center justify-between">
+          <span class="text-xs font-semibold text-slate-200">Export Manuscript (.docx)</span>
+          <span class="text-[10px] font-mono text-slate-400">WordCraft MCP</span>
+        </div>
+        <div class="p-3 flex-1 flex flex-col overflow-hidden space-y-3">
+          <div>
+            <label class="text-[11px] text-slate-400 font-medium block mb-1">Manuscript Title</label>
+            <input id="manuscriptTitle" type="text" value="Literature Review on Deep Learning" class="w-full bg-slate-950 border border-slate-800 text-xs px-2.5 py-1.5 rounded text-slate-200 focus:outline-none focus:border-slate-600">
+          </div>
+
+          <button
+            onclick="exportCurrentChatToWord()"
+            class="w-full bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 font-medium text-xs py-2 rounded flex items-center justify-center gap-1.5 transition-colors"
+          >
+            <span>Draft & Export to Word</span>
+          </button>
+
+          <!-- Generated Documents List -->
+          <div class="flex-1 overflow-y-auto space-y-1.5 border-t border-slate-800/80 pt-2">
+            <span class="text-[10px] font-mono uppercase tracking-wider text-slate-400 block mb-1">Generated Files</span>
+            <div id="manuscriptsList" class="space-y-1">
+              <div class="text-[11px] text-slate-500">No manuscripts generated yet.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </aside>
+
+  </main>
+
+  <!-- Frontend Logic -->
+  <script>
+    let activeDocuments = new Set();
+    let currentEvidence = [];
+    let chatHistory = [];
+
+    // Log to Right-Panel Telemetry Console
+    function addLog(source, message) {
+      const logContainer = document.getElementById('agentLogs');
+      const timeStr = new Date().toTimeString().split(' ')[0];
+      const div = document.createElement('div');
+      div.className = 'leading-relaxed break-words';
+      div.innerHTML = `<span class="text-slate-500">[${timeStr}]</span> <span class="text-sky-400 font-medium">${source}:</span> <span class="text-slate-300">${message}</span>`;
+      logContainer.appendChild(div);
+      logContainer.scrollTop = logContainer.scrollHeight;
+    }
+
+    function clearLogs() {
+      document.getElementById('agentLogs').innerHTML = '';
+      addLog('System', 'Console cleared.');
+    }
+
+    // Tab Switching for Left Panel
+    function switchLeftTab(tab) {
+      const libTab = document.getElementById('tabLibrary');
+      const searchTab = document.getElementById('tabSearch');
+      const libView = document.getElementById('libraryView');
+      const searchView = document.getElementById('searchView');
+
+      if (tab === 'library') {
+        libTab.className = 'px-3 py-1 font-medium rounded bg-slate-800 text-slate-100';
+        searchTab.className = 'px-3 py-1 font-medium rounded text-slate-400 hover:text-slate-200';
+        libView.classList.remove('hidden');
+        searchView.classList.add('hidden');
+      } else {
+        searchTab.className = 'px-3 py-1 font-medium rounded bg-slate-800 text-slate-100';
+        libTab.className = 'px-3 py-1 font-medium rounded text-slate-400 hover:text-slate-200';
+        searchView.classList.remove('hidden');
+        libView.classList.add('hidden');
+      }
+    }
+
+    // Load Ingested Documents
+    async function loadDocuments() {
+      try {
+        const res = await fetch('/api/documents');
+        const docs = await res.json();
+        const container = document.getElementById('documentsList');
+        document.getElementById('docCount').innerText = docs.length;
+
+        if (docs.length === 0) {
+          container.innerHTML = `<div class="text-xs text-slate-500 p-4 text-center border border-dashed border-slate-800 rounded">No PDF documents in vault. Upload one above or search online.</div>`;
+          return;
+        }
+
+        container.innerHTML = '';
+        docs.forEach(doc => {
+          activeDocuments.add(doc.filename);
+          const div = document.createElement('div');
+          div.className = 'p-2.5 bg-slate-950/80 border border-slate-800 rounded-md hover:border-slate-700 transition-colors flex items-start gap-2.5';
+          div.innerHTML = `
+            <input type="checkbox" checked onchange="toggleDoc('${doc.filename}', this.checked)" class="mt-1 cursor-pointer accent-emerald-500">
+            <div class="flex-1 min-w-0">
+              <div class="text-xs font-semibold text-slate-200 truncate" title="${doc.title}">${doc.title}</div>
+              <div class="text-[11px] text-slate-400 truncate">${doc.authors.length ? doc.authors.join(', ') : 'Unknown Author'} &bull; ${doc.year || 'n.d.'}</div>
+              <div class="flex items-center gap-1.5 mt-1">
+                <span class="text-[10px] font-mono text-emerald-400 bg-emerald-950/50 px-1.5 py-0.2 rounded border border-emerald-900/60">${doc.cite_key}</span>
+                <span class="text-[10px] font-mono text-slate-500">${(doc.size_bytes / 1024).toFixed(1)} KB</span>
+              </div>
+            </div>
+          `;
+          container.appendChild(div);
+        });
+      } catch (err) {
+        addLog('Error', `Failed to load documents: ${err.message}`);
+      }
+    }
+
+    function toggleDoc(filename, checked) {
+      if (checked) {
+        activeDocuments.add(filename);
+      } else {
+        activeDocuments.delete(filename);
+      }
+      addLog('Workspace', `Toggled ${filename}: ${checked ? 'active' : 'inactive'}`);
+    }
+
+    // Upload PDF to Vault
+    async function uploadPdf(event) {
+      const file = event.target.files[0];
+      if (!file) return;
+
+      addLog('Ingestion', `Uploading ${file.name}...`);
+      const formData = new FormData();
+      formData.append('file', file);
+
+      try {
+        const res = await fetch('/api/documents/upload', {
+          method: 'POST',
+          body: formData,
+        });
+        if (!res.ok) throw new Error(await res.text());
+        const data = await res.json();
+        addLog('Ingestion', `Extracted metadata for: ${data.metadata.title}`);
+        await loadDocuments();
+      } catch (err) {
+        addLog('Error', `Upload failed: ${err.message}`);
+      }
+    }
+
+    // Search Semantic Scholar & ArXiv
+    async function searchPapers(event) {
+      event.preventDefault();
+      const q = document.getElementById('searchInput').value.trim();
+      if (!q) return;
+
+      addLog('PaperSearcher', `Searching literature for '${q}'...`);
+      const container = document.getElementById('searchResults');
+      container.innerHTML = `<div class="text-xs text-slate-400 p-4 text-center">Querying Semantic Scholar & ArXiv...</div>`;
+
+      try {
+        const res = await fetch(`/api/search?q=${encodeURIComponent(q)}&limit=8`);
+        if (!res.ok) throw new Error(await res.text());
+        const papers = await res.json();
+
+        if (papers.length === 0) {
+          container.innerHTML = `<div class="text-xs text-slate-500 p-4 text-center">No papers found for query.</div>`;
+          return;
+        }
+
+        container.innerHTML = '';
+        papers.forEach(p => {
+          const div = document.createElement('div');
+          div.className = 'p-2.5 bg-slate-950/80 border border-slate-800 rounded-md text-xs space-y-1.5';
+          div.innerHTML = `
+            <div class="font-semibold text-slate-200 leading-snug">${p.title}</div>
+            <div class="text-[11px] text-slate-400">${p.authors.slice(0, 2).join(', ')}${p.authors.length > 2 ? ' et al.' : ''} &bull; ${p.year || 'n.d.'}</div>
+            <div class="flex items-center justify-between pt-1">
+              <span class="text-[10px] font-mono text-sky-400 uppercase">${p.source_api}</span>
+              ${p.has_pdf ? `
+                <button onclick='downloadAndIngestPaper(${JSON.stringify(p).replace(/'/g, "&apos;")})' class="bg-emerald-700/80 hover:bg-emerald-600 text-slate-100 text-[11px] font-medium px-2 py-0.5 rounded transition-colors">
+                  Download PDF
+                </button>
+              ` : '<span class="text-[10px] text-slate-500">Paywalled</span>'}
+            </div>
+          `;
+          container.appendChild(div);
+        });
+        addLog('PaperSearcher', `Found ${papers.length} literature items.`);
+      } catch (err) {
+        addLog('Error', `Search failed: ${err.message}`);
+      }
+    }
+
+    async function downloadAndIngestPaper(paper) {
+      addLog('Downloader', `Fetching open-access PDF for '${paper.title}'...`);
+      try {
+        const res = await fetch('/api/search/download', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(paper),
+        });
+        if (!res.ok) throw new Error(await res.text());
+        const data = await res.json();
+        addLog('Ingestion', `Downloaded and ingested '${data.metadata.title}' into cache.`);
+        await loadDocuments();
+      } catch (err) {
+        addLog('Error', `Download failed: ${err.message}`);
+      }
+    }
+
+    // Submit Chat Query & Stream SSE
+    function handleTextareaKeydown(event) {
+      if (event.key === 'Enter' && !event.shiftKey) {
+        event.preventDefault();
+        submitQuery();
+      }
+    }
+
+    async function submitQuery() {
+      const input = document.getElementById('promptInput');
+      const query = input.value.trim();
+      if (!query) return;
+
+      input.value = '';
+      const sendBtn = document.getElementById('sendBtn');
+      sendBtn.disabled = true;
+      sendBtn.innerText = '...';
+
+      addLog('LLMEngine', `Query initiated: "${query.substring(0, 40)}..."`);
+
+      // Append User Message
+      appendMessage('user', query);
+
+      // Prepare Assistant Message Card
+      const assistantMsgElem = appendMessage('assistant', '');
+
+      const payload = {
+        query: query,
+        skill_name: document.getElementById('skillSelector').value,
+        active_documents: Array.from(activeDocuments),
+      };
+
+      try {
+        const response = await fetch('/api/chat/stream', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(payload),
+        });
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let fullResponse = '';
+
+        while (true) {
+          const {value, done} = await reader.read();
+          if (done) break;
+
+          buffer += decoder.decode(value, {stream: true});
+          const lines = buffer.split('\n\n');
+          buffer = lines.pop();
+
+          for (const block of lines) {
+            const eventMatch = block.match(/^event:\s*(\w+)/m);
+            const dataMatch = block.match(/^data:\s*(.+)$/m);
+            if (!dataMatch) continue;
+
+            const eventType = eventMatch ? eventMatch[1] : 'message';
+            const data = JSON.parse(dataMatch[1]);
+
+            if (eventType === 'evidence') {
+              currentEvidence = data;
+              addLog('EvidenceSynthesizer', `Selected ${data.length} relevant evidence passages.`);
+              showEvidenceDrawer(data);
+            } else if (eventType === 'token') {
+              fullResponse += data.delta;
+              updateAssistantMessage(assistantMsgElem, fullResponse);
+            } else if (eventType === 'done') {
+              addLog('LLMEngine', 'Streaming synthesis completed.');
+            } else if (eventType === 'error') {
+              addLog('Error', data.error);
+            }
+          }
+        }
+
+        chatHistory.push({query, answer: fullResponse, evidence: currentEvidence});
+      } catch (err) {
+        addLog('Error', `Chat failed: ${err.message}`);
+        updateAssistantMessage(assistantMsgElem, `*Error during generation:* ${err.message}`);
+      } finally {
+        sendBtn.disabled = false;
+        sendBtn.innerText = 'Ask';
+      }
+    }
+
+    function appendMessage(role, text) {
+      const container = document.getElementById('chatMessages');
+      const div = document.createElement('div');
+      div.className = role === 'user' ? 'flex justify-end' : 'flex justify-start';
+
+      const bubble = document.createElement('div');
+      bubble.className = role === 'user'
+        ? 'bg-slate-800 border border-slate-700 text-slate-100 rounded-lg px-4 py-3 max-w-xl text-sm leading-relaxed'
+        : 'bg-slate-900/90 border border-slate-800 text-slate-200 rounded-lg px-4 py-3.5 max-w-2xl text-sm leading-relaxed';
+
+      bubble.innerHTML = formatContent(text);
+      div.appendChild(bubble);
+      container.appendChild(div);
+
+      const scrollArea = document.getElementById('chatScrollArea');
+      scrollArea.scrollTop = scrollArea.scrollHeight;
+      return bubble;
+    }
+
+    function updateAssistantMessage(elem, text) {
+      elem.innerHTML = formatContent(text);
+      const scrollArea = document.getElementById('chatScrollArea');
+      scrollArea.scrollTop = scrollArea.scrollHeight;
+    }
+
+    function formatContent(text) {
+      // Highlight inline citations like [Vaswani2017] or (Vaswani et al., 2017)
+      let formatted = text
+        .replace(/\[([A-Za-z0-9_\-\.]+,\s*\d{4})\]/g, '<span class="citation-tag">[$1]</span>')
+        .replace(/\(([A-Z][a-zA-Z\s&]+(?:et al\.)?,\s*\d{4})\)/g, '<span class="citation-tag">($1)</span>')
+        .replace(/\n\n/g, '<br><br>')
+        .replace(/\n/g, '<br>');
+      return formatted;
+    }
+
+    function showEvidenceDrawer(evidence) {
+      if (!evidence.length) return;
+      const drawer = document.getElementById('evidenceDrawer');
+      const list = document.getElementById('evidenceList');
+      list.innerHTML = '';
+
+      evidence.forEach(e => {
+        const item = document.createElement('div');
+        item.className = 'p-1.5 bg-slate-950/80 rounded border border-slate-800 text-[11px]';
+        item.innerHTML = `<span class="text-emerald-400 font-bold">[${e.source}]</span> <span class="text-slate-400">(score: ${e.score}):</span> ${e.snippet}`;
+        list.appendChild(item);
+      });
+      drawer.classList.remove('hidden');
+    }
+
+    function toggleEvidenceDrawer() {
+      document.getElementById('evidenceDrawer').classList.toggle('hidden');
+    }
+
+    // Export Chat History to Word via MCP Client
+    async function exportCurrentChatToWord() {
+      if (!chatHistory.length) {
+        alert('No conversation content to export. Ask a question first!');
+        return;
+      }
+
+      const title = document.getElementById('manuscriptTitle').value.trim() || 'Academic Literature Review';
+      const style = document.getElementById('styleSelector').value;
+
+      addLog('WordCraft', `Exporting manuscript "${title}" using ${style.toUpperCase()} style...`);
+
+      const sections = chatHistory.map((item, idx) => ({
+        heading: `${idx + 1}. Research Query: ${item.query}`,
+        level: 1,
+        content: item.answer,
+        citations: [],
+      }));
+
+      // Gather distinct references from active documents
+      const references = [];
+      const res = await fetch('/api/documents');
+      const docs = await res.json();
+      docs.forEach(d => {
+        if (activeDocuments.has(d.filename)) {
+          references.push({
+            title: d.title,
+            authors: d.authors,
+            year: d.year,
+            doi: d.doi,
+            cite_key: d.cite_key,
+          });
+        }
+      });
+
+      const payload = {
+        title: title,
+        sections: sections,
+        references: references,
+        style: style,
+      };
+
+      try {
+        const response = await fetch('/api/document/generate', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(payload),
+        });
+        if (!response.ok) throw new Error(await response.text());
+        const data = await response.json();
+        addLog('WordCraft', `Manuscript created: ${data.filename}`);
+        await loadManuscripts();
+      } catch (err) {
+        addLog('Error', `Export failed: ${err.message}`);
+      }
+    }
+
+    async function loadManuscripts() {
+      try {
+        const res = await fetch('/api/manuscripts');
+        const files = await res.json();
+        const container = document.getElementById('manuscriptsList');
+
+        if (!files.length) {
+          container.innerHTML = `<div class="text-[11px] text-slate-500">No manuscripts generated yet.</div>`;
+          return;
+        }
+
+        container.innerHTML = '';
+        files.forEach(f => {
+          const div = document.createElement('div');
+          div.className = 'flex items-center justify-between p-1.5 bg-slate-950/80 border border-slate-800 rounded text-xs';
+          div.innerHTML = `
+            <span class="truncate font-mono text-[11px] text-slate-300 max-w-[170px]" title="${f.filename}">${f.filename}</span>
+            <a href="${f.download_url}" class="text-emerald-400 hover:text-emerald-300 text-[11px] font-medium" download>Download</a>
+          `;
+          container.appendChild(div);
+        });
+      } catch (err) {
+        console.error(err);
+      }
+    }
+
+    // App Initialization
+    window.addEventListener('DOMContentLoaded', async () => {
+      addLog('System', 'Connected to backend server.');
+      await loadDocuments();
+      await loadManuscripts();
+    });
+  </script>
+</body>
+</html>
