@@ -545,7 +545,7 @@ class CLIStudio:
                 self.handle_vault_interaction(arg)
             else:
                 self.sub_mode = "vault"
-                self.render_vault_view()
+                self.render_vault_landing()
         elif cmd in ("processing", "proc", "p"):
             if arg:
                 self.handle_processing_interaction(arg)
@@ -630,7 +630,8 @@ class CLIStudio:
             if args:
                 self.handle_vault_interaction(args)
             else:
-                self.cmd_vault()
+                self.sub_mode = "vault"
+                self.render_vault_landing()
         elif cmd in ("/processing", "/proc"):
             if args:
                 self.handle_processing_interaction(args)
@@ -961,13 +962,73 @@ class CLIStudio:
     # VAULT SUB-MODE (skripsi/vault>)
     # =========================================================================
 
+    def render_vault_landing(self) -> None:
+        """Render concise status overview of vault and detailed command guide."""
+        if not self.vault_manager or not self.workspace:
+            return
+
+        active_items = self.vault_manager.list_active_files()
+        cached_count = sum(1 for it in active_items if it.is_cached)
+        needs_reload = len(active_items) - cached_count
+        archived_count = len(self.vault_manager.list_archived_files())
+        vault_path = self.workspace.root_dir / "vault"
+
+        panel_content = (
+            f"[bold bright_white]STATUS VAULT :[/bold bright_white] [bold green]● AKTIF[/bold green]\n"
+            f"[bold bright_white]FOLDER VAULT :[/bold bright_white] [cyan]{vault_path}[/cyan]\n"
+            f"[bold bright_white]TOTAL BERKAS :[/bold bright_white] [bold green]{len(active_items)} berkas aktif[/bold green] "
+            f"([bold cyan]{cached_count}[/bold cyan] terindeks Markdown, "
+            f"[yellow]{needs_reload}[/yellow] perlu reload)\n"
+            f"[bold bright_white]DIARSIPKAN   :[/bold bright_white] {archived_count} berkas di .archive/ (tidak aktif di konteks AI)\n"
+            f"[bold bright_white]FORMAT BISA  :[/bold bright_white] [dim]PDF, DOCX, PPTX, XLSX, TXT, HTML, MD (didukung Microsoft MarkItDown)[/dim]"
+        )
+
+        self.console.print()
+        self.console.print(Panel(
+            panel_content,
+            title=f"[bold cyan] Vault Resources [{self.current_project.name if self.current_project else 'Active'}] [/bold cyan]",
+            border_style="cyan",
+        ))
+        self.console.print()
+
+        self.console.print("[bold bright_white]Perintah Vault & Panduan Penggunaan:[/bold bright_white]")
+        table = Table(box=None, padding=(0, 2), show_header=False)
+        table.add_column("Command", style="bold green", no_wrap=True)
+        table.add_column("Args", style="yellow", no_wrap=True)
+        table.add_column("Description", style="white")
+
+        commands = [
+            ("list", "", "Tampilkan seluruh daftar berkas di vault & status markdown (alias: ls)"),
+            ("reload", "", "Pindai folder & konversi semua file baru/diedit ke Markdown (MarkItDown)"),
+            ("add", "<path>", "Salin dokumen dari komputer ke vault dan langsung dikonversi"),
+            ("findpaper", r"\[topik]", "Cari, kurasi & unduh paper akademis (OpenAlex & Semantic Scholar)"),
+            ("gdrive", r"\[link|id]", "Unduh file Google Drive langsung ke vault via link publik atau OAuth"),
+            ("remove", r"<# | nama>", "Arsipkan berkas dari project aktif ke .archive/ (tanpa hapus file fisik)"),
+            ("archived", "", "Lihat daftar berkas yang sedang diarsipkan di .archive/"),
+            ("restore", r"<# | nama>", "Kembalikan berkas arsip ke vault aktif"),
+            ("view", r"<# | stem>", "Lihat pratinjau teks Markdown hasil konversi di terminal"),
+            ("clear", "", "Bersihkan tampilan layar terminal"),
+            ("back", "", "Kembali ke prompt project utama (skripsi>)"),
+        ]
+
+        for cmd, args, desc in commands:
+            table.add_row(cmd, args, f"-> {desc}")
+
+        self.console.print(table)
+        self.console.print("\n[dim]Tip: Ketik 'list' untuk melihat rincian setiap berkas, atau gunakan perintah di atas untuk beraksi.[/dim]\n")
+
     def render_vault_view(self) -> None:
         """Render active vault items table and usage hint."""
         if not self.vault_manager:
             return
         items = self.vault_manager.list_active_files()
+        if not items:
+            self.console.print("\n[dim]Vault masih kosong (0 berkas aktif).[/dim]")
+            self.console.print("[dim]Gunakan 'add <path>', 'findpaper <topik>', atau 'gdrive' untuk menambahkan berkas.[/dim]\n")
+            return
+
         table = Table(
-            title=f"Vault Resources [{self.current_project.name if self.current_project else 'Vault'}]",
+            title=f"Daftar Berkas Vault [{self.current_project.name if self.current_project else 'Vault'}]",
             title_style="bold cyan",
             border_style="cyan",
             header_style="bold bright_cyan",
@@ -994,35 +1055,12 @@ class CLIStudio:
         archived_count = len(self.vault_manager.list_archived_files())
         archive_hint = f" ({archived_count} files in .archive/)" if archived_count else ""
         self.console.print(
-            f"[dim]Commands: [bold cyan]list[/bold cyan], [bold cyan]reload[/bold cyan], "
-            f"[bold cyan]add <path>[/bold cyan], [bold cyan]findpaper [query][/bold cyan], "
-            f"[bold cyan]gdrive[/bold cyan], [bold cyan]remove <#>[/bold cyan], "
-            f"[bold cyan]archived[/bold cyan], [bold cyan]restore <#>[/bold cyan], "
-            f"[bold cyan]back[/bold cyan]{archive_hint}[/dim]\n"
+            f"[dim]Ketik 'view <#>' untuk baca isi markdown, 'remove <#>' untuk arsip, atau 'back' untuk kembali{archive_hint}.[/dim]\n"
         )
 
     def print_vault_help(self) -> None:
         """Render instructions for Vault sub-mode."""
-        self.console.print("[bold bright_white]Vault Sub-Mode Commands:[/bold bright_white]")
-        table = Table(box=None, padding=(0, 2), show_header=False)
-        table.add_column("Command", style="bold green")
-        table.add_column("Args", style="yellow")
-        table.add_column("Description", style="white")
-
-        table.add_row("list", "", "List active files in the vault (alias: ls)")
-        table.add_row("reload", "", "Rescan vault and convert all new/modified files to Markdown with MarkItDown")
-        table.add_row("add", "<path>", "Copy external document/paper into vault and convert")
-        table.add_row("findpaper", "[topic]", "Search, scout, and curate papers on OpenAlex/Semantic Scholar")
-        table.add_row("gdrive", "[link|id]", "Import document directly from Google Drive or via OAuth")
-        table.add_row("remove", "<# | name>", "Soft-remove resource from active project (moves to .archive/)")
-        table.add_row("archived", "", "List soft-removed files stored in .archive/")
-        table.add_row("restore", "<# | name>", "Restore archived resource back to active vault")
-        table.add_row("view", "<# | stem>", "Inspect converted markdown content")
-        table.add_row("clear", "", "Clear terminal screen")
-        table.add_row("back", "", "Return to project root prompt")
-
-        self.console.print(table)
-        self.console.print()
+        self.render_vault_landing()
 
     def handle_vault_interaction(self, raw_input: str) -> None:
         """Route input when inside vault sub-mode (skripsi/vault>)."""
