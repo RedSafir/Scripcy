@@ -133,13 +133,15 @@ class CLIStudio:
         """Main interaction loop handling Dashboard and Project modes."""
         self.print_banner()
 
-        if not self.current_project:
+        if self.current_project:
+            self.print_project_banner()
+        else:
             self.print_dashboard_help()
 
         while True:
             try:
                 if self.current_project:
-                    prompt = f"[bold green][{self.current_project.name}][/bold green] [bold cyan]❯[/bold cyan] "
+                    prompt = f"[bold green][scrpcy:project / {self.current_project.name}][/bold green] [bold cyan]❯[/bold cyan] "
                 else:
                     prompt = "[bold cyan][scrpcy:dashboard][/bold cyan] [bold cyan]❯[/bold cyan] "
 
@@ -416,7 +418,7 @@ class CLIStudio:
         else:
             self.console.print(f"[bold red][x] Failed to remove project '{project_info.name}'.[/bold red]\n")
 
-    def open_project(self, target: ProjectInfo | str | Path) -> None:
+    def open_project(self, target: ProjectInfo | str | Path, show_banner: bool = True) -> None:
         """Switch studio context to a designated master project."""
         if isinstance(target, ProjectInfo):
             proj_info = target
@@ -426,6 +428,39 @@ class CLIStudio:
         self.current_project = proj_info
         ws = WorkspaceManager(root_dir=proj_info.resolved_path)
         self._bind_workspace(ws)
+        if show_banner:
+            self.print_project_banner()
+
+    def print_project_banner(self) -> None:
+        """Render distinct visual status panel confirming active Project Workspace mode."""
+        if not self.current_project or not self.workspace:
+            return
+
+        cached_count = len(self._get_cached_stems())
+        active_count = len(self.active_documents)
+        model_name = self.config.default_model
+
+        panel_content = (
+            f"[bold bright_white]MODE       :[/bold bright_white] [bold green]● PROJECT WORKSPACE (Active)[/bold green]\n"
+            f"[bold bright_white]PROJECT    :[/bold bright_white] [bold cyan]{self.current_project.name}[/bold cyan]\n"
+            f"[bold bright_white]MASTER PATH:[/bold bright_white] {self.current_project.path}\n"
+            f"[bold bright_white]VAULT      :[/bold bright_white] {cached_count} indexed paper(s) ({active_count} active in citation context)\n"
+            f"[bold bright_white]LLM MODEL  :[/bold bright_white] {model_name}\n\n"
+            f"[bold bright_yellow]Quick Commands:[/bold bright_yellow]\n"
+            f"  • Ketik pertanyaan riset Anda langsung di prompt untuk sintesis AI\n"
+            f"  • [bold cyan]/scout[/bold cyan]     -> Cari paper baru via OpenAlex/S2 & unduh ke vault\n"
+            f"  • [bold cyan]/vault[/bold cyan]     -> Lihat koleksi paper di vault & toggle status aktif (/active)\n"
+            f"  • [bold cyan]/help[/bold cyan]      -> Tampilkan semua perintah project\n"
+            f"  • [bold yellow]/back[/bold yellow]      -> Kembali ke Dashboard (tutup sesi project)"
+        )
+
+        self.console.print()
+        self.console.print(Panel(
+            panel_content,
+            title=f"[bold green] PROJECT: {self.current_project.name} [/bold green]",
+            border_style="green",
+        ))
+        self.console.print()
 
     # =========================================================================
     # PROJECT MODE HANDLERS
@@ -680,7 +715,7 @@ class CLIStudio:
         self.engine = None
         self.scout = None
         self.active_documents.clear()
-        self.console.print(f"[yellow][←] Closed project '{proj_name}'. Returned to Dashboard.[/yellow]\n")
+        self.console.print(f"[yellow][←] Closed project '{proj_name}'. Returned to [bold cyan]Dashboard Mode[/bold cyan].[/yellow]\n")
         self.print_dashboard_help()
 
     def cmd_delete_project(self, arg: str = "") -> None:
