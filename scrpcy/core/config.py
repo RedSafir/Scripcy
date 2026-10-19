@@ -11,6 +11,12 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from scrpcy.exceptions import ConfigError
 
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
 DEFAULT_CONFIG_ENV = "SCRPCY_CONFIG"
 DEFAULT_CONFIG_PATH = Path.home() / ".scrpcy" / "config.json"
 
