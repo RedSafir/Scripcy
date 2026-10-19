@@ -627,7 +627,7 @@ class TestNewProjectWizardFlow:
         cli_studio: CLIStudio,
     ) -> None:
         executed_cmds: list[str] = []
-        with patch.object(cli_studio, "handle_project_interaction", side_effect=lambda cmd: executed_cmds.append(cmd)):
+        with patch.object(cli_studio, "handle_project_command", side_effect=lambda cmd: executed_cmds.append(cmd)):
             with patch.object(cli_studio.console, "input", side_effect=["y"]):
                 response = (
                     "Berdasarkan analisis, kita perlu paper tambahan:\n"
@@ -639,7 +639,7 @@ class TestNewProjectWizardFlow:
                 cli_studio._handle_suggested_actions(response)
 
         assert len(executed_cmds) == 1
-        assert executed_cmds[0] == "findpaper machine learning 2023"
+        assert executed_cmds[0] == "/findpaper machine learning 2023"
         output = cli_studio.console.file.getvalue()
         assert "Aksi Scrpcy Disarankan AI" in output
         assert "Menjalankan aksi" in output
@@ -649,7 +649,7 @@ class TestNewProjectWizardFlow:
         cli_studio: CLIStudio,
     ) -> None:
         executed_cmds: list[str] = []
-        with patch.object(cli_studio, "handle_project_interaction", side_effect=lambda cmd: executed_cmds.append(cmd)):
+        with patch.object(cli_studio, "handle_project_command", side_effect=lambda cmd: executed_cmds.append(cmd)):
             with patch.object(cli_studio.console, "input", side_effect=["n"]):
                 response = (
                     "Tinjauan selesai:\n"
@@ -663,3 +663,16 @@ class TestNewProjectWizardFlow:
         output = cli_studio.console.file.getvalue()
         assert "Aksi Scrpcy Disarankan AI" in output
         assert "Aksi dilewati" in output
+
+    def test_chat_submode_direct_project_commands_never_sent_to_llm(
+        self,
+        cli_studio: CLIStudio,
+    ) -> None:
+        cli_studio.sub_mode = "chat"
+        executed_args: list[str] = []
+        with patch.object(cli_studio, "cmd_findpaper", side_effect=lambda arg: executed_args.append(arg)):
+            with patch.object(cli_studio, "handle_chat") as mock_chat:
+                cli_studio.handle_chat_submode_interaction("findpaper deep learning 2024")
+                assert not mock_chat.called
+                assert len(executed_args) == 1
+                assert executed_args[0] == "deep learning 2024"

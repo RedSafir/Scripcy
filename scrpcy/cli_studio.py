@@ -1661,6 +1661,44 @@ class CLIStudio:
             self.handle_project_command(clean)
             return
 
+        # Check for direct project commands entered without leading slash
+        parts = clean.split(maxsplit=1)
+        first_word = parts[0].lower().lstrip("/")
+        arg_word = parts[1].strip() if len(parts) > 1 else ""
+
+        if first_word in ("findpaper", "scout", "paper-scout"):
+            self.cmd_findpaper(arg_word)
+            return
+        elif first_word in ("docx",):
+            self.cmd_docx(arg_word)
+            return
+        elif first_word in ("vault", "docs"):
+            if arg_word:
+                self.handle_vault_interaction(arg_word)
+            else:
+                self.sub_mode = "vault"
+                self.render_vault_landing()
+            return
+        elif first_word in ("processing", "proc"):
+            if arg_word:
+                self.handle_processing_interaction(arg_word)
+            else:
+                self.sub_mode = "processing"
+                self.render_processing_view()
+            return
+        elif first_word == "gdrive":
+            self.cmd_vault_gdrive(arg_word)
+            return
+        elif first_word in ("models", "model", "config"):
+            self.cmd_models(arg_word)
+            return
+        elif first_word in ("settings", "setting", "style"):
+            self.cmd_settings(arg_word)
+            return
+        elif first_word in ("status", "info"):
+            self.cmd_project_status()
+            return
+
         # It's a conversation message!
         self.handle_chat(clean)
 
@@ -2683,6 +2721,7 @@ class CLIStudio:
 
             if confirm in ("", "y", "yes", "ya", "ok"):
                 self.console.print(f"[bold cyan]❯ Menjalankan aksi:[/bold cyan] [bold green]{action}[/bold green]\n")
-                self.handle_project_interaction(action)
+                cmd_to_run = action if action.startswith("/") else f"/{action}"
+                self.handle_project_command(cmd_to_run)
             else:
                 self.console.print("[dim]Aksi dilewati.[/dim]\n")
