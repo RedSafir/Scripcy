@@ -662,7 +662,7 @@ class TestNewProjectWizardFlow:
         assert len(executed_cmds) == 0
         output = cli_studio.console.file.getvalue()
         assert "Aksi Scrpcy Disarankan AI" in output
-        assert "Aksi dilewati" in output
+        assert "dilewati" in output
 
     def test_chat_submode_direct_project_commands_never_sent_to_llm(
         self,
@@ -676,3 +676,15 @@ class TestNewProjectWizardFlow:
                 assert not mock_chat.called
                 assert len(executed_args) == 1
                 assert executed_args[0] == "deep learning 2024"
+
+    def test_cmd_findpaper_dispatches_background_scout_task(
+        self,
+        cli_studio: CLIStudio,
+    ) -> None:
+        cli_studio.cmd_findpaper("quantum machine learning 2024")
+        output = cli_studio.console.file.getvalue()
+        assert "Background Literature Scout Dispatched" in output
+        assert "quantum machine learning 2024" in output
+        tasks = cli_studio.task_manager.list_tasks()
+        assert len(tasks) > 0
+        assert tasks[0].task_type == "scout"

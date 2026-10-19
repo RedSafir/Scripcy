@@ -390,3 +390,74 @@ def interactive_skill_selector(
                 cursor_idx = 0
     finally:
         c.show_cursor(True)
+
+
+def interactive_action_confirm(action_text: str, console: Console | None = None) -> bool:
+    """Prompt the user with an Antigravity-style UP/DOWN arrow selector for action execution."""
+    c = console or Console()
+
+    # If non-interactive (e.g. redirected stdin, pipes, or unit tests)
+    if not sys.stdin.isatty():
+        c.print(f"[bold cyan]✦ Aksi Scrpcy Disarankan AI:[/bold cyan] [bold green]{action_text}[/bold green]")
+        try:
+            line = c.input("  [bold bright_white]Jalankan aksi ini sekarang?[/bold bright_white] ").strip().lower()
+            return line in ("", "y", "yes", "ya", "ok", "1")
+        except Exception:
+            return False
+
+    options = [
+        ("Ya, jalankan di background", True),
+        ("Tidak, lewati aksi ini", False),
+    ]
+    cursor_idx = 0
+
+    c.show_cursor(False)
+    try:
+        while True:
+            lines: list[Text] = []
+            header = Text("✦ Aksi Scrpcy Disarankan AI: ", style="bold cyan")
+            header.append(action_text, style="bold green")
+            lines.append(header)
+            lines.append(Text(""))
+
+            for idx, (label, val) in enumerate(options):
+                is_cursor = idx == cursor_idx
+                item_text = Text()
+                if is_cursor:
+                    item_text.append("  > ", style="bold cyan")
+                    item_text.append(f"[{'x' if val else ' '}] ", style="bold green" if val else "bold red")
+                    item_text.append(label, style="bold bright_white")
+                else:
+                    item_text.append("    ", style="dim")
+                    item_text.append(f"[{' ' if val else ' '}] ", style="dim")
+                    item_text.append(label, style="dim white")
+                lines.append(item_text)
+
+            lines.append(Text(""))
+            footer = Text("  Navigasi: ", style="dim")
+            footer.append("↑/↓", style="bold cyan")
+            footer.append(" Pilih  ", style="dim")
+            footer.append("Enter", style="bold green")
+            footer.append(" Konfirmasi  ", style="dim")
+            footer.append("Esc/n", style="bold yellow")
+            footer.append(" Batal", style="dim")
+            lines.append(footer)
+
+            c.clear()
+            for line in lines:
+                c.print(line)
+
+            key = _read_key()
+            if key in ("ESC", "n", "N", "q", "Q"):
+                c.clear()
+                return False
+            elif key == "ENTER":
+                c.clear()
+                return options[cursor_idx][1]
+            elif key in ("UP", "DOWN", "LEFT", "RIGHT", "TAB"):
+                cursor_idx = 1 - cursor_idx
+            elif key in ("y", "Y"):
+                c.clear()
+                return True
+    finally:
+        c.show_cursor(True)

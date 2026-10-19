@@ -45,6 +45,7 @@ if sys.platform == "win32":
 
 from scrpcy.ui.interactive import (
     _format_model_display_name,
+    interactive_action_confirm,
     interactive_model_selector,
     interactive_skill_selector,
 )
@@ -910,6 +911,69 @@ class CLIStudio:
         self.task_manager.log(task_id, f"Finished: {summary}")
         return summary
 
+    def _background_scout_worker(self, task_id: str, query: str, max_download: int = 3) -> str:
+        """Background agent worker that formulates criteria, searches multi-source, ranks, and downloads into vault."""
+        self.task_manager.log(task_id, f"Formulating query strategy for: '{query}'")
+        try:
+            query_spec = self.scout.extract_search_criteria(query, engine=self.engine)
+        except Exception as exc:
+            self.task_manager.log(task_id, f"[!] Criteria formulation fallback: {exc}")
+            from scrpcy.core.scout import ScoutQuery
+            query_spec = ScoutQuery(keywords=query, summary=query)
+
+        self.task_manager.log(task_id, f"Scraping OpenAlex & Semantic Scholar (keywords: '{query_spec.keywords}')...")
+
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            candidates = loop.run_until_complete(self.scout.search_multi_source(query_spec, limit=15))
+        except Exception as exc:
+            self.task_manager.log(task_id, f"[x] Multi-source search error: {exc}")
+            raise
+        finally:
+            loop.close()
+
+        if not candidates:
+            msg = f"No scholarly candidates found for '{query}'."
+            self.task_manager.log(task_id, msg)
+            return msg
+
+        self.task_manager.log(task_id, f"Curating & ranking {len(candidates)} candidates against research intent...")
+        try:
+            curated = self.scout.curate_and_rank(query, candidates, engine=self.engine, max_output=8)
+        except Exception:
+            curated = candidates[:8]
+
+        self.last_scout_results = curated
+
+        oa_papers = [p for p in curated if p.has_pdf and p.pdf_url][:max_download]
+        if not oa_papers:
+            msg = f"Found {len(curated)} candidates, but none had direct open-access PDF links."
+            self.task_manager.log(task_id, msg)
+            return msg
+
+        self.task_manager.log(task_id, f"Downloading top {len(oa_papers)} open-access paper(s) into vault...")
+        downloaded = 0
+
+        for idx, paper in enumerate(oa_papers, 1):
+            self.task_manager.log(task_id, f"[{idx}/{len(oa_papers)}] Downloading '{paper.title[:45]}...'")
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                dl_path = loop.run_until_complete(self.scout.download_scout_paper(paper))
+                self.active_documents.add(dl_path.stem)
+                self._sync_vault_cache()
+                self.task_manager.log(task_id, f"[✓] Added #{idx} to vault & indexed: {paper.title[:50]}")
+                downloaded += 1
+            except Exception as exc:
+                self.task_manager.log(task_id, f"[x] Error downloading #{idx} '{paper.title[:35]}': {exc}")
+            finally:
+                loop.close()
+
+        summary = f"Scout & Ingest finished: Added {downloaded}/{len(oa_papers)} paper(s) to vault."
+        self.task_manager.log(task_id, summary)
+        return summary
+
     def cmd_return_dashboard(self) -> None:
         """Disconnect from active project and return to dashboard."""
         proj_name = self.current_project.name if self.current_project else "project"
@@ -1029,7 +1093,7 @@ class CLIStudio:
             self.console.print(f"[bold red][x] Failed to rename project:[/bold red] {exc}\n")
 
     def cmd_findpaper(self, query: str = "") -> None:
-        """Search and scout academic literature on OpenAlex and Semantic Scholar."""
+        """Search and scout academic literature on OpenAlex and Semantic Scholar in background."""
         clean_query = query.strip()
         if not clean_query:
             self.cmd_scout()
@@ -1039,25 +1103,26 @@ class CLIStudio:
             self.console.print("[red][x] Please open a project first.[/red]\n")
             return
 
-        self.console.print(f"[cyan]Searching literature for:[/cyan] [bold bright_white]{clean_query}[/bold bright_white]")
-        with self.console.status("[cyan]Retrieving papers from OpenAlex & Semantic Scholar...[/cyan]"):
-            try:
-                query_spec = self.scout.extract_search_criteria(clean_query, engine=self.engine)
-                candidates = asyncio.run(self.scout.search_multi_source(query_spec, limit=15))
-                if candidates:
-                    curated = self.scout.curate_and_rank(clean_query, candidates, engine=self.engine, max_output=8)
-                else:
-                    curated = []
-            except Exception as exc:
-                self.console.print(f"[bold red][x] Search failed:[/bold red] {exc}\n")
-                return
-
-        if not curated:
-            self.console.print(f"[yellow]No academic papers found for '{clean_query}'.[/yellow]\n")
-            return
-
-        self.last_scout_results = curated
-        self.cmd_search(clean_query)
+        task = self.task_manager.submit(
+            name=f"Literature Scout & Ingest: {clean_query[:40]}",
+            task_type="scout",
+            target_fn=self._background_scout_worker,
+            query=clean_query,
+            max_download=3,
+        )
+        self.console.print()
+        self.console.print(
+            f"[bold green][✓] Background Literature Scout Dispatched:[/bold green] [bold cyan]{task.id}[/bold cyan]"
+        )
+        self.console.print(
+            f" [dim]• Topik pencarian : '{clean_query}'[/dim]"
+        )
+        self.console.print(
+            " [dim]• Proses pencarian di OpenAlex/Semantic Scholar dan download PDF berjalan di background.[/dim]"
+        )
+        self.console.print(
+            " [dim]• Ketik [bold cyan]processing[/bold cyan] atau [bold cyan]proc[/bold cyan] untuk memantau progres & log real-time.[/dim]\n"
+        )
 
     # =========================================================================
     # VAULT SUB-MODE (skripsi/vault>)
@@ -2706,22 +2771,17 @@ class CLIStudio:
         if not actions:
             return
 
-        for action in actions:
-            self.console.print()
-            self.console.print(
-                f"[bold cyan]✦ Aksi Scrpcy Disarankan AI:[/bold cyan] [bold green]{action}[/bold green]"
-            )
-            try:
-                confirm = self.console.input(
-                    "  [bold bright_white]Jalankan aksi ini sekarang?[/bold bright_white] [dim](Tekan Enter/y untuk eksekusi, n untuk lewati):[/dim] "
-                ).strip().lower()
-            except (KeyboardInterrupt, EOFError):
-                self.console.print()
-                break
+        # Deduplicate while preserving order
+        unique_actions: list[str] = []
+        for a in actions:
+            if a not in unique_actions:
+                unique_actions.append(a)
 
-            if confirm in ("", "y", "yes", "ya", "ok"):
-                self.console.print(f"[bold cyan]❯ Menjalankan aksi:[/bold cyan] [bold green]{action}[/bold green]\n")
+        for action in unique_actions:
+            confirmed = interactive_action_confirm(action, console=self.console)
+            if confirmed:
+                self.console.print(f"[bold cyan]❯ Menjalankan aksi di background:[/bold cyan] [bold green]{action}[/bold green]\n")
                 cmd_to_run = action if action.startswith("/") else f"/{action}"
                 self.handle_project_command(cmd_to_run)
             else:
-                self.console.print("[dim]Aksi dilewati.[/dim]\n")
+                self.console.print(f"[dim]Aksi '{action}' dilewati.[/dim]\n")
