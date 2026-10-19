@@ -24,6 +24,7 @@ from scrpcy.core.mcp_client import WordCraftClient
 from scrpcy.core.models import DocumentMetadata, ParsedDocument
 from scrpcy.core.parser import DocumentParser
 from scrpcy.core.project import ProjectInfo, ProjectManager
+from scrpcy.core.scout import LiteratureScout, ScoutQuery, ScoutResult
 from scrpcy.core.search import PaperSearcher, SearchResult
 from scrpcy.core.skills import SkillsLoader
 from scrpcy.core.workspace import WorkspaceManager
@@ -74,6 +75,7 @@ class CLIStudio:
         self.active_skill_name = "academic_writer"
         self.active_documents: set[str] = set()
         self.last_search_results: list[SearchResult] = []
+        self.last_scout_results: list[ScoutResult] = []
         self.conversation_history: list[dict[str, str]] = []
         self._web_server_thread: threading.Thread | None = None
 
@@ -82,6 +84,7 @@ class CLIStudio:
         self.parser: DocumentParser | None = None
         self.wordcraft: WordCraftClient | None = None
         self.engine: LLMEngine | None = None
+        self.scout: LiteratureScout | None = None
 
         # If a workspace was explicitly provided, bind it
         if workspace:
@@ -104,6 +107,7 @@ class CLIStudio:
             config=self.config,
             skills_loader=self.skills_loader,
         )
+        self.scout = LiteratureScout(workspace=self.workspace, parser=self.parser)
         self.active_documents.clear()
         self._sync_vault_cache()
 
@@ -348,6 +352,7 @@ class CLIStudio:
         table.add_column("Description", style="white")
 
         commands = [
+            ("/scout", "", "Natural-language AI literature scout (OpenAlex + Semantic Scholar)"),
             ("/vault", "", "List papers in this project's vault (alias: /docs, /ls)"),
             ("/active", "<#|stem|all|clear>", "Toggle papers in/out of citation context"),
             ("/parse", "<path.pdf>", "Ingest a local PDF into this project's vault"),
@@ -380,6 +385,8 @@ class CLIStudio:
 
         if cmd in ("/help", "/?"):
             self.print_project_help()
+        elif cmd in ("/scout", "/paper-scout"):
+            self.cmd_scout()
         elif cmd in ("/dashboard", "/close", "/back"):
             self.cmd_return_dashboard()
         elif cmd in ("/vault", "/docs", "/ls"):
@@ -414,6 +421,150 @@ class CLIStudio:
             self.cmd_web(args)
         else:
             self.console.print(f"[bold red]Unknown project command:[/bold red] {cmd}. Type [bold cyan]/help[/bold cyan] for list of commands.\n")
+
+    def cmd_scout(self) -> None:
+        """Interactive natural-language literature scout workflow with OpenAlex."""
+        if not self.workspace or not self.scout:
+            self.console.print("[red][x] Please open a project first to use /scout.[/red]\n")
+            return
+
+        self.console.print()
+        self.console.print(Panel(
+            "[bold bright_white]Intelligent Literature Scout Pipeline[/bold bright_white]\n\n"
+            "Tuliskan kebutuhan riset / jurnal Anda secara bebas (bahasa alami).\n"
+            "Sistem akan merumuskan parameter pencarian, menarik paper nyata via [bold cyan]OpenAlex (pyalex)[/bold cyan] "
+            "dan Semantic Scholar, lalu mengkurasi paper yang paling relevan untuk project Anda.\n\n"
+            "[dim]Contoh: 'Saya butuh paper tentang kesehatan mental remaja tahun 2018-2020 yang open access'[/dim]",
+            title="[bold cyan]Literature Scout[/bold cyan]",
+            border_style="cyan",
+        ))
+
+        try:
+            user_input = self.console.input("[bold cyan]scout[/bold cyan] [bold green]❯[/bold green] ").strip()
+        except (KeyboardInterrupt, EOFError):
+            self.console.print("\n[yellow]Scout canceled.[/yellow]\n")
+            return
+
+        if not user_input or user_input.lower() in ("q", "quit", "cancel", "exit"):
+            self.console.print("[yellow]Scout canceled.[/yellow]\n")
+            return
+
+        # Phase 1: Parameter Formulation
+        with self.console.status("[cyan]Formulating academic query strategy from your description...[/cyan]"):
+            query_spec = self.scout.extract_search_criteria(user_input, engine=self.engine)
+
+        self.console.print()
+        self.console.print(Panel(
+            f"[bold cyan]Keywords   [/bold cyan]: {query_spec.keywords}\n"
+            f"[bold cyan]Year Filter[/bold cyan]: {f'{query_spec.year_start} - {query_spec.year_end}' if query_spec.year_start else 'All Years'}\n"
+            f"[bold cyan]Open Access[/bold cyan]: {'Yes (OA Only)' if query_spec.is_oa_only else 'Any'}\n"
+            f"[bold cyan]Summary    [/bold cyan]: {query_spec.summary}",
+            title="[green]Extracted Query Strategy[/green]",
+            border_style="green",
+        ))
+        self.console.print()
+
+        # Phase 2: Multi-Source Scraping
+        with self.console.status("[cyan]Scraping verified scholarly works across OpenAlex & Semantic Scholar...[/cyan]"):
+            try:
+                candidates = asyncio.run(self.scout.search_multi_source(query_spec, limit=15))
+            except Exception as exc:
+                self.console.print(f"[bold red][x] Search scraping failed:[/bold red] {exc}\n")
+                return
+
+        if not candidates:
+            self.console.print("[yellow]No scholarly candidates found matching the criteria.[/yellow]\n")
+            return
+
+        # Phase 3: AI Curation & Ranking
+        with self.console.status(f"[cyan]Evaluating and ranking {len(candidates)} candidates against your research intent...[/cyan]"):
+            try:
+                curated = self.scout.curate_and_rank(user_input, candidates, engine=self.engine, max_output=8)
+            except Exception:
+                curated = candidates[:8]
+
+        self.last_scout_results = curated
+
+        # Phase 4: Render Table
+        table = Table(
+            title=f"Curated Literature Results ({len(curated)} papers)",
+            title_style="bold cyan",
+            border_style="cyan",
+            header_style="bold bright_cyan",
+        )
+        table.add_column("#", justify="right", style="dim", width=3)
+        table.add_column("Badge", justify="center", width=14)
+        table.add_column("Title", style="bold white", width=34, overflow="fold")
+        table.add_column("Authors", style="dim", width=18, overflow="fold")
+        table.add_column("Year", justify="center", width=6)
+        table.add_column("PDF Status", justify="center", width=13)
+        table.add_column("Relevance / Summary", style="italic white", overflow="fold")
+
+        for idx, item in enumerate(curated, 1):
+            if item.source == "openalex":
+                source_badge = "[bold cyan][OpenAlex][/bold cyan]"
+            elif item.source == "ai_recommended":
+                source_badge = "[bold magenta][AI Seminal][/bold magenta]"
+            else:
+                source_badge = "[bold blue][S2/ArXiv][/bold blue]"
+
+            pdf_status = "[bold green][Open Access][/bold green]" if item.has_pdf else "[dim][Paywalled][/dim]"
+            authors_str = ", ".join(item.authors[:2]) if item.authors else "Unknown"
+
+            table.add_row(
+                str(idx),
+                source_badge,
+                item.title,
+                authors_str,
+                str(item.year or "n.d."),
+                pdf_status,
+                item.relevance_reason or "Matched search parameters.",
+            )
+
+        self.console.print(table)
+        self.console.print()
+
+        # Phase 5: Interactive Ingestion
+        self.console.print("[bold yellow]Ingest to Vault:[/bold yellow] [dim]Ketik nomor paper yang ingin diunduh ke vault project (contoh: '1, 2' atau '1' atau 'all', atau 'q' untuk selesai):[/dim]")
+        try:
+            dl_choice = self.console.input("[bold cyan]download[/bold cyan] [bold green]❯[/bold green] ").strip()
+        except (KeyboardInterrupt, EOFError):
+            self.console.print("\n")
+            return
+
+        if not dl_choice or dl_choice.lower() in ("q", "quit", "cancel", "n", "no"):
+            self.console.print("[dim]No papers ingested.[/dim]\n")
+            return
+
+        to_download_indices = []
+        if dl_choice.lower() == "all":
+            to_download_indices = list(range(len(curated)))
+        else:
+            for part in dl_choice.replace(",", " ").split():
+                if part.isdigit():
+                    num = int(part) - 1
+                    if 0 <= num < len(curated):
+                        to_download_indices.append(num)
+
+        if not to_download_indices:
+            self.console.print("[dim]No valid paper numbers selected.[/dim]\n")
+            return
+
+        for num in to_download_indices:
+            paper_to_dl = curated[num]
+            if not paper_to_dl.has_pdf:
+                self.console.print(f"[yellow][!] Paper #{num + 1} '{paper_to_dl.title[:45]}...' is paywalled (no open-access PDF).[/yellow]")
+                continue
+
+            with self.console.status(f"[cyan]Downloading '{paper_to_dl.title[:40]}...' into project vault...[/cyan]"):
+                try:
+                    dl_path = asyncio.run(self.scout.download_scout_paper(paper_to_dl))
+                    self.active_documents.add(dl_path.stem)
+                    self.console.print(f"[bold green][✓] Added to project vault & active rujukan:[/bold green] {paper_to_dl.title}")
+                except Exception as exc:
+                    self.console.print(f"[bold red][x] Failed to download #{num + 1}:[/bold red] {exc}")
+
+        self.console.print()
 
     def cmd_return_dashboard(self) -> None:
         """Disconnect from active project and return to dashboard."""
