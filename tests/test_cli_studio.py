@@ -304,9 +304,156 @@ class TestProjectManagerClass:
         assert any(p.name == proj.name for p in all_proj)
 
     def test_remove_project(self, project_manager: ProjectManager, tmp_path: Path) -> None:
-        project_manager.create_project("remove_me", tmp_path / "remove_me")
+        p = project_manager.create_project("remove_me", tmp_path / "remove_me")
         assert len(project_manager.list_projects()) == 1
 
         removed = project_manager.remove_project("remove_me")
         assert removed is True
         assert len(project_manager.list_projects()) == 0
+        assert (tmp_path / "remove_me").is_dir()  # Physical directory preserved
+
+    def test_get_project_by_name_and_index(self, project_manager: ProjectManager, tmp_path: Path) -> None:
+        p1 = project_manager.create_project("proj_alpha", tmp_path / "alpha")
+        p2 = project_manager.create_project("proj_beta", tmp_path / "beta")
+
+        found_by_name = project_manager.get_project("proj_alpha")
+        assert found_by_name is not None
+        assert found_by_name.name == "proj_alpha"
+
+        found_by_idx = project_manager.get_project(1)
+        assert found_by_idx is not None
+        assert found_by_idx.name in ("proj_alpha", "proj_beta")
+
+        assert project_manager.get_project("non_existent") is None
+        assert project_manager.get_project(99) is None
+
+    def test_remove_project_by_index(self, project_manager: ProjectManager, tmp_path: Path) -> None:
+        project_manager.create_project("target_proj", tmp_path / "target")
+        assert len(project_manager.list_projects()) == 1
+
+        removed = project_manager.remove_project(1)
+        assert removed is True
+        assert len(project_manager.list_projects()) == 0
+
+
+class TestProjectDeletionFlow:
+    """Tests for CLI project deletion in Dashboard and Project modes."""
+
+    def test_dashboard_delete_project_confirmed(
+        self,
+        test_console: Console,
+        project_manager: ProjectManager,
+        tmp_path: Path,
+    ) -> None:
+        proj_dir = tmp_path / "my_study"
+        project_manager.create_project("my_study", proj_dir)
+        studio = CLIStudio(console=test_console, project_manager=project_manager)
+
+        with patch.object(studio.console, "input", side_effect=["y"]):
+            studio.handle_dashboard_command("delete my_study")
+
+        output = test_console.file.getvalue()
+        assert "removed from Scrpcy" in output
+        assert "remain safe and untouched on disk" in output
+        assert len(project_manager.list_projects()) == 0
+        assert proj_dir.is_dir()
+
+    def test_dashboard_delete_project_by_index(
+        self,
+        test_console: Console,
+        project_manager: ProjectManager,
+        tmp_path: Path,
+    ) -> None:
+        proj_dir = tmp_path / "study_one"
+        project_manager.create_project("study_one", proj_dir)
+        studio = CLIStudio(console=test_console, project_manager=project_manager)
+
+        with patch.object(studio.console, "input", side_effect=["y"]):
+            studio.handle_dashboard_command("delete 1")
+
+        output = test_console.file.getvalue()
+        assert "removed from Scrpcy" in output
+        assert len(project_manager.list_projects()) == 0
+        assert proj_dir.is_dir()
+
+    def test_dashboard_delete_project_cancelled(
+        self,
+        test_console: Console,
+        project_manager: ProjectManager,
+        tmp_path: Path,
+    ) -> None:
+        project_manager.create_project("keep_me", tmp_path / "keep_me")
+        studio = CLIStudio(console=test_console, project_manager=project_manager)
+
+        with patch.object(studio.console, "input", side_effect=["n"]):
+            studio.handle_dashboard_command("delete keep_me")
+
+        output = test_console.file.getvalue()
+        assert "Deletion canceled." in output
+        assert len(project_manager.list_projects()) == 1
+
+    def test_dashboard_delete_project_empty_registry(
+        self,
+        test_console: Console,
+        project_manager: ProjectManager,
+    ) -> None:
+        studio = CLIStudio(console=test_console, project_manager=project_manager)
+        studio.handle_dashboard_command("delete nonexistent")
+        output = test_console.file.getvalue()
+        assert "No registered projects found to delete" in output
+
+    def test_dashboard_delete_project_not_found(
+        self,
+        test_console: Console,
+        project_manager: ProjectManager,
+        tmp_path: Path,
+    ) -> None:
+        project_manager.create_project("real_project", tmp_path / "real_project")
+        studio = CLIStudio(console=test_console, project_manager=project_manager)
+        studio.handle_dashboard_command("delete nonexistent")
+        output = test_console.file.getvalue()
+        assert "not found in registry" in output
+
+    def test_cmd_delete_active_project_in_project_mode(
+        self,
+        test_console: Console,
+        project_manager: ProjectManager,
+        tmp_path: Path,
+    ) -> None:
+        proj_dir = tmp_path / "active_study"
+        info = project_manager.create_project("active_study", proj_dir)
+        studio = CLIStudio(console=test_console, project_manager=project_manager)
+        studio.open_project(info)
+
+        assert studio.current_project is not None
+        assert studio.current_project.name == "active_study"
+
+        with patch.object(studio.console, "input", side_effect=["y"]):
+            studio.handle_project_command("/delete")
+
+        output = test_console.file.getvalue()
+        assert "active_study" in output
+        assert "removed from Scrpcy" in output
+        assert "Returned to Dashboard" in output
+        assert studio.current_project is None
+        assert studio.workspace is None
+        assert len(project_manager.list_projects()) == 0
+        assert proj_dir.is_dir()
+
+    def test_cmd_delete_active_project_cancelled(
+        self,
+        test_console: Console,
+        project_manager: ProjectManager,
+        tmp_path: Path,
+    ) -> None:
+        info = project_manager.create_project("cancel_study", tmp_path / "cancel_study")
+        studio = CLIStudio(console=test_console, project_manager=project_manager)
+        studio.open_project(info)
+
+        with patch.object(studio.console, "input", side_effect=["n"]):
+            studio.handle_project_command("/delete")
+
+        output = test_console.file.getvalue()
+        assert "Deletion canceled." in output
+        assert studio.current_project is not None
+        assert len(project_manager.list_projects()) == 1

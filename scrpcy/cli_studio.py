@@ -178,6 +178,7 @@ class CLIStudio:
         table.add_row("projects", "", "List registered research projects (alias: list, ls)")
         table.add_row("new", "<name> [folder_path]", "Create and connect a master project folder")
         table.add_row("open", "<# | name | folder_path>", "Open an existing project folder")
+        table.add_row("delete", "<# | name>", "Remove project from Scrpcy (alias: remove, rm)")
         table.add_row("status", "", "View LLM model, API key status, and system settings")
         table.add_row("config", "[set-key <prov> <key>]", "Manage API keys and default model")
         table.add_row("clear", "", "Clear terminal screen")
@@ -203,6 +204,8 @@ class CLIStudio:
             self.dashboard_new_project(args)
         elif cmd in ("open", "load", "connect"):
             self.dashboard_open_project(args)
+        elif cmd in ("delete", "remove", "rm"):
+            self.dashboard_delete_project(args)
         elif cmd in ("status", "info"):
             self.dashboard_status()
         elif cmd == "config":
@@ -313,6 +316,57 @@ class CLIStudio:
         self.console.print(f"    Location: [dim]{proj.path}[/dim]")
         self.console.print(f"    Papers in Vault: [white]{cached_count} indexed[/white]\n")
 
+    def dashboard_delete_project(self, args: list[str]) -> None:
+        """Remove a project from the Scrpcy registry without deleting physical files."""
+        projects = self.project_manager.list_projects()
+        if not projects:
+            self.console.print("[dim]No registered projects found to delete.[/dim]\n")
+            return
+
+        target_identifier = args[0].strip() if args else ""
+        if not target_identifier:
+            self.dashboard_list_projects()
+            try:
+                target_identifier = self.console.input("[bold cyan]delete project (# or name)[/bold cyan] [bold green]❯[/bold green] ").strip()
+            except (KeyboardInterrupt, EOFError):
+                self.console.print("\n[yellow]Deletion canceled.[/yellow]\n")
+                return
+
+        if not target_identifier or target_identifier.lower() in ("q", "quit", "cancel"):
+            self.console.print("[yellow]Deletion canceled.[/yellow]\n")
+            return
+
+        project_info = self.project_manager.get_project(target_identifier)
+        if not project_info:
+            self.console.print(f"[bold red][x] Project '{target_identifier}' not found in registry.[/bold red]\n")
+            return
+
+        try:
+            confirm = self.console.input(
+                f"Are you sure you want to remove project '[bold cyan]{project_info.name}[/bold cyan]' from Scrpcy? (y/N): "
+            ).strip().lower()
+        except (KeyboardInterrupt, EOFError):
+            self.console.print("\n[yellow]Deletion canceled.[/yellow]\n")
+            return
+
+        if confirm not in ("y", "yes"):
+            self.console.print("[yellow]Deletion canceled.[/yellow]\n")
+            return
+
+        if self.current_project and self.current_project.name == project_info.name:
+            self.current_project = None
+            self.workspace = None
+            self.engine = None
+            self.scout = None
+            self.active_documents.clear()
+
+        removed = self.project_manager.remove_project(project_info.name)
+        if removed:
+            self.console.print(f"[bold green][✓] Project '{project_info.name}' removed from Scrpcy.[/bold green]")
+            self.console.print(f"[dim]Note: Your master files at '{project_info.path}' remain safe and untouched on disk.[/dim]\n")
+        else:
+            self.console.print(f"[bold red][x] Failed to remove project '{project_info.name}'.[/bold red]\n")
+
     def open_project(self, target: ProjectInfo | str | Path) -> None:
         """Switch studio context to a designated master project."""
         if isinstance(target, ProjectInfo):
@@ -365,6 +419,7 @@ class CLIStudio:
             ("/model", "<model_name>", "Switch default LLM model"),
             ("/style", "<apa|ieee>", "Change citation formatting style"),
             ("/dashboard", "", "Return to Dashboard (alias: /close, /back)"),
+            ("/delete", "[# | name]", "Remove project from Scrpcy (alias: /remove, /rm)"),
             ("/status", "", "View system and project status"),
             ("/web", "[port]", "Launch Web Studio for this project in browser"),
             ("/clear", "", "Clear terminal screen"),
@@ -389,6 +444,8 @@ class CLIStudio:
             self.cmd_scout()
         elif cmd in ("/dashboard", "/close", "/back"):
             self.cmd_return_dashboard()
+        elif cmd in ("/delete", "/remove", "/rm"):
+            self.cmd_delete_project(args)
         elif cmd in ("/vault", "/docs", "/ls"):
             self.cmd_vault()
         elif cmd in ("/active", "/select"):
@@ -570,8 +627,56 @@ class CLIStudio:
         """Disconnect from active project and return to dashboard."""
         proj_name = self.current_project.name if self.current_project else "project"
         self.current_project = None
+        self.workspace = None
+        self.engine = None
+        self.scout = None
+        self.active_documents.clear()
         self.console.print(f"[yellow][←] Closed project '{proj_name}'. Returned to Dashboard.[/yellow]\n")
         self.print_dashboard_help()
+
+    def cmd_delete_project(self, arg: str = "") -> None:
+        """Remove project from Scrpcy registry, closing it if currently active."""
+        target_name = arg.strip() if arg else (self.current_project.name if self.current_project else "")
+        if not target_name:
+            self.console.print("[red][x] No active project or target name specified.[/red]\n")
+            return
+
+        project_info = self.project_manager.get_project(target_name)
+        if not project_info:
+            self.console.print(f"[bold red][x] Project '{target_name}' not found in registry.[/bold red]\n")
+            return
+
+        is_current = bool(self.current_project and self.current_project.name == project_info.name)
+        prompt_label = f"active project '[bold cyan]{project_info.name}[/bold cyan]'" if is_current else f"project '[bold cyan]{project_info.name}[/bold cyan]'"
+
+        try:
+            confirm = self.console.input(
+                f"Are you sure you want to remove {prompt_label} from Scrpcy? (y/N): "
+            ).strip().lower()
+        except (KeyboardInterrupt, EOFError):
+            self.console.print("\n[yellow]Deletion canceled.[/yellow]\n")
+            return
+
+        if confirm not in ("y", "yes"):
+            self.console.print("[yellow]Deletion canceled.[/yellow]\n")
+            return
+
+        if is_current:
+            self.current_project = None
+            self.workspace = None
+            self.engine = None
+            self.scout = None
+            self.active_documents.clear()
+
+        removed = self.project_manager.remove_project(project_info.name)
+        if removed:
+            self.console.print(f"[bold green][✓] Project '{project_info.name}' removed from Scrpcy.[/bold green]")
+            self.console.print(f"[dim]Note: Your master files at '{project_info.path}' remain safe and untouched on disk.[/dim]\n")
+            if is_current:
+                self.console.print("[yellow][←] Returned to Dashboard.[/yellow]\n")
+                self.print_dashboard_help()
+        else:
+            self.console.print(f"[bold red][x] Failed to remove project '{project_info.name}'.[/bold red]\n")
 
     def cmd_project_status(self) -> None:
         """Display status for the current active master project."""

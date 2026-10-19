@@ -212,13 +212,46 @@ class ProjectManager:
 
         return info
 
-    def remove_project(self, name: str) -> bool:
-        """Deregister a project from the registry without deleting files."""
+    def get_project(self, identifier: str | int) -> ProjectInfo | None:
+        """Retrieve ProjectInfo by name or 1-based index from list_projects().
+
+        Args:
+            identifier: Project name string or numeric 1-based index.
+
+        Returns:
+            Matching ProjectInfo if found, else None.
+        """
+        projects = self.list_projects()
+        if isinstance(identifier, int) or (isinstance(identifier, str) and identifier.strip().isdigit()):
+            idx = int(identifier) - 1
+            if 0 <= idx < len(projects):
+                return projects[idx]
+            return None
+
+        clean_ident = str(identifier).strip().lower()
+        for p in projects:
+            if p.name.lower() == clean_ident:
+                return p
+        return None
+
+    def remove_project(self, identifier: str | int) -> bool:
+        """Deregister a project from the registry without deleting files on disk.
+
+        Args:
+            identifier: Project name string or 1-based index.
+
+        Returns:
+            True if project was found and removed, False otherwise.
+        """
+        target = self.get_project(identifier)
+        if not target:
+            return False
+
         data = self._load_registry_data()
         projects = data.get("projects", {})
-        if name in projects:
-            del projects[name]
-            if data.get("active_project") == name:
+        if target.name in projects:
+            del projects[target.name]
+            if data.get("active_project") == target.name:
                 data["active_project"] = None
             self._save_registry_data(data)
             return True
