@@ -1077,7 +1077,7 @@ class CLIStudio:
             self.console.print(f"[dim]Returned to project root: {self.current_project.name}>[/dim]\n")
             return
 
-        if cmd in ("help", "?"):
+        if cmd in ("help", "?", "vault", "status"):
             self.print_vault_help()
         elif cmd in ("list", "ls"):
             if arg in ("archive", "archived", ".archive"):

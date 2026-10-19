@@ -93,8 +93,16 @@ class DocumentParser:
             ) from exc
 
         # Extract structured metadata via the LLM extractor
-        metadata = self.extractor.extract(first_page_text)
-        metadata.ensure_cite_key()
+        try:
+            metadata = self.extractor.extract(first_page_text)
+            metadata.ensure_cite_key()
+        except Exception:
+            # Graceful fallback metadata from file stem if extractor fails or no API key provided
+            metadata = DocumentMetadata(
+                title=target_path.stem.replace("_", " ").title(),
+                cite_key=target_path.stem.lower().replace(" ", "_"),
+            )
+            metadata.ensure_cite_key()
 
         # Build YAML frontmatter and composite markdown
         frontmatter = metadata.to_frontmatter()
