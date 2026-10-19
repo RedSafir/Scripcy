@@ -85,14 +85,24 @@ class TestDashboardFlow:
         assert "new" in output
         assert "open" in output
 
-    def test_dashboard_status(self, test_console: Console, project_manager: ProjectManager) -> None:
+    def test_dashboard_status(self, test_console: Console, project_manager: ProjectManager, tmp_path: Path) -> None:
         cfg = ScrpcyConfig(default_model="gemini/gemini-2.5-pro")
         studio = CLIStudio(console=test_console, config=cfg, project_manager=project_manager)
+        
+        # When no projects registered
+        studio.dashboard_status()
+        output_empty = test_console.file.getvalue()
+        assert "No research projects registered yet" in output_empty
+
+        # When project registered
+        proj_dir = tmp_path / "thesis_alpha"
+        proj_dir.mkdir(parents=True, exist_ok=True)
+        project_manager.create_project("thesis_alpha", proj_dir)
+
         studio.dashboard_status()
         output = test_console.file.getvalue()
-        assert "System & Model Status" in output
-        assert "gemini/gemini-2.5-pro" in output
-        assert "Known Projects" in output
+        assert "Research Project Status: thesis_alpha" in output
+        assert "Project Token Usage" in output
 
     def test_dashboard_new_and_open_project(
         self,

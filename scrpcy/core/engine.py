@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field
 from scrpcy.core.config import ScrpcyConfig
 from scrpcy.core.models import ParsedDocument
 from scrpcy.core.skills import Skill, SkillsLoader
+from scrpcy.core.tracker import TokenTracker
 from scrpcy.exceptions import EngineError
 
 STOPWORDS = {
@@ -238,6 +239,9 @@ class LLMEngine:
         config: ScrpcyConfig | None = None,
         skills_loader: SkillsLoader | None = None,
         acompletion_fn: Callable[..., Any] | None = None,
+        token_tracker: TokenTracker | None = None,
+        project_name: str | None = None,
+        project_path: str | Path | None = None,
     ) -> None:
         self.config = config or ScrpcyConfig.load()
         self.skills_loader = skills_loader or SkillsLoader(skills_dir=self.config.skills_dir)
@@ -246,6 +250,9 @@ class LLMEngine:
             default_token_budget=self.config.citation.context_token_budget,
         )
         self._acompletion_fn = acompletion_fn
+        self.token_tracker = token_tracker or TokenTracker()
+        self.project_name = project_name
+        self.project_path = str(Path(project_path).expanduser().resolve()) if project_path else None
 
     async def _invoke_acompletion(self, **kwargs: Any) -> Any:
         """Invoke litellm.acompletion or custom injected callable."""
@@ -264,6 +271,8 @@ class LLMEngine:
         model: str | None = None,
         temperature: float | None = None,
         max_evidence_chunks: int | None = None,
+        project_name: str | None = None,
+        project_path: str | Path | None = None,
     ) -> AsyncGenerator[str, None]:
         """Stream generated response tokens from LiteLLM using synthesized evidence."""
         if not query or not query.strip():
@@ -273,6 +282,14 @@ class LLMEngine:
         active_model = model or skill.model or self.config.default_model
         active_temp = temperature if temperature is not None else (skill.temperature if skill.temperature is not None else 0.2)
         api_key = self.config.get_api_key_for_model(active_model)
+        api_base = self.config.get_api_base_for_model(active_model)
+
+        # 9Router routing translation
+        effective_model = active_model
+        if active_model.lower().startswith("9router/"):
+            submodel = active_model.split("/", 1)[1]
+            effective_model = f"openai/{submodel}"
+            api_base = api_base or "http://localhost:20128/v1"
 
         evidence_chunks = self.evidence_synthesizer.retrieve_evidence(
             query=query,
@@ -294,13 +311,18 @@ class LLMEngine:
         ]
 
         kwargs: dict[str, Any] = {
-            "model": active_model,
+            "model": effective_model,
             "messages": messages,
             "temperature": active_temp,
             "stream": True,
         }
         if api_key:
             kwargs["api_key"] = api_key
+        if api_base:
+            kwargs["api_base"] = api_base
+
+        accumulated_output: list[str] = []
+        input_tokens_est = estimate_tokens(user_content + skill.system_prompt)
 
         try:
             response_stream = await self._invoke_acompletion(**kwargs)
@@ -312,9 +334,23 @@ class LLMEngine:
                     delta = None
 
                 if delta:
+                    accumulated_output.append(delta)
                     yield delta
         except Exception as exc:
             raise EngineError(f"Streaming query failed with model '{active_model}': {exc}") from exc
+        finally:
+            # Track tokens even if partially streamed or completed
+            output_tokens_est = estimate_tokens("".join(accumulated_output))
+            active_proj_name = project_name or self.project_name
+            active_proj_path = project_path or self.project_path
+            self.token_tracker.record_usage(
+                model=active_model,
+                input_tokens=input_tokens_est,
+                output_tokens=output_tokens_est,
+                project_name=active_proj_name,
+                project_path=active_proj_path,
+                skill=skill_name,
+            )
 
     async def query(
         self,
@@ -324,6 +360,8 @@ class LLMEngine:
         model: str | None = None,
         temperature: float | None = None,
         max_evidence_chunks: int | None = None,
+        project_name: str | None = None,
+        project_path: str | Path | None = None,
     ) -> SynthesisResult:
         """Execute query, returning complete synthesis result and supporting evidence chunks."""
         evidence_chunks = self.evidence_synthesizer.retrieve_evidence(
@@ -343,6 +381,8 @@ class LLMEngine:
             model=model,
             temperature=temperature,
             max_evidence_chunks=max_evidence_chunks,
+            project_name=project_name or self.project_name,
+            project_path=project_path or self.project_path,
         ):
             accumulated.append(token)
 

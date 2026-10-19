@@ -43,6 +43,10 @@ class ScrpcyConfig(BaseModel):
         default_factory=dict,
         description="Key-value mapping of provider names to API keys.",
     )
+    api_bases: dict[str, str] = Field(
+        default_factory=dict,
+        description="Custom base URLs per provider (e.g. 9router or local endpoints).",
+    )
     citation: CitationPreferences = Field(
         default_factory=CitationPreferences,
         description="Citation and evidence synthesis settings.",
@@ -72,6 +76,7 @@ class ScrpcyConfig(BaseModel):
             "deepseek": ["DEEPSEEK_API_KEY"],
             "mistral": ["MISTRAL_API_KEY"],
             "openrouter": ["OPENROUTER_API_KEY"],
+            "9router": ["ROUTER9_API_KEY", "NINE_ROUTER_API_KEY", "OPENAI_API_KEY"],
         }
 
         for env_var in env_mapping.get(norm_provider, [f"{norm_provider.upper()}_API_KEY"]):
@@ -83,6 +88,8 @@ class ScrpcyConfig(BaseModel):
     def get_api_key_for_model(self, model: str) -> str | None:
         """Derive provider from model string and return matching API key."""
         model_str = model.lower()
+        if model_str.startswith("9router/"):
+            return self.get_api_key("9router") or self.get_api_key("openai") or "sk-9router-local"
         if "/" in model_str:
             prefix = model_str.split("/", 1)[0]
             return self.get_api_key(prefix)
@@ -94,9 +101,39 @@ class ScrpcyConfig(BaseModel):
             return self.get_api_key("gemini")
         return None
 
+    def get_api_base_for_model(self, model: str) -> str | None:
+        """Resolve custom base URL for a model or provider."""
+        model_str = model.lower()
+        if model_str.startswith("9router/"):
+            return self.api_bases.get("9router") or os.environ.get("ROUTER9_BASE_URL") or "http://localhost:20128/v1"
+        if "/" in model_str:
+            prefix = model_str.split("/", 1)[0]
+            if prefix in self.api_bases and self.api_bases[prefix]:
+                return self.api_bases[prefix]
+            if prefix == "openai":
+                return self.api_bases.get("openai") or os.environ.get("OPENAI_API_BASE") or os.environ.get("OPENAI_BASE_URL")
+        return None
+
     def set_api_key(self, provider: str, key: str) -> None:
         """Store API key for a provider."""
         self.api_keys[provider.lower().strip()] = key.strip()
+
+    def set_api_base(self, provider: str, base_url: str) -> None:
+        """Store custom base URL for a provider."""
+        self.api_bases[provider.lower().strip()] = base_url.strip().rstrip("/")
+
+    def setup_9router(
+        self,
+        port: int = 20128,
+        host: str = "localhost",
+        api_key: str = "sk-9router-local",
+        default_model: str = "9router/gpt-4o",
+    ) -> None:
+        """Convenience method to configure 9Router local smart proxy."""
+        base_url = f"http://{host}:{port}/v1"
+        self.set_api_base("9router", base_url)
+        self.set_api_key("9router", api_key)
+        self.default_model = default_model
 
     def save(self, path: Path | str | None = None) -> Path:
         """Save configuration to JSON file."""

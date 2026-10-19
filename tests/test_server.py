@@ -283,34 +283,60 @@ class TestCLIOperations:
         assert result.exit_code == 0
         assert "scrpcy" in result.output
         assert "start" in result.output
-        assert "config" in result.output
+        assert "models" in result.output
+        assert "status" in result.output
 
-    def test_cli_config_show(self) -> None:
+    def test_cli_models_list(self) -> None:
         runner = CliRunner()
-        result = runner.invoke(cli_app, ["config", "show"])
+        result = runner.invoke(cli_app, ["models", "list"])
         assert result.exit_code == 0
-        assert "Default Model" in result.output
+        assert "Active Default Model" in result.output
 
-    def test_cli_config_set_key(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_cli_models_set_key(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         cfg_file = tmp_path / "cli_cfg.json"
         monkeypatch.setenv("SCRPCY_CONFIG", str(cfg_file))
 
         runner = CliRunner()
-        result = runner.invoke(cli_app, ["config", "set-key", "gemini", "ai-key-secret-123"])
+        result = runner.invoke(cli_app, ["models", "set-key", "gemini", "ai-key-secret-123"])
         assert result.exit_code == 0
         assert "Saved API key for 'gemini'" in result.output
 
         cfg = ScrpcyConfig.load(cfg_file)
         assert cfg.api_keys["gemini"] == "ai-key-secret-123"
 
-    def test_cli_config_set_model(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_cli_models_use(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         cfg_file = tmp_path / "cli_cfg.json"
         monkeypatch.setenv("SCRPCY_CONFIG", str(cfg_file))
 
         runner = CliRunner()
-        result = runner.invoke(cli_app, ["config", "set-model", "openai/gpt-4o"])
+        result = runner.invoke(cli_app, ["models", "use", "openai/gpt-4o"])
         assert result.exit_code == 0
-        assert "Updated default model to 'openai/gpt-4o'" in result.output
+        assert "Updated active model to:" in result.output
 
         cfg = ScrpcyConfig.load(cfg_file)
         assert cfg.default_model == "openai/gpt-4o"
+
+    def test_cli_models_9router(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        cfg_file = tmp_path / "cli_cfg.json"
+        monkeypatch.setenv("SCRPCY_CONFIG", str(cfg_file))
+
+        runner = CliRunner()
+        result = runner.invoke(cli_app, ["models", "9router", "--port", "20128", "--key", "test-9r-key", "--model", "9router/claude-3-5-sonnet"])
+        assert result.exit_code == 0
+        assert "Successfully configured 9Router" in result.output
+
+        cfg = ScrpcyConfig.load(cfg_file)
+        assert cfg.default_model == "9router/claude-3-5-sonnet"
+        assert cfg.api_bases.get("9router") == "http://localhost:20128/v1"
+        assert cfg.api_keys.get("9router") == "test-9r-key"
+
+    def test_cli_models_tokens(self) -> None:
+        runner = CliRunner()
+        result = runner.invoke(cli_app, ["models", "tokens"])
+        assert result.exit_code == 0
+        assert "Token Consumption" in result.output
+
+    def test_cli_project_status(self) -> None:
+        runner = CliRunner()
+        result = runner.invoke(cli_app, ["status"])
+        assert result.exit_code == 0

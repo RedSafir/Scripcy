@@ -30,6 +30,7 @@ from scrpcy.core.scout import LiteratureScout, ScoutQuery, ScoutResult
 from scrpcy.core.search import PaperSearcher, SearchResult
 from scrpcy.core.skills import SkillsLoader
 from scrpcy.core.tasks import TaskInfo, TaskManager
+from scrpcy.core.tracker import TokenTracker
 from scrpcy.core.vault import VaultItem, VaultManager
 from scrpcy.core.workspace import WorkspaceManager
 
@@ -114,9 +115,13 @@ class CLIStudio:
         self.workspace.ensure_directories()
         self.parser = self._injected_parser or DocumentParser(workspace=self.workspace)
         self.wordcraft = self._injected_wordcraft or WordCraftClient(workspace=self.workspace)
+        proj_name = self.current_project.name if self.current_project else None
+        proj_path = str(self.workspace.root_dir) if self.workspace else None
         self.engine = self._injected_engine or LLMEngine(
             config=self.config,
             skills_loader=self.skills_loader,
+            project_name=proj_name,
+            project_path=proj_path,
         )
         self.scout = LiteratureScout(workspace=self.workspace, parser=self.parser)
         self.vault_manager = VaultManager(workspace=self.workspace)
@@ -252,45 +257,67 @@ class CLIStudio:
         elif cmd in ("skills", "skill"):
             self.render_skills_catalog(is_project_mode=False)
         elif cmd in ("status", "info"):
-            self.dashboard_status()
-        elif cmd == "config":
-            self.cmd_config(" ".join(args))
+            self.dashboard_status(args)
+        elif cmd in ("models", "model", "config"):
+            self.cmd_models(" ".join(args))
         elif cmd == "clear":
             self.clear_screen()
         else:
             self.console.print(f"[yellow]Unknown dashboard command: '{raw_line}'.[/yellow]")
             self.console.print("[dim]Type 'help' to see available dashboard commands, or 'new <name>' to create a project.[/dim]\n")
 
-    def dashboard_status(self) -> None:
-        """Display system status: model, API keys, citation style, and project count."""
-        model_name = self.config.default_model
-        api_key = self.config.get_api_key_for_model(model_name)
-        key_status = "[bold green][Configured][/bold green]" if api_key else "[bold yellow][Missing API Key][/bold yellow]"
-
-        configured_keys = [k for k, v in self.config.api_keys.items() if v]
-        all_keys_str = ", ".join(configured_keys) if configured_keys else "[dim]None[/dim]"
-
+    def dashboard_status(self, args: list[str] | None = None) -> None:
+        """Display per-project status and token consumption."""
         projects = self.project_manager.list_projects()
+        if not projects:
+            self.console.print("[yellow][!] No research projects registered yet.[/yellow]")
+            self.console.print("[dim]Create a new project using: [bold green]new <project_name>[/bold green][/dim]\n")
+            return
+
+        target_name = args[0] if args else None
+        target_project = None
+        if target_name:
+            for p in projects:
+                if p.name.lower() == target_name.lower():
+                    target_project = p
+                    break
+            if not target_project:
+                self.console.print(f"[bold red][x] Project '{target_name}' not found.[/bold red]")
+                self.console.print(f"[dim]Available projects: {', '.join(p.name for p in projects)}[/dim]\n")
+                return
+        else:
+            target_project = self.project_manager.get_active_project() or projects[0]
+
+        vault_dir = Path(target_project.path) / "vault"
+        vault_count = len([f for f in vault_dir.iterdir() if f.is_file()]) if vault_dir.is_dir() else 0
+        token_stats = TokenTracker.get_project_tokens(target_project.path)
 
         table = Table(
-            title="scrpcy System & Model Status",
+            title=f"Research Project Status: {target_project.name}",
             title_style="bold cyan",
             border_style="cyan",
             header_style="bold bright_cyan",
         )
         table.add_column("Property", style="bold white", width=22)
-        table.add_column("Current Setting / Value", style="white")
+        table.add_column("Details", style="white")
 
-        table.add_row("Default Model", f"{model_name} {key_status}")
-        table.add_row("Configured Providers", all_keys_str)
+        table.add_row("Project Name", f"[bold green]{target_project.name}[/bold green]")
+        table.add_row("Master Path", str(target_project.path))
+        table.add_row("Vault Papers", f"{vault_count} documents in vault")
+        table.add_row("Engine Model", self.config.default_model)
         table.add_row("Citation Style", self.config.citation.style.upper())
-        table.add_row("Known Projects", f"{len(projects)} registered")
-        table.add_row("Active Project", self.current_project.name if self.current_project else "[dim]None (Dashboard)[/dim]")
-        table.add_row("Network Search", "[green]Semantic Scholar + ArXiv (Online)[/green]")
-        table.add_row("Document Generator", "[green]WordCraft / python-docx (Ready)[/green]")
 
-        self.console.print(table)
+        token_display = (
+            f"Input: {token_stats.input_tokens:,} | Output: {token_stats.output_tokens:,} | "
+            f"Total: {token_stats.total_tokens:,} tokens ({token_stats.request_count} reqs)"
+        )
+        table.add_row("Project Token Usage", token_display)
+        if token_stats.last_active:
+            table.add_row("Last Activity", token_stats.last_active.replace("T", " ")[:19] + " UTC")
+
         self.console.print()
+        self.console.print(table)
+        self.console.print(f"[dim]To open this project: [bold green]open {target_project.name}[/bold green][/dim]\n")
 
     def dashboard_list_projects(self) -> None:
         """Display list of registered research projects."""
@@ -661,8 +688,8 @@ class CLIStudio:
             self.cmd_model(args)
         elif cmd == "/style":
             self.cmd_style(args)
-        elif cmd == "/config":
-            self.cmd_config(args)
+        elif cmd in ("/models", "/config"):
+            self.cmd_models(args)
         elif cmd in ("/docx", "/export"):
             self.cmd_docx(args)
         elif cmd in ("/status", "/info"):
@@ -883,6 +910,8 @@ class CLIStudio:
         active_count = len(self.active_documents)
         model_name = self.config.default_model
 
+        token_stats = TokenTracker.get_project_tokens(self.workspace.root_dir)
+
         table = Table(
             title=f"Master Project Status: {self.current_project.name}",
             title_style="bold cyan",
@@ -898,6 +927,14 @@ class CLIStudio:
         table.add_row("Engine Model", model_name)
         table.add_row("Active Skill", self.active_skill_name)
         table.add_row("Citation Style", self.config.citation.style.upper())
+
+        token_display = (
+            f"Input: {token_stats.input_tokens:,} | Output: {token_stats.output_tokens:,} | "
+            f"Total: {token_stats.total_tokens:,} tokens ({token_stats.request_count} reqs)"
+        )
+        table.add_row("Project Token Usage", token_display)
+        if token_stats.last_active:
+            table.add_row("Last LLM Activity", token_stats.last_active.replace("T", " ")[:19] + " UTC")
         table.add_row("Drafts Folder", str(self.workspace.root_dir / "drafts"))
 
         self.console.print(table)
@@ -2012,35 +2049,72 @@ class CLIStudio:
         self.config.citation.style = style
         self.console.print(f"[bold green][✓] Citation formatting style set to:[/bold green] [bold cyan]{style.upper()}[/bold cyan]\n")
 
-    def cmd_config(self, arg: str) -> None:
-        """Display configuration or set API key."""
-        if not arg or arg == "show":
+    def cmd_models(self, arg: str) -> None:
+        """Display model configuration, API keys, 9Router, and token consumption."""
+        if not arg or arg in ("show", "list", "ls"):
+            r9_base = self.config.api_bases.get("9router", "http://localhost:20128/v1")
+            r9_key = self.config.get_api_key("9router")
+            r9_status = "Configured" if r9_key else "Standby"
+
+            proj_tokens_str = "None"
+            if self.workspace:
+                p_tok = TokenTracker.get_project_tokens(self.workspace.root_dir)
+                proj_tokens_str = f"{p_tok.total_tokens:,} tokens (In: {p_tok.input_tokens:,}, Out: {p_tok.output_tokens:,})"
+
             self.console.print(Panel(
                 f"[bold cyan]Default Model [/bold cyan]: {self.config.default_model}\n"
+                f"[bold cyan]9Router Proxy [/bold cyan]: {r9_base} [{r9_status}]\n"
                 f"[bold cyan]Workspace Path[/bold cyan]: {self.config.workspace_path}\n"
                 f"[bold cyan]Skills Dir    [/bold cyan]: {self.config.skills_dir}\n"
                 f"[bold cyan]Citation Style[/bold cyan]: {self.config.citation.style}\n"
-                f"[bold cyan]API Keys      [/bold cyan]: {', '.join(k for k, v in self.config.api_keys.items() if v) or 'None'}",
+                f"[bold cyan]API Keys      [/bold cyan]: {', '.join(k for k, v in self.config.api_keys.items() if v) or 'None'}\n"
+                f"[bold cyan]Project Tokens[/bold cyan]: {proj_tokens_str}",
                 title="scrpcy Configuration",
                 border_style="cyan",
             ))
-            self.console.print()
+            self.console.print("[dim]Commands: models use <model> | models set-key <provider> <key> | models 9router | models tokens[/dim]\n")
             return
 
         parts = shlex.split(arg)
-        if len(parts) >= 3 and parts[0] == "set-key":
+        sub = parts[0].lower()
+
+        if sub in ("tokens", "usage"):
+            summary = TokenTracker().get_summary()
+            self.console.print(f"[bold cyan]Total Global Tokens:[/bold cyan] {summary.total_tokens:,} (In: {summary.total_input_tokens:,}, Out: {summary.total_output_tokens:,})")
+            if self.workspace:
+                p_tok = TokenTracker.get_project_tokens(self.workspace.root_dir)
+                self.console.print(f"[bold green]Current Project Tokens:[/bold green] {p_tok.total_tokens:,} (In: {p_tok.input_tokens:,}, Out: {p_tok.output_tokens:,})\n")
+        elif sub == "9router":
+            port = 20128
+            if len(parts) >= 2 and parts[1].isdigit():
+                port = int(parts[1])
+            self.config_manager.config.setup_9router(port=port)
+            self.config_manager.save()
+            self.config = self.config_manager.config
+            self.console.print(f"[bold green][✓] Configured 9Router gateway at http://localhost:{port}/v1 with default model '9router/gpt-4o'.[/bold green]\n")
+        elif len(parts) >= 3 and sub == "set-key":
             provider, key = parts[1], parts[2]
             self.config_manager.config.set_api_key(provider, key)
             self.config_manager.save()
             self.config = self.config_manager.config
             self.console.print(f"[bold green][✓] Successfully saved API key for provider '{provider}'.[/bold green]\n")
-        elif len(parts) >= 2 and parts[0] == "set-model":
+        elif len(parts) >= 2 and sub in ("use", "set", "set-model"):
             model = parts[1]
             self.config_manager.update(default_model=model)
             self.config = self.config_manager.config
             self.console.print(f"[bold green][✓] Updated default model to '{model}'.[/bold green]\n")
+        elif len(parts) >= 3 and sub == "set-base":
+            provider, url = parts[1], parts[2]
+            self.config_manager.config.set_api_base(provider, url)
+            self.config_manager.save()
+            self.config = self.config_manager.config
+            self.console.print(f"[bold green][✓] Set custom base URL for '{provider}' -> {url}[/bold green]\n")
         else:
-            self.console.print("[yellow]Usage: config show OR config set-key <provider> <key>[/yellow]\n")
+            self.console.print("[yellow]Usage: models [list | use <model> | set-key <provider> <key> | 9router | tokens][/yellow]\n")
+
+    def cmd_config(self, arg: str) -> None:
+        """Alias for backward compatibility directing to cmd_models."""
+        self.cmd_models(arg)
 
     def cmd_docx(self, arg: str) -> None:
         """Export current research synthesis session into a Word (.docx) manuscript."""

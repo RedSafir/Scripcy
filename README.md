@@ -44,16 +44,18 @@ scrpcy start
 # Start on custom port and directory without auto-opening browser
 scrpcy start --port 8080 --dir ~/my_research_vault --no-browser
 
-# Set API keys locally (stored in ~/.scrpcy/config.json)
-scrpcy config set-key gemini YOUR_GEMINI_API_KEY
-scrpcy config set-key openai YOUR_OPENAI_API_KEY
-scrpcy config set-key anthropic YOUR_ANTHROPIC_API_KEY
+# Model, API Keys & 9Router Management
+scrpcy models list                           # List configured models, API keys, 9Router status
+scrpcy models use openai/gpt-4o              # Switch active default model
+scrpcy models set-key openai YOUR_API_KEY   # Store API key per-provider (gemini, openai, anthropic, deepseek)
+scrpcy models 9router                        # Interactive 1-step 9Router local gateway setup
+scrpcy models 9router --port 20128 --key sk-9r --model 9router/claude-3-5-sonnet # Flag-based 9Router setup
+scrpcy models tokens                         # Inspect global & per-project token consumption (Input, Output, Total)
 
-# Set default model (supports Gemini, OpenAI, Claude, Mistral, Groq, Ollama)
-scrpcy config set-model gemini/gemini-2.5-pro
-
-# Inspect current configuration
-scrpcy config show
+# Project Status & Settings
+scrpcy status                                # Inspect active/last research project (vault count & token usage)
+scrpcy status my_thesis                      # Inspect specific research project status
+scrpcy settings show                         # View workspace and citation style preferences
 
 # Ingest and parse a local PDF from the command line
 scrpcy parse path/to/paper.pdf
