@@ -1938,29 +1938,34 @@ class CLIStudio:
             try:
                 downloaded_pdf = asyncio.run(self._execute_download(target_paper))
                 try:
-                    parsed = self.parser.parse(downloaded_pdf, save_to_cache=True)
+                    import pymupdf
+                    import pymupdf4llm
+
+                    with pymupdf.open(downloaded_pdf) as doc:
+                        clean_body = pymupdf4llm.to_markdown(doc)
                 except Exception:
-                    meta = DocumentMetadata(
-                        title=target_paper.title,
-                        authors=target_paper.authors,
-                        year=target_paper.year,
-                        doi=target_paper.doi,
-                        cite_key=target_paper.cite_key,
-                    )
-                    meta.ensure_cite_key()
-                    clean_md = f"# {target_paper.title}\n\n{target_paper.abstract or ''}\n"
-                    target_cache_name = f"{downloaded_pdf.stem}.md"
-                    cache_path = self.workspace.save_to_cache(
-                        target_cache_name,
-                        f"{meta.to_frontmatter()}\n{clean_md}",
-                    )
-                    parsed = ParsedDocument(
-                        file_path=downloaded_pdf,
-                        cache_path=cache_path,
-                        metadata=meta,
-                        markdown=f"{meta.to_frontmatter()}\n{clean_md}",
-                        body_markdown=clean_md,
-                    )
+                    clean_body = f"# {target_paper.title}\n\n{target_paper.abstract or ''}\n"
+
+                meta = DocumentMetadata(
+                    title=target_paper.title,
+                    authors=target_paper.authors,
+                    year=target_paper.year,
+                    doi=target_paper.doi,
+                    cite_key=target_paper.cite_key,
+                )
+                meta.ensure_cite_key()
+                target_cache_name = f"{downloaded_pdf.stem}.md"
+                cache_path = self.workspace.save_to_cache(
+                    target_cache_name,
+                    f"{meta.to_frontmatter()}\n{clean_body.strip()}\n",
+                )
+                parsed = ParsedDocument(
+                    file_path=downloaded_pdf,
+                    cache_path=cache_path,
+                    metadata=meta,
+                    markdown=f"{meta.to_frontmatter()}\n{clean_body.strip()}\n",
+                    body_markdown=clean_body,
+                )
                 self.active_documents.add(parsed.file_path.stem)
             except Exception as exc:
                 self.console.print(f"[bold red][x] Download or ingestion failed:[/bold red] {exc}\n")

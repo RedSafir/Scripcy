@@ -53,6 +53,21 @@ class MetadataExtractor(ABC):
         """
 
 
+# Defensive guard for google-genai upstream bug where BaseApiClient.aclose crashes on GC if __init__ failed
+try:
+    from google.genai._api_client import BaseApiClient  # type: ignore
+
+    _orig_aclose = BaseApiClient.aclose
+
+    async def _safe_aclose(self: Any) -> None:
+        if hasattr(self, "_async_httpx_client") and self._async_httpx_client:
+            await _orig_aclose(self)
+
+    BaseApiClient.aclose = _safe_aclose
+except Exception:
+    pass
+
+
 class GeminiMetadataExtractor(MetadataExtractor):
     """Extracts publication metadata using Gemini via Google GenAI SDK or LiteLLM."""
 
@@ -77,6 +92,14 @@ class GeminiMetadataExtractor(MetadataExtractor):
             or os.environ.get("GEMINI_API_KEY")
             or os.environ.get("GOOGLE_API_KEY")
         )
+        if not self.api_key:
+            try:
+                from scrpcy.core.config import ScrpcyConfig
+
+                cfg = ScrpcyConfig.load()
+                self.api_key = cfg.get_api_key("gemini")
+            except Exception:
+                pass
         self.backend = backend
         self.client = client
 
@@ -93,6 +116,9 @@ class GeminiMetadataExtractor(MetadataExtractor):
             raise MetadataExtractionError(f"Unsupported extraction backend: '{self.backend}'")
 
     def _extract_google_genai(self, text: str) -> DocumentMetadata:
+        if not self.api_key:
+            raise MetadataExtractionError("No Gemini API key provided for Google GenAI metadata extraction.")
+
         try:
             from google import genai
             from google.genai import types
@@ -103,6 +129,7 @@ class GeminiMetadataExtractor(MetadataExtractor):
             ) from exc
 
         client = self.client or genai.Client(api_key=self.api_key)
+        self.client = client
 
         prompt = (
             f"{SYSTEM_INSTRUCTION}\n\n"

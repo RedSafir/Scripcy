@@ -476,19 +476,27 @@ class LiteratureScout:
                 raise SearchError(f"Failed to download PDF ({resp.status_code}) from {paper.pdf_url}")
             target_pdf.write_bytes(resp.content)
 
-        # Parse or create markdown frontmatter cache
-        try:
-            self.parser.parse(target_pdf, save_to_cache=True)
-        except Exception:
-            meta = DocumentMetadata(
-                title=paper.title,
-                authors=paper.authors,
-                year=paper.year,
-                doi=paper.doi,
-                cite_key=paper.cite_key or safe_stem,
-            )
-            clean_md = f"# {paper.title}\n\nAbstract:\n{paper.abstract or ''}\n"
-            cache_file = f"{safe_stem}.md"
-            self.workspace.save_to_cache(cache_file, f"{meta.to_frontmatter()}\n{clean_md}")
+        # Convert PDF content to clean Markdown with accurate verified metadata
+        meta = DocumentMetadata(
+            title=paper.title,
+            authors=paper.authors,
+            year=paper.year,
+            doi=paper.doi,
+            cite_key=paper.cite_key or safe_stem,
+        )
+        meta.ensure_cite_key()
 
+        try:
+            import pymupdf
+            import pymupdf4llm
+
+            with pymupdf.open(target_pdf) as doc:
+                clean_body_markdown = pymupdf4llm.to_markdown(doc)
+        except Exception:
+            clean_body_markdown = f"# {paper.title}\n\nAbstract:\n{paper.abstract or ''}\n"
+
+        cache_file = f"{safe_stem}.md"
+        self.workspace.save_to_cache(
+            cache_file, f"{meta.to_frontmatter()}\n{clean_body_markdown.strip()}\n"
+        )
         return target_pdf
