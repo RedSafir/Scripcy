@@ -36,45 +36,57 @@ def start(
         "-d",
         help="Workspace storage directory path.",
     ),
+    web: bool = typer.Option(
+        False,
+        "--web",
+        "-w",
+        help="Launch as web server and open browser instead of interactive CLI studio.",
+    ),
     port: int = typer.Option(
         8000,
         "--port",
         "-p",
-        help="Server port number.",
+        help="Server port number for web UI mode.",
     ),
     host: str = typer.Option(
         "127.0.0.1",
         "--host",
         "-h",
-        help="Server host address.",
+        help="Server host address for web UI mode.",
     ),
     open_browser: bool = typer.Option(
         True,
         "--browser/--no-browser",
-        help="Whether to open the web browser automatically on startup.",
+        help="Whether to open the web browser automatically in web mode.",
     ),
 ) -> None:
-    """Launch the scrpcy local research studio web server and 3-panel UI."""
+    """Launch the scrpcy local research studio in interactive Linux CLI mode or Web UI."""
     resolved_dir = str(Path(dir).expanduser().resolve())
     os.environ["SCRPCY_WORKSPACE"] = resolved_dir
 
     workspace = WorkspaceManager(root_dir=resolved_dir)
     workspace.ensure_directories()
 
-    typer.echo(f"Starting scrpcy academic studio at http://{host}:{port}")
-    typer.echo(f"Workspace directory: {workspace.root_dir}")
+    if web:
+        typer.echo(f"Starting scrpcy academic studio at http://{host}:{port}")
+        typer.echo(f"Workspace directory: {workspace.root_dir}")
 
-    if open_browser:
-        def _launch_browser() -> None:
-            time.sleep(1.2)
-            webbrowser.open(f"http://{host}:{port}")
+        if open_browser:
+            def _launch_browser() -> None:
+                time.sleep(1.2)
+                webbrowser.open(f"http://{host}:{port}")
 
-        threading.Thread(target=_launch_browser, daemon=True).start()
+            threading.Thread(target=_launch_browser, daemon=True).start()
 
-    from scrpcy.server import create_app
+        from scrpcy.server import create_app
 
-    server_app = create_app(workspace=workspace)
-    uvicorn.run(server_app, host=host, port=port)
+        server_app = create_app(workspace=workspace)
+        uvicorn.run(server_app, host=host, port=port)
+    else:
+        from scrpcy.cli_studio import CLIStudio
+
+        studio = CLIStudio(workspace=workspace)
+        studio.run()
 
 
 @config_app.command("set-key")
