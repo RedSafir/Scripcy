@@ -19,7 +19,7 @@ from rich.table import Table
 from rich.text import Text
 
 from scrpcy.core.chats import ChatManager, ChatSession
-from scrpcy.core.config import ConfigManager, ScrpcyConfig
+from scrpcy.core.config import ConfigManager, ScrpcyConfig, detect_9router_key, fetch_9router_models
 from scrpcy.core.engine import LLMEngine
 from scrpcy.core.gdrive import GoogleDriveManager, extract_drive_file_id
 from scrpcy.core.mcp_client import WordCraftClient
@@ -123,6 +123,7 @@ class CLIStudio:
             project_name=proj_name,
             project_path=proj_path,
         )
+        self.engine.default_model = self.get_active_project_model()
         self.scout = LiteratureScout(workspace=self.workspace, parser=self.parser)
         self.vault_manager = VaultManager(workspace=self.workspace)
         self.chat_manager = ChatManager(self.workspace.root_dir / "chats.db")
@@ -130,6 +131,12 @@ class CLIStudio:
         self.sub_mode = None
         self.active_documents.clear()
         self._sync_vault_cache()
+
+    def get_active_project_model(self) -> str:
+        """Get the model configured for the current project, or fallback default."""
+        if self.current_project and self.current_project.model:
+            return self.current_project.model
+        return self.config.default_model
 
     def _ensure_active_chat_session(self) -> ChatSession:
         """Ensure there is an active chat session bound, creating chat1 if none exists."""
@@ -227,8 +234,8 @@ class CLIStudio:
         table.add_row("open", "<# | name | folder_path>", "Open an existing project folder")
         table.add_row("delete", "<# | name>", "Remove project from Scrpcy (alias: remove, rm)")
         table.add_row("skills", "", "List available AI persona skills (alias: skill)")
-        table.add_row("status", "[project_name]", "View research project status and token consumption")
         table.add_row("models", "[list | use | 9router | tokens]", "Manage LLM models, API keys, 9Router, and token usage")
+        table.add_row("status", "[project_name]", "View research project status, assigned model, and token consumption")
         table.add_row("settings", "[show | set-citation]", "Manage workspace path and citation preferences")
         table.add_row("clear", "", "Clear terminal screen")
         table.add_row("exit", "", "Exit the studio (alias: quit, q)")
@@ -307,7 +314,8 @@ class CLIStudio:
         table.add_row("Project Name", f"[bold green]{target_project.name}[/bold green]")
         table.add_row("Master Path", str(target_project.path))
         table.add_row("Vault Papers", f"{vault_count} documents in vault")
-        table.add_row("Engine Model", self.config.default_model)
+        proj_model = target_project.model or f"[dim]Not assigned (default: {self.config.default_model})[/dim]"
+        table.add_row("Project Model", f"[bold cyan]{proj_model}[/bold cyan]")
         table.add_row("Citation Style", self.config.citation.style.upper())
 
         token_display = (
@@ -511,7 +519,7 @@ class CLIStudio:
 
         cached_count = len(self._get_cached_stems())
         active_count = len(self.active_documents)
-        model_name = self.config.default_model
+        model_name = self.get_active_project_model()
 
         panel_content = (
             f"[bold bright_white]MODE       :[/bold bright_white] [bold green]● PROJECT WORKSPACE (Active)[/bold green]\n"
@@ -626,9 +634,9 @@ class CLIStudio:
             ("findpaper", "[topic]", "Search & scout literature on OpenAlex/S2 (alias: /scout)"),
             ("/skills", "", "List available research skill personas (alias: /skill)"),
             ("/skill", "[# | name]", "Switch active research persona by number or name (e.g. /skill 2)"),
-            ("/models", "[list | use | 9router | tokens]", "Manage LLM models, API keys, 9Router, and token usage (alias: /model)"),
+            ("/models", "[list | use | 9router | tokens]", "Manage project LLM model, API keys, 9Router, and tokens (alias: /model)"),
+            ("/status", "", "View project status, assigned model, and token consumption"),
             ("/settings", "[show | set-citation]", "Manage workspace and citation settings (alias: /style)"),
-            ("/status", "", "View project status, vault count, and token consumption"),
             ("/web", "[port]", "Launch Web Studio for this project in browser"),
             ("/dashboard", "", "Return to Dashboard (alias: /close, /back)"),
             ("/delete", "[# | name]", "Remove project from Scrpcy (alias: /remove, /rm)"),
@@ -908,8 +916,7 @@ class CLIStudio:
             return
 
         cached_docs = self._get_cached_stems()
-        active_count = len(self.active_documents)
-        model_name = self.config.default_model
+        model_name = self.get_active_project_model()
 
         token_stats = TokenTracker.get_project_tokens(self.workspace.root_dir)
 
@@ -925,7 +932,7 @@ class CLIStudio:
         table.add_row("Project Name", self.current_project.name)
         table.add_row("Master Path", str(self.workspace.root_dir))
         table.add_row("Vault Papers", f"{len(cached_docs)} indexed ({active_count} active rujukan)")
-        table.add_row("Engine Model", model_name)
+        table.add_row("Project Model", f"[bold cyan]{model_name}[/bold cyan]")
         table.add_row("Active Skill", self.active_skill_name)
         table.add_row("Citation Style", self.config.citation.style.upper())
 
@@ -2045,37 +2052,145 @@ class CLIStudio:
             self.cmd_settings(f"set-citation {arg}")
 
     def cmd_models(self, arg: str = "") -> None:
-        """Manage LLM models, API keys, 9Router gateway, and token usage."""
+        """Manage LLM models, per-project model assignments, API keys, 9Router, and tokens."""
         parts = shlex.split(arg) if arg else []
         sub = parts[0].lower() if parts else "list"
 
         if sub in ("list", "show", "ls") or not parts:
             r9_base = self.config.api_bases.get("9router", "http://localhost:20128/v1")
-            r9_key = self.config.get_api_key("9router")
-            r9_status = "[bold green][Configured][/bold green]" if r9_key else "[dim][Standby / Not Configured][/dim]"
+            r9_key = self.config.get_api_key("9router") or detect_9router_key()
+            live_r9_models = fetch_9router_models(r9_base)
+            if live_r9_models:
+                r9_status = f"[bold green][Online - {len(live_r9_models)} models detected][/bold green]"
+            elif r9_key:
+                r9_status = "[bold green][Configured][/bold green]"
+            else:
+                r9_status = "[dim][Standby / Not Configured][/dim]"
 
             all_keys = []
             for provider, val in self.config.api_keys.items():
                 if val:
                     masked = f"{val[:3]}...{val[-4:]}" if len(val) > 8 else "***"
                     all_keys.append(f"{provider} ({masked})")
+            if detect_9router_key() and "9router" not in [k for k, v in self.config.api_keys.items() if v]:
+                all_keys.append("9router (Auto-detected)")
             keys_display = ", ".join(all_keys) if all_keys else "[dim]No API keys stored locally[/dim]"
 
-            proj_tokens_str = "None"
-            if self.workspace:
-                p_tok = TokenTracker.get_project_tokens(self.workspace.root_dir)
-                proj_tokens_str = f"{p_tok.total_tokens:,} tokens (In: {p_tok.input_tokens:,}, Out: {p_tok.output_tokens:,})"
-
             self.console.print()
+            panel_lines = []
+            if self.current_project:
+                active_m = self.get_active_project_model()
+                panel_lines.append(f"[bold cyan]Active Project      [/bold cyan]: [bold green]{self.current_project.name}[/bold green]")
+                panel_lines.append(f"[bold cyan]Project Model       [/bold cyan]: [bold bright_cyan]{active_m}[/bold bright_cyan]")
+                if self.workspace:
+                    p_tok = TokenTracker.get_project_tokens(self.workspace.root_dir)
+                    panel_lines.append(f"[bold cyan]Project Token Usage [/bold cyan]: {p_tok.total_tokens:,} tokens (In: {p_tok.input_tokens:,}, Out: {p_tok.output_tokens:,})")
+            else:
+                projects = self.project_manager.list_projects()
+                if projects:
+                    proj_lines = [f"{p.name}: [cyan]{p.model or 'Not assigned'}[/cyan]" for p in projects[:5]]
+                    panel_lines.append(f"[bold cyan]Project Models      [/bold cyan]: {', '.join(proj_lines)}")
+                else:
+                    panel_lines.append("[bold cyan]Project Models      [/bold cyan]: [dim]None registered yet[/dim]")
+
+            panel_lines.append(f"[bold cyan]9Router Local Gateway[/bold cyan]: {r9_base} {r9_status}")
+            panel_lines.append(f"[bold cyan]Configured API Keys  [/bold cyan]: {keys_display}")
+
             self.console.print(Panel(
-                f"[bold cyan]Active Default Model [/bold cyan]: {self.config.default_model}\n"
-                f"[bold cyan]9Router Gateway      [/bold cyan]: {r9_base} {r9_status}\n"
-                f"[bold cyan]Configured API Keys  [/bold cyan]: {keys_display}\n"
-                f"[bold cyan]Current Project Token[/bold cyan]: {proj_tokens_str}",
+                "\n".join(panel_lines),
                 title="scrpcy Model & Provider Inventory",
                 border_style="cyan",
             ))
-            self.console.print("[dim]Commands: models use <model> | models set-key <provider> <key> | models 9router [port] | models tokens[/dim]\n")
+
+            # 1. Live 9Router Models Table (if 9Router is active)
+            if live_r9_models:
+                r9_table = Table(
+                    title=f"Live 9Router Models Detected (at {r9_base})",
+                    title_style="bold green",
+                    border_style="green",
+                    header_style="bold bright_green",
+                )
+                r9_table.add_column("#", justify="right", style="dim", width=3)
+                r9_table.add_column("Model Identifier (for Scrpcy)", style="bold cyan")
+                r9_table.add_column("Command to Use", style="yellow")
+
+                for idx, m_id in enumerate(live_r9_models, 1):
+                    cmd_example = f"models use 9router/{m_id}"
+                    r9_table.add_row(str(idx), f"9router/{m_id}", cmd_example)
+
+                self.console.print(r9_table)
+                self.console.print()
+
+            # 2. Supported Model Presets Catalog (Request 4)
+            cat_table = Table(
+                title="Katalog Model yang Didukung (Supported Model Catalog)",
+                title_style="bold magenta",
+                border_style="magenta",
+                header_style="bold bright_magenta",
+            )
+            cat_table.add_column("Provider / Router", style="bold white", width=18)
+            cat_table.add_column("Contoh Model Identifiers", style="cyan")
+            cat_table.add_column("Keterangan & Kebutuhan Kunci", style="dim")
+
+            cat_table.add_row(
+                "9Router (Local)",
+                "9router/<model_id> (contoh di atas)",
+                "Proxy lokal :20128, multi-provider otomatis"
+            )
+            cat_table.add_row(
+                "Google Gemini",
+                "gemini/gemini-2.5-flash, gemini/gemini-2.5-pro, gemini/gemini-2.0-flash",
+                "Gratis di aistudio.google.com (GEMINI_API_KEY)"
+            )
+            cat_table.add_row(
+                "Anthropic Claude",
+                "anthropic/claude-3-5-sonnet, anthropic/claude-3-5-haiku",
+                "ANTHROPIC_API_KEY"
+            )
+            cat_table.add_row(
+                "DeepSeek",
+                "deepseek/deepseek-chat, deepseek/deepseek-reasoner",
+                "DEEPSEEK_API_KEY"
+            )
+            cat_table.add_row(
+                "OpenAI",
+                "openai/gpt-4o, openai/gpt-4o-mini, openai/o3-mini",
+                "OPENAI_API_KEY"
+            )
+            cat_table.add_row(
+                "Groq (Ultra-Fast)",
+                "groq/llama-3.3-70b-versatile, groq/mixtral-8x7b-32768",
+                "GROQ_API_KEY"
+            )
+            cat_table.add_row(
+                "Ollama (Local)",
+                "ollama/llama3.2, ollama/qwen2.5, ollama/deepseek-r1",
+                "Server Ollama lokal (:11434)"
+            )
+
+            self.console.print(cat_table)
+            self.console.print()
+
+            # 3. Descriptive Commands Table (Request 5)
+            cmd_table = Table(
+                title="Panduan Perintah 'models' (Commands Guide)",
+                title_style="bold yellow",
+                border_style="yellow",
+                header_style="bold bright_yellow",
+            )
+            cmd_table.add_column("Perintah", style="bold green", width=34)
+            cmd_table.add_column("Deskripsi & Contoh", style="white")
+
+            cmd_table.add_row("models list", "Menampilkan katalog model, status 9Router, dan daftar API keys")
+            cmd_table.add_row("models use <model> [project]", "Mengatur model LLM untuk project (contoh: models use 9router/ag/gemini-3.8-flash)")
+            cmd_table.add_row("models 9router [port] [model]", "Menghubungkan 9Router lokal, memindai model aktif, dan memilih model")
+            cmd_table.add_row("models set-key <provider> <key>", "Menyimpan API key (contoh: models set-key 9router <key>)")
+            cmd_table.add_row("models set-base <provider> <url>", "Mengatur custom endpoint URL (contoh: models set-base 9router http://localhost:20128/v1)")
+            cmd_table.add_row("models tokens [project]", "Melihat statistik token input, output, dan riwayat sintesis")
+            cmd_table.add_row("models status [project]", "Melihat status project, model aktif, dan vault rujukan")
+
+            self.console.print(cmd_table)
+            self.console.print()
             return
 
         if sub in ("tokens", "usage"):
@@ -2133,16 +2248,77 @@ class CLIStudio:
             else:
                 self.console.print("[dim]No token consumption recorded yet.[/dim]\n")
 
+        elif sub in ("use", "set", "set-model"):
+            if len(parts) < 2:
+                self.console.print("[yellow]Usage: models use <model_name> [project_name][/yellow]\n")
+                return
+            model = parts[1]
+            target_proj = parts[2] if len(parts) >= 3 else None
+
+            if self.current_project:
+                self.current_project.model = model
+                self.project_manager.set_project_model(self.current_project.name, model)
+                if self.engine:
+                    self.engine.default_model = model
+                self.console.print(f"[bold green][✓] Updated model for project '{self.current_project.name}' to:[/bold green] [bold cyan]{model}[/bold cyan]\n")
+            elif target_proj:
+                try:
+                    p = self.project_manager.set_project_model(target_proj, model)
+                    self.console.print(f"[bold green][✓] Updated model for project '{p.name}' to:[/bold green] [bold cyan]{model}[/bold cyan]\n")
+                except Exception as exc:
+                    self.console.print(f"[bold red][x] Error:[/bold red] {exc}\n")
+            else:
+                active_p = self.project_manager.get_active_project()
+                if active_p:
+                    self.project_manager.set_project_model(active_p.name, model)
+                    self.console.print(f"[bold green][✓] Updated model for active project '{active_p.name}' to:[/bold green] [bold cyan]{model}[/bold cyan]\n")
+                else:
+                    self.config_manager.update(default_model=model)
+                    self.console.print(f"[bold green][✓] Set default fallback model to:[/bold green] [bold cyan]{model}[/bold cyan]\n")
+
         elif sub == "9router":
             port = 20128
+            chosen_model = None
             if len(parts) >= 2 and parts[1].isdigit():
                 port = int(parts[1])
-            self.config_manager.config.setup_9router(port=port)
+                if len(parts) >= 3:
+                    chosen_model = parts[2]
+            elif len(parts) >= 2:
+                chosen_model = parts[1]
+
+            base_url = f"http://localhost:{port}/v1"
+            live_models = fetch_9router_models(base_url)
+            auto_key = detect_9router_key()
+            if auto_key:
+                self.config_manager.config.set_api_key("9router", auto_key)
+            self.config_manager.config.set_api_base("9router", base_url)
+
+            if not chosen_model and live_models:
+                chosen_model = f"9router/{live_models[0]}"
+
+            if chosen_model:
+                if self.current_project:
+                    self.current_project.model = chosen_model
+                    self.project_manager.set_project_model(self.current_project.name, chosen_model)
+                    if self.engine:
+                        self.engine.default_model = chosen_model
+                else:
+                    active_p = self.project_manager.get_active_project()
+                    if active_p:
+                        self.project_manager.set_project_model(active_p.name, chosen_model)
+
             self.config_manager.save()
             self.config = self.config_manager.config
-            if self.engine:
-                self.engine.default_model = self.config.default_model
-            self.console.print(f"[bold green][✓] Configured 9Router gateway at http://localhost:{port}/v1 with default model '9router/gpt-4o'.[/bold green]\n")
+            detected_str = f" ({len(live_models)} live models detected)" if live_models else ""
+            model_disp = f" Assigned project model: '{chosen_model}'." if chosen_model else ""
+            self.console.print(f"[bold green][✓] Connected to 9Router at {base_url}{detected_str}.{model_disp}[/bold green]\n")
+
+        elif sub == "status":
+            target = [parts[1]] if len(parts) > 1 else None
+            if self.current_project:
+                self.cmd_project_status()
+            else:
+                self.dashboard_status(target)
 
         elif sub == "set-key":
             if len(parts) < 3:
@@ -2153,17 +2329,6 @@ class CLIStudio:
             self.config_manager.save()
             self.config = self.config_manager.config
             self.console.print(f"[bold green][✓] Successfully saved API key for provider '{provider}'.[/bold green]\n")
-
-        elif sub in ("use", "set", "set-model"):
-            if len(parts) < 2:
-                self.console.print("[yellow]Usage: models use <model_name>[/yellow]\n")
-                return
-            model = parts[1]
-            self.config_manager.update(default_model=model)
-            self.config = self.config_manager.config
-            if self.engine:
-                self.engine.default_model = model
-            self.console.print(f"[bold green][✓] Updated active model to:[/bold green] [bold cyan]{model}[/bold cyan]\n")
 
         elif sub == "set-base":
             if len(parts) < 3:
@@ -2176,7 +2341,7 @@ class CLIStudio:
             self.console.print(f"[bold green][✓] Set custom base URL for '{provider}' -> {url}[/bold green]\n")
 
         else:
-            self.console.print("[yellow]Usage: models [list | use <model> | set-key <provider> <key> | 9router [port] | tokens][/yellow]\n")
+            self.console.print("[yellow]Usage: models [list | use <model> [project] | set-key <provider> <key> | 9router [port] [model] | tokens | status][/yellow]\n")
 
     def cmd_settings(self, arg: str = "") -> None:
         """Display or update general workspace and citation settings."""
@@ -2335,17 +2500,17 @@ class CLIStudio:
         else:
             self.console.print("[dim]● Notice: No papers are active in the vault. Operating in general synthesis mode.[/dim]")
 
-        model_name = self.config.default_model
+        model_name = self.get_active_project_model()
         api_key = self.config.get_api_key_for_model(model_name)
 
         if not api_key:
+            provider_hint = "9router" if model_name.startswith("9router/") else (model_name.split("/")[0] if "/" in model_name else "gemini")
             self.console.print()
             self.console.print(Panel(
                 f"[bold yellow][!] No API key configured for model '{model_name}'.[/bold yellow]\n\n"
-                f"To enable live AI generation, run:\n"
-                f"  [bold cyan]/models set-key gemini <YOUR_API_KEY>[/bold cyan]\n\n"
-                f"[dim]Tips: Dapatkan kunci API Gemini resmi 100% gratis tanpa kartu kredit di:\n"
-                f"https://aistudio.google.com/apikey[/dim]",
+                f"To configure API key, run:\n"
+                f"  [bold cyan]/models set-key {provider_hint} <YOUR_API_KEY>[/bold cyan]\n\n"
+                f"[dim]Tips: Jika menggunakan 9Router lokal, periksa kunci di dasbor 9Router (http://localhost:20128).[/dim]",
                 title="API Key Required for Live LLM",
                 border_style="yellow",
             ))
@@ -2365,6 +2530,7 @@ class CLIStudio:
                     query=query,
                     documents=existing_paths,
                     skill_name=self.active_skill_name,
+                    model=model_name,
                 ):
                     accumulated_tokens.append(token)
                     sys.stdout.write(token)

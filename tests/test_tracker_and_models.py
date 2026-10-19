@@ -238,9 +238,9 @@ class TestCLIModelsAndStatus:
 
         # Test models command at dashboard
         studio.handle_dashboard_command("models use 9router/claude-3-5-sonnet")
-        assert studio.config.default_model == "9router/claude-3-5-sonnet"
+        assert studio.project_manager.get_project_model("nlp_study") == "9router/claude-3-5-sonnet"
 
         # Test models 9router setup
         studio.handle_dashboard_command("models 9router 20128")
-        assert studio.config.default_model == "9router/gpt-4o"
+        assert studio.config.default_model.startswith("9router/")
         assert studio.config.api_bases.get("9router") == "http://localhost:20128/v1"

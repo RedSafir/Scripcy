@@ -337,7 +337,13 @@ class LLMEngine:
                     accumulated_output.append(delta)
                     yield delta
         except Exception as exc:
-            raise EngineError(f"Streaming query failed with model '{active_model}': {exc}") from exc
+            err_msg = str(exc)
+            if "9router" in active_model.lower() and ("AuthenticationError" in type(exc).__name__ or "invalid_api_key" in str(exc).lower()):
+                err_msg += (
+                    "\n[Hint] 9Router authentication failed. Set your 9Router API key using: "
+                    "'models set-key 9router <key>' (or check http://localhost:20128)"
+                )
+            raise EngineError(f"Streaming query failed with model '{active_model}': {err_msg}") from exc
         finally:
             # Track tokens even if partially streamed or completed
             output_tokens_est = estimate_tokens("".join(accumulated_output))

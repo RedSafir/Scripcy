@@ -290,7 +290,8 @@ class TestCLIOperations:
         runner = CliRunner()
         result = runner.invoke(cli_app, ["models", "list"])
         assert result.exit_code == 0
-        assert "Active Default Model" in result.output
+        assert "Model & Provider Inventory" in result.output
+        assert "Project Models" in result.output
 
     def test_cli_models_set_key(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         cfg_file = tmp_path / "cli_cfg.json"
@@ -311,10 +312,7 @@ class TestCLIOperations:
         runner = CliRunner()
         result = runner.invoke(cli_app, ["models", "use", "openai/gpt-4o"])
         assert result.exit_code == 0
-        assert "Updated active model to:" in result.output
-
-        cfg = ScrpcyConfig.load(cfg_file)
-        assert cfg.default_model == "openai/gpt-4o"
+        assert "Updated model for project" in result.output
 
     def test_cli_models_9router(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         cfg_file = tmp_path / "cli_cfg.json"

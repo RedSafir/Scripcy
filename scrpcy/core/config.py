@@ -5,7 +5,9 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import sqlite3
 from typing import Any
+import urllib.request
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
@@ -19,6 +21,48 @@ except ImportError:
 
 DEFAULT_CONFIG_ENV = "SCRPCY_CONFIG"
 DEFAULT_CONFIG_PATH = Path.home() / ".scrpcy" / "config.json"
+
+
+def detect_9router_key() -> str | None:
+    """Attempt to discover active 9Router API key from local 9router installation database."""
+    candidates: list[Path] = []
+    appdata = os.environ.get("APPDATA")
+    if appdata:
+        candidates.append(Path(appdata) / "9router" / "db" / "data.sqlite")
+    candidates.append(Path.home() / ".config" / "9router" / "db" / "data.sqlite")
+    candidates.append(Path.home() / ".9router" / "db" / "data.sqlite")
+
+    for db_path in candidates:
+        if db_path.is_file():
+            try:
+                con = sqlite3.connect(str(db_path), timeout=1.0)
+                cur = con.cursor()
+                row = cur.execute("SELECT key FROM apiKeys WHERE isActive = 1 ORDER BY createdAt DESC LIMIT 1;").fetchone()
+                con.close()
+                if row and row[0]:
+                    return str(row[0]).strip()
+            except Exception:
+                continue
+    return None
+
+
+def fetch_9router_models(base_url: str = "http://localhost:20128/v1", timeout: float = 1.0) -> list[str]:
+    """Fetch list of available models from a running 9Router or OpenAI-compatible gateway."""
+    endpoint = f"{base_url.rstrip('/')}/models"
+    try:
+        req = urllib.request.Request(endpoint, headers={"User-Agent": "scrpcy"})
+        with urllib.request.urlopen(req, timeout=timeout) as response:
+            if response.status == 200:
+                data = json.loads(response.read().decode("utf-8"))
+                models: list[str] = []
+                for item in data.get("data", []):
+                    m_id = item.get("id")
+                    if m_id:
+                        models.append(str(m_id))
+                return models
+    except Exception:
+        pass
+    return []
 
 
 class CitationPreferences(BaseModel):
@@ -89,7 +133,7 @@ class ScrpcyConfig(BaseModel):
         """Derive provider from model string and return matching API key."""
         model_str = model.lower()
         if model_str.startswith("9router/"):
-            return self.get_api_key("9router") or self.get_api_key("openai") or "sk-9router-local"
+            return self.get_api_key("9router") or detect_9router_key() or "sk-9router-local"
         if "/" in model_str:
             prefix = model_str.split("/", 1)[0]
             return self.get_api_key(prefix)
@@ -126,14 +170,20 @@ class ScrpcyConfig(BaseModel):
         self,
         port: int = 20128,
         host: str = "localhost",
-        api_key: str = "sk-9router-local",
-        default_model: str = "9router/gpt-4o",
+        api_key: str | None = None,
+        default_model: str | None = None,
     ) -> None:
         """Convenience method to configure 9Router local smart proxy."""
         base_url = f"http://{host}:{port}/v1"
         self.set_api_base("9router", base_url)
-        self.set_api_key("9router", api_key)
-        self.default_model = default_model
+        resolved_key = api_key or self.get_api_key("9router") or detect_9router_key() or "sk-9router-local"
+        self.set_api_key("9router", resolved_key)
+        if default_model:
+            self.default_model = default_model
+        else:
+            models = fetch_9router_models(base_url)
+            if models:
+                self.default_model = f"9router/{models[0]}"
 
     def save(self, path: Path | str | None = None) -> Path:
         """Save configuration to JSON file."""

@@ -31,6 +31,7 @@ class ProjectInfo(BaseModel):
         description="ISO 8601 last accessed timestamp.",
     )
     description: str = Field(default="", description="Optional project description or notes.")
+    model: str | None = Field(default=None, description="Preferred LLM model for this project.")
 
     @property
     def resolved_path(self) -> Path:
@@ -299,3 +300,32 @@ class ProjectManager:
             return ProjectInfo.model_validate(p_data)
 
         raise FileNotFoundError(f"Project '{old_name}' not found in registry data.")
+
+    def set_project_model(self, identifier: str | int, model: str) -> ProjectInfo:
+        """Update the preferred LLM model for a registered project."""
+        target = self.get_project(identifier)
+        if not target:
+            raise FileNotFoundError(f"Project '{identifier}' not found in registry.")
+
+        data = self._load_registry_data()
+        projects = data.get("projects", {})
+        if target.name in projects:
+            projects[target.name]["model"] = model.strip()
+            self._save_registry_data(data)
+            target.model = model.strip()
+
+            # Also update local .scrpcy/project.json if it exists
+            try:
+                meta_file = target.resolved_path / ".scrpcy" / "project.json"
+                if meta_file.parent.exists():
+                    meta_file.write_text(target.model_dump_json(indent=2), encoding="utf-8")
+            except Exception:
+                pass
+
+            return target
+        raise FileNotFoundError(f"Project '{target.name}' not found in registry data.")
+
+    def get_project_model(self, identifier: str | int) -> str | None:
+        """Get the preferred LLM model configured for a project, if any."""
+        proj = self.get_project(identifier)
+        return proj.model if proj else None

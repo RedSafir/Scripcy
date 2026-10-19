@@ -13,7 +13,7 @@ from rich.table import Table
 import typer
 import uvicorn
 
-from scrpcy.core.config import ConfigManager, ScrpcyConfig
+from scrpcy.core.config import ConfigManager, ScrpcyConfig, detect_9router_key, fetch_9router_models
 from scrpcy.core.parser import DocumentParser
 from scrpcy.core.project import ProjectManager
 from scrpcy.core.search import PaperSearcher
@@ -50,8 +50,10 @@ app.add_typer(settings_app, name="settings")
 
 @models_app.command("list")
 def models_list() -> None:
-    """List configured models, active provider keys, 9Router status, and base URLs."""
+    """List configured models, project assignments, 9Router status, and supported presets."""
     cfg = ScrpcyConfig.load()
+    pm = ProjectManager()
+    projects = pm.list_projects()
 
     table = Table(
         title="scrpcy Model & Provider Inventory",
@@ -59,15 +61,26 @@ def models_list() -> None:
         border_style="cyan",
         header_style="bold bright_cyan",
     )
-    table.add_column("Property", style="bold white", width=22)
+    table.add_column("Property", style="bold white", width=24)
     table.add_column("Configuration / Status", style="white")
 
-    table.add_row("Active Default Model", f"[bold green]{cfg.default_model}[/bold green]")
+    # Project Model assignments
+    if projects:
+        proj_lines = [f"{p.name} -> [bold cyan]{p.model or 'Not assigned'}[/bold cyan]" for p in projects[:6]]
+        table.add_row("Project Models", "\n".join(proj_lines))
+    else:
+        table.add_row("Project Models", "[dim]No research projects registered yet[/dim]")
 
     # 9Router check
     router9_base = cfg.api_bases.get("9router", "http://localhost:20128/v1")
-    router9_key = cfg.get_api_key("9router")
-    router9_status = "[bold green][Configured][/bold green]" if router9_key else "[dim][Standby / Not Configured][/dim]"
+    router9_key = cfg.get_api_key("9router") or detect_9router_key()
+    live_r9_models = fetch_9router_models(router9_base)
+    if live_r9_models:
+        router9_status = f"[bold green][Online - {len(live_r9_models)} models detected][/bold green]"
+    elif router9_key:
+        router9_status = "[bold green][Configured][/bold green]"
+    else:
+        router9_status = "[dim][Standby / Not Configured][/dim]"
     table.add_row("9Router Local Gateway", f"{router9_base} {router9_status}")
 
     # Registered API Keys (masked)
@@ -76,6 +89,8 @@ def models_list() -> None:
         if val:
             masked = f"{val[:3]}...{val[-4:]}" if len(val) > 8 else "***"
             all_keys.append(f"{provider} ({masked})")
+    if detect_9router_key() and "9router" not in [k for k, v in cfg.api_keys.items() if v]:
+        all_keys.append("9router (Auto-detected)")
     keys_display = ", ".join(all_keys) if all_keys else "[dim]No API keys stored locally[/dim]"
     table.add_row("Configured Provider Keys", keys_display)
 
@@ -88,37 +103,92 @@ def models_list() -> None:
     console.print(table)
     console.print()
 
-    # Model Presets
+    # 1. Live 9Router Models Table (if 9Router is active)
+    if live_r9_models:
+        r9_table = Table(
+            title=f"Live 9Router Models Detected (at {router9_base})",
+            title_style="bold green",
+            border_style="green",
+            header_style="bold bright_green",
+        )
+        r9_table.add_column("#", justify="right", style="dim", width=3)
+        r9_table.add_column("Model Identifier (for Scrpcy)", style="bold cyan")
+        r9_table.add_column("Command to Use", style="yellow")
+
+        for idx, m_id in enumerate(live_r9_models, 1):
+            cmd_example = f"scrpcy models use 9router/{m_id}"
+            r9_table.add_row(str(idx), f"9router/{m_id}", cmd_example)
+
+        console.print(r9_table)
+        console.print()
+
+    # 2. Supported Model Presets (Request 4)
     presets_table = Table(
-        title="Supported Model Architecture Presets (OpenCode style)",
+        title="Katalog Model yang Didukung (Supported Model Architecture Presets)",
         title_style="bold magenta",
         border_style="magenta",
         header_style="bold bright_magenta",
     )
     presets_table.add_column("Provider / Router", style="bold white", width=18)
-    presets_table.add_column("Example Model Identifiers", style="cyan")
-    presets_table.add_column("Key / Endpoint Required", style="dim")
+    presets_table.add_column("Contoh Model Identifiers", style="cyan")
+    presets_table.add_column("Keterangan & API Key Diperlukan", style="dim")
 
-    presets_table.add_row("9Router (Local)", "9router/gpt-4o, 9router/claude-3-5-sonnet", "Local proxy at :20128")
-    presets_table.add_row("Google Gemini", "gemini/gemini-2.5-pro, gemini/gemini-2.5-flash", "GEMINI_API_KEY")
-    presets_table.add_row("OpenAI", "openai/gpt-4o, openai/o3-mini", "OPENAI_API_KEY")
-    presets_table.add_row("Anthropic Claude", "claude-3-5-sonnet, anthropic/claude-3-5-haiku", "ANTHROPIC_API_KEY")
+    presets_table.add_row("9Router (Local)", "9router/<model_id> (lihat tabel live di atas)", "Proxy lokal :20128, multi-provider otomatis")
+    presets_table.add_row("Google Gemini", "gemini/gemini-2.5-flash, gemini/gemini-2.5-pro, gemini/gemini-2.0-flash", "Gratis di aistudio.google.com (GEMINI_API_KEY)")
+    presets_table.add_row("Anthropic Claude", "anthropic/claude-3-5-sonnet, anthropic/claude-3-5-haiku", "ANTHROPIC_API_KEY")
     presets_table.add_row("DeepSeek", "deepseek/deepseek-chat, deepseek/deepseek-reasoner", "DEEPSEEK_API_KEY")
-    presets_table.add_row("Groq", "groq/llama-3.3-70b-versatile", "GROQ_API_KEY")
-    presets_table.add_row("Ollama (Local)", "ollama/llama3", "Local server at :11434")
+    presets_table.add_row("OpenAI", "openai/gpt-4o, openai/gpt-4o-mini, openai/o3-mini", "OPENAI_API_KEY")
+    presets_table.add_row("Groq", "groq/llama-3.3-70b-versatile, groq/mixtral-8x7b-32768", "GROQ_API_KEY")
+    presets_table.add_row("Ollama (Local)", "ollama/llama3.2, ollama/qwen2.5", "Local server at :11434")
 
     console.print(presets_table)
-    console.print("\n[dim]To switch active model: [bold green]scrpcy models use <model_name>[/bold green][/dim]\n")
+    console.print()
+
+    # 3. Descriptive Commands Table (Request 5)
+    cmd_table = Table(
+        title="Panduan Perintah 'scrpcy models' (Commands Guide)",
+        title_style="bold yellow",
+        border_style="yellow",
+        header_style="bold bright_yellow",
+    )
+    cmd_table.add_column("Perintah", style="bold green", width=40)
+    cmd_table.add_column("Deskripsi & Contoh", style="white")
+
+    cmd_table.add_row("scrpcy models list", "Menampilkan katalog model, status 9Router, dan daftar API keys")
+    cmd_table.add_row("scrpcy models use <model> [-p project]", "Mengatur model LLM untuk project (contoh: scrpcy models use 9router/ag/gemini-3.8-flash -p skripsi)")
+    cmd_table.add_row("scrpcy models 9router [options]", "Menghubungkan 9Router lokal, memindai model aktif, dan memilih model")
+    cmd_table.add_row("scrpcy models set-key <provider> <key>", "Menyimpan API key (contoh: scrpcy models set-key 9router <key>)")
+    cmd_table.add_row("scrpcy models set-base <provider> <url>", "Mengatur custom endpoint URL (contoh: scrpcy models set-base 9router http://localhost:20128/v1)")
+    cmd_table.add_row("scrpcy models tokens [-p project]", "Melihat statistik token input, output, dan riwayat sintesis")
+    cmd_table.add_row("scrpcy models status [project]", "Melihat status project, model aktif, dan vault rujukan")
+
+    console.print(cmd_table)
+    console.print()
 
 
 @models_app.command("use")
 def models_use(
-    model: str = typer.Argument(..., help="Model identifier (e.g. 9router/gpt-4o, gemini/gemini-2.5-pro, openai/gpt-4o)."),
+    model: str = typer.Argument(..., help="Model identifier (e.g. 9router/ag/gemini-3.8-flash, gemini/gemini-2.5-flash)."),
+    project: str | None = typer.Option(None, "--project", "-p", help="Target project name to assign model to."),
 ) -> None:
-    """Set the active default LLM model for research synthesis."""
-    mgr = ConfigManager()
-    mgr.update(default_model=model)
-    console.print(f"[bold green][✓] Updated active model to:[/bold green] [bold cyan]{model}[/bold cyan]")
+    """Set the LLM model for a research project."""
+    pm = ProjectManager()
+    target_p = None
+    if project:
+        target_p = pm.get_project(project)
+        if not target_p:
+            console.print(f"[bold red][x] Project '{project}' not found.[/bold red]")
+            raise typer.Exit(code=1)
+    else:
+        target_p = pm.get_active_project()
+
+    if target_p:
+        pm.set_project_model(target_p.name, model)
+        console.print(f"[bold green][✓] Updated model for project '{target_p.name}' to:[/bold green] [bold cyan]{model}[/bold cyan]")
+    else:
+        mgr = ConfigManager()
+        mgr.update(default_model=model)
+        console.print(f"[bold green][✓] Updated default fallback model to:[/bold green] [bold cyan]{model}[/bold cyan]")
 
 
 @models_app.command("set-key")
@@ -149,26 +219,26 @@ def models_set_base(
 def models_setup_9router(
     port: int = typer.Option(20128, "--port", "-p", help="9Router local port."),
     host: str = typer.Option("localhost", "--host", "-h", help="9Router host address."),
-    key: str | None = typer.Option(None, "--key", "-k", help="9Router API key secret (if any)."),
-    model: str | None = typer.Option(None, "--model", "-m", help="Default model behind 9Router (e.g. 9router/gpt-4o)."),
+    key: str | None = typer.Option(None, "--key", "-k", help="9Router API key secret (auto-detected if omitted)."),
+    model: str | None = typer.Option(None, "--model", "-m", help="Model to route through 9Router."),
 ) -> None:
     """Quick setup for 9Router local AI gateway (interactive or via flags)."""
     console.print("[bold cyan]=== 9Router Local Gateway Setup ===[/bold cyan]")
     final_port = port
     final_host = host
-    final_key = key or "sk-9router-local"
-    final_model = model or "9router/gpt-4o"
+    base_url = f"http://{final_host}:{final_port}/v1"
+    auto_key = detect_9router_key()
+    final_key = key or auto_key or "sk-9router-local"
 
-    # Interactive prompt if key or model was not provided via command line options
-    if not key:
-        final_port_str = typer.prompt("9Router Port", default=str(port))
-        try:
-            final_port = int(final_port_str)
-        except ValueError:
-            final_port = 20128
+    live_models = fetch_9router_models(base_url)
+    final_model = model
+    if not final_model and live_models:
+        final_model = f"9router/{live_models[0]}"
+
+    if not key and not auto_key:
         final_key = typer.prompt("9Router API Key (press Enter for default)", default="sk-9router-local")
-    if not model:
-        final_model = typer.prompt("Default Model to route through 9Router", default="9router/gpt-4o")
+    if not final_model:
+        final_model = typer.prompt("Model to route through 9Router", default="9router/gpt-4o")
 
     mgr = ConfigManager()
     mgr.config.setup_9router(
@@ -179,11 +249,20 @@ def models_setup_9router(
     )
     mgr.save()
 
+    # If there is an active project, assign model to it
+    pm = ProjectManager()
+    active_p = pm.get_active_project()
+    if active_p and final_model:
+        pm.set_project_model(active_p.name, final_model)
+
     console.print()
     console.print(f"[bold green][✓] Successfully configured 9Router integration![/bold green]")
     console.print(f"  • Endpoint     : [cyan]http://{final_host}:{final_port}/v1[/cyan]")
-    console.print(f"  • Active Model : [bold cyan]{final_model}[/bold cyan]")
+    if final_model:
+        console.print(f"  • Assigned Model: [bold cyan]{final_model}[/bold cyan]")
     console.print(f"  • API Key      : [dim]{final_key[:3]}...{final_key[-4:] if len(final_key) > 7 else '***'}[/dim]")
+    if live_models:
+        console.print(f"  • Live Models  : [green]{len(live_models)} models detected in your 9Router[/green]")
     console.print("\n[dim]All LLM calls with '9router/...' will automatically route through your local 9Router instance.[/dim]\n")
 
 

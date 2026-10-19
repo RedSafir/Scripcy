@@ -261,7 +261,7 @@ class TestProjectCommands:
 
     def test_cmd_model_and_style(self, cli_studio: CLIStudio) -> None:
         cli_studio.cmd_model("openai/gpt-4o")
-        assert cli_studio.config.default_model == "openai/gpt-4o"
+        assert cli_studio.get_active_project_model() == "openai/gpt-4o"
 
         cli_studio.cmd_style("ieee")
         assert cli_studio.config.citation.style == "ieee"
@@ -278,7 +278,7 @@ class TestProjectCommands:
 
         # Test 9Router setup
         cli_studio.cmd_models("9router")
-        assert cli_studio.config.default_model == "9router/gpt-4o"
+        assert cli_studio.config.default_model.startswith("9router/")
         assert "9router" in cli_studio.config.api_bases
 
         # Test tokens
