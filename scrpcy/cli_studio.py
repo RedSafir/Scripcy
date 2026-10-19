@@ -141,9 +141,9 @@ class CLIStudio:
         while True:
             try:
                 if self.current_project:
-                    prompt = f"[bold green][scrpcy:project / {self.current_project.name}][/bold green] [bold cyan]❯[/bold cyan] "
+                    prompt = f"[bold green]{self.current_project.name}[/bold green][bold cyan]>[/bold cyan] "
                 else:
-                    prompt = "[bold cyan][scrpcy:dashboard][/bold cyan] [bold cyan]❯[/bold cyan] "
+                    prompt = "[bold cyan]>[/bold cyan] "
 
                 raw_input = self.console.input(prompt).strip()
 
