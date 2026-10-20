@@ -162,12 +162,36 @@ class EvidenceSynthesizer:
         max_chunks: int | None = None,
         token_budget: int | None = None,
     ) -> list[EvidenceChunk]:
-        """Decompose documents, rank passages against query, and select within token limits."""
-        limit_chunks = max_chunks or self.default_max_chunks
-        limit_tokens = token_budget or self.default_token_budget
+        """Decompose documents, rank passages against query, and select within token limits.
+
+        Supports both targeted query retrieval and corpus-wide multi-document balanced synthesis.
+        """
+        clean_q = query.strip().lower()
+        corpus_patterns = [
+            r"\b(rangkum|ringkas|sintesis|telaah|analisis|jelaskan|daftar|sebutkan|review)\s+(semua|seluruh|isi|setiap|koleksi)\b",
+            r"\b(semua|seluruh|setiap)\s+(paper|jurnal|dokumen|artikel|literatur|file|berkas|topik|kajian)\b",
+            r"\b(isi|koleksi|daftar)\s+(vault|proyek|project|katalog)\b",
+            r"\b(summarize|synthesize|overview|review|list|analyze)\s+(all|every|the whole|entire)\b",
+            r"\b(all|every|entire)\s+(papers?|documents?|journals?|articles?|vault|files?)\b",
+            r"\bwhat\s+(papers?|documents?)\s+(are in|in the)\s+vault\b",
+            r"\bapa\s+saja\s+(paper|jurnal|dokumen|isi|artikel)\b",
+            r"\bada\s+paper\s+apa\s+saja\b",
+        ]
+        is_corpus_query = any(re.search(pat, clean_q) for pat in corpus_patterns)
+
+        num_docs = len(documents)
+        if is_corpus_query and num_docs > 0:
+            limit_chunks = max(max_chunks or self.default_max_chunks, num_docs * 2)
+            limit_tokens = max(token_budget or self.default_token_budget, num_docs * 1200)
+        else:
+            limit_chunks = max_chunks or self.default_max_chunks
+            limit_tokens = token_budget or self.default_token_budget
+
         query_terms = tokenize_query(query)
 
         all_chunks: list[EvidenceChunk] = []
+        doc_chunks_by_source: dict[str, list[EvidenceChunk]] = {}
+
         for doc_idx, doc in enumerate(documents):
             source_name = f"doc_{doc_idx + 1}"
             text_content = ""
@@ -183,38 +207,73 @@ class EvidenceSynthesizer:
                 text_content = doc
 
             doc_chunks = self.chunk_document(text_content, source_name)
-            all_chunks.extend(doc_chunks)
+            if doc_chunks:
+                all_chunks.extend(doc_chunks)
+                doc_chunks_by_source[source_name] = doc_chunks
 
         if not all_chunks:
             return []
 
-        scored_chunks: list[EvidenceChunk] = []
+        # Score chunks
         for chunk in all_chunks:
             chunk.score = self.score_chunk(query_terms, query, chunk.text)
-            scored_chunks.append(chunk)
+            if is_corpus_query:
+                # In corpus summary mode, chunk 0 (title/abstract/intro) is crucial for every document
+                if chunk.chunk_id.endswith("_c0"):
+                    chunk.score = max(chunk.score, 2.5)
+                else:
+                    chunk.score = max(chunk.score, 0.5)
 
-        scored_chunks.sort(key=lambda c: c.score, reverse=True)
+        # Sort chunks within each document by score descending
+        for src in doc_chunks_by_source:
+            doc_chunks_by_source[src].sort(key=lambda c: c.score, reverse=True)
 
         selected: list[EvidenceChunk] = []
+        selected_ids: set[str] = set()
         used_tokens = 0
 
-        for chunk in scored_chunks:
-            if chunk.score <= 0.0 and selected:
-                break
+        # Phase 1: Stratified round-robin across documents to guarantee fair multi-doc representation
+        max_rounds = 2 if is_corpus_query else 1
+        for round_idx in range(max_rounds):
+            for src, doc_chunks in doc_chunks_by_source.items():
+                if len(selected) >= limit_chunks:
+                    break
+                if round_idx < len(doc_chunks):
+                    candidate = doc_chunks[round_idx]
+                    if candidate.chunk_id in selected_ids:
+                        continue
+                    if candidate.score <= 0.0 and not is_corpus_query:
+                        continue
+                    if used_tokens + candidate.token_estimate > limit_tokens:
+                        if not selected:
+                            max_words = max(10, int(limit_tokens / 1.35))
+                            truncated_words = candidate.text.split()[:max_words]
+                            candidate.text = " ".join(truncated_words) + "..."
+                            candidate.token_estimate = estimate_tokens(candidate.text)
+                            selected.append(candidate)
+                            selected_ids.add(candidate.chunk_id)
+                            used_tokens += candidate.token_estimate
+                        continue
+
+                    selected.append(candidate)
+                    selected_ids.add(candidate.chunk_id)
+                    used_tokens += candidate.token_estimate
+
+        # Phase 2: Fill remaining capacity with globally highest scoring chunks
+        remaining_candidates = [
+            c for c in all_chunks
+            if c.chunk_id not in selected_ids and (c.score > 0.0 or is_corpus_query)
+        ]
+        remaining_candidates.sort(key=lambda c: c.score, reverse=True)
+
+        for candidate in remaining_candidates:
             if len(selected) >= limit_chunks:
                 break
-            if used_tokens + chunk.token_estimate > limit_tokens:
-                if not selected:
-                    max_words = max(10, int(limit_tokens / 1.35))
-                    truncated_words = chunk.text.split()[:max_words]
-                    chunk.text = " ".join(truncated_words) + "..."
-                    chunk.token_estimate = estimate_tokens(chunk.text)
-                    selected.append(chunk)
-                    used_tokens += chunk.token_estimate
+            if used_tokens + candidate.token_estimate > limit_tokens:
                 continue
-
-            selected.append(chunk)
-            used_tokens += chunk.token_estimate
+            selected.append(candidate)
+            selected_ids.add(candidate.chunk_id)
+            used_tokens += candidate.token_estimate
 
         return selected
 

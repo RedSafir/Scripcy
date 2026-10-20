@@ -15,7 +15,6 @@ import webbrowser
 
 from rich.console import Console
 from rich.markup import escape
-from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
@@ -54,10 +53,12 @@ except Exception:
 from scrpcy.ui.interactive import (
     _format_model_display_name,
     interactive_action_confirm,
+    interactive_carousel_table,
     interactive_help_view,
     interactive_input_prompt,
     interactive_model_selector,
     interactive_skill_selector,
+    interactive_token_warning_confirm,
 )
 from scrpcy.ui.formatters import render_academic_markdown
 
@@ -154,8 +155,13 @@ class CLIStudio:
 
     def get_active_project_model(self) -> str:
         """Get the model configured for the current project, or fallback default."""
-        if self.current_project and self.current_project.model:
-            return self.current_project.model
+        if self.current_project:
+            stored = self.project_manager.get_project_model(self.current_project.name)
+            if stored:
+                self.current_project.model = stored
+                return stored
+            if self.current_project.model:
+                return self.current_project.model
         return self.config.default_model
 
     def get_active_project_effort(self) -> str:
@@ -209,6 +215,11 @@ class CLIStudio:
             f" [bold cyan]scrpcy[/bold cyan] [dim]•[/dim] [dim]dashboard ({p_count} projects)[/dim]"
         )
 
+    def render_mode_divider(self) -> None:
+        """Render horizontal divider when switching between modes or resources."""
+        width = self.console.width or 80
+        self.console.print(Text("─" * width, style="grey23"))
+
     def run(self) -> None:
         """Main interaction loop handling Dashboard and Project modes."""
         self.print_banner()
@@ -225,22 +236,34 @@ class CLIStudio:
 
                 if self.sub_mode == "vault":
                     prompt_lbl = f"{self.current_project.name}/vault> " if self.current_project else "vault> "
+                    resolved_mode = "vault"
                 elif self.sub_mode == "processing":
                     prompt_lbl = f"{self.current_project.name}/processing> " if self.current_project else "processing> "
+                    resolved_mode = "processing"
+                elif self.sub_mode == "chat_hub":
+                    prompt_lbl = f"{self.current_project.name}/chat> " if self.current_project else "chat> "
+                    resolved_mode = "chat_hub"
                 elif self.sub_mode == "chat":
                     session = self._ensure_active_chat_session()
                     sess_name = session.name if session else "chat1"
                     prompt_lbl = f"{self.current_project.name}/{sess_name}> " if self.current_project else f"{sess_name}> "
+                    resolved_mode = "chat"
                 elif self.current_project:
                     prompt_lbl = f"{self.current_project.name}> "
+                    resolved_mode = "project"
                 else:
                     prompt_lbl = "> "
+                    resolved_mode = "dashboard"
+
+                ctx_lbl = self.current_project.name if self.current_project else ""
 
                 raw_input = interactive_input_prompt(
                     console=self.console,
                     prompt_label=prompt_lbl,
                     is_project_mode=(self.current_project is not None),
                     is_chat_mode=(self.sub_mode == "chat"),
+                    mode=resolved_mode,
+                    context_label=ctx_lbl,
                     current_model=mod,
                     current_effort=eff,
                 ).strip()
@@ -259,6 +282,8 @@ class CLIStudio:
                         current_effort=eff,
                         is_project_mode=(self.current_project is not None),
                         is_chat_mode=(self.sub_mode == "chat"),
+                        mode=resolved_mode,
+                        context_label=ctx_lbl,
                     )
                     continue
 
@@ -268,7 +293,13 @@ class CLIStudio:
                     self.handle_project_interaction(raw_input)
 
             except KeyboardInterrupt:
-                if self.sub_mode is not None:
+                if self.sub_mode == "chat":
+                    self.render_mode_divider()
+                    self.sub_mode = "chat_hub"
+                    self.console.print(f"\n[dim]Returned to chat hub: {self.current_project.name}/chat>[/dim]\n")
+                    continue
+                elif self.sub_mode is not None:
+                    self.render_mode_divider()
                     self.sub_mode = None
                     self.console.print(f"\n[dim]Returned to project root: {self.current_project.name if self.current_project else 'dashboard'}>[/dim]\n")
                     continue
@@ -285,27 +316,14 @@ class CLIStudio:
     # =========================================================================
 
     def print_dashboard_help(self) -> None:
-        """Render instructions for Dashboard mode."""
-        self.console.print("[bold bright_white]Dashboard Commands:[/bold bright_white]")
-        table = Table(box=None, padding=(0, 2), show_header=False)
-        table.add_column("Command", style="bold cyan")
-        table.add_column("Args", style="dim")
-        table.add_column("Description", style="white")
-
-        table.add_row("/projects", "", "List registered research projects (alias: /list, /ls, projects)")
-        table.add_row("/new", "<name> [folder_path]", "Create and connect a master project folder")
-        table.add_row("/open", "<# | name | folder_path>", "Open an existing project folder")
-        table.add_row("/delete", "<# | name>", "Remove project from Scrpcy (alias: /rm)")
-        table.add_row("/skills", "", "List available AI persona skills (alias: /skill, skills)")
-        table.add_row("/models", "[list | use | 9router | tokens]", "Manage LLM models, API keys, 9Router, and tokens (models)")
-        table.add_row("/status", "[project_name]", "View research project status, assigned model, and token consumption (status)")
-        table.add_row("/settings", "[show | set-citation]", "Manage workspace path and citation preferences (settings)")
-        table.add_row("/clear", "", "Clear terminal screen")
-        table.add_row("/help", "", "Open interactive help (alias: ?)")
-        table.add_row("/exit", "", "Exit the studio (alias: /quit, /q)")
-
-        self.console.print(table)
-        self.console.print()
+        """Render simple available commands for Dashboard mode."""
+        interactive_help_view(
+            console=self.console,
+            current_model=self.config.default_model,
+            current_effort="high",
+            mode="dashboard",
+            context_label="Dashboard",
+        )
 
     def handle_dashboard_command(self, raw_line: str) -> None:
         """Process commands while on the initial dashboard."""
@@ -329,7 +347,13 @@ class CLIStudio:
         elif cmd in ("skills", "skill"):
             self.render_skills_catalog(is_project_mode=False)
         elif cmd in ("status", "info"):
-            self.dashboard_status(args)
+            if args:
+                self.dashboard_status(args)
+            else:
+                self.console.print(
+                    "[dim]Perintah 'status' digunakan di dalam project untuk melihat model dan konsumsi token.\n"
+                    "Buka project terlebih dahulu (contoh: [bold cyan]open <nama>[/bold cyan]).[/dim]\n"
+                )
         elif cmd in ("models", "model", "config"):
             self.cmd_models(" ".join(args))
         elif cmd in ("settings", "setting"):
@@ -345,7 +369,7 @@ class CLIStudio:
         projects = self.project_manager.list_projects()
         if not projects:
             self.console.print("[yellow][!] No research projects registered yet.[/yellow]")
-            self.console.print("[dim]Create a new project using: [bold green]new <project_name>[/bold green][/dim]\n")
+            self.console.print("[dim]Create a new project using: [bold cyan]new <project_name>[/bold cyan][/dim]\n")
             return
 
         target_name = args[0] if args else None
@@ -366,16 +390,12 @@ class CLIStudio:
         vault_count = len([f for f in vault_dir.iterdir() if f.is_file()]) if vault_dir.is_dir() else 0
         token_stats = TokenTracker.get_project_tokens(target_project.path)
 
-        table = Table(
-            title=f"Research Project Status: {target_project.name}",
-            title_style="bold cyan",
-            border_style="cyan",
-            header_style="bold bright_cyan",
-        )
-        table.add_column("Property", style="bold white", width=22)
+        self.console.print(f"\n[bold bright_white]Research Project Status: {target_project.name}[/bold bright_white]")
+        table = Table(box=None, padding=(0, 2), show_header=False)
+        table.add_column("Property", style="dim", width=22)
         table.add_column("Details", style="white")
 
-        table.add_row("Project Name", f"[bold green]{target_project.name}[/bold green]")
+        table.add_row("Project Name", f"[bold bright_white]{target_project.name}[/bold bright_white]")
         table.add_row("Master Path", str(target_project.path))
         table.add_row("Vault Papers", f"{vault_count} documents in vault")
         proj_model = target_project.model or f"[dim]Not assigned (default: {self.config.default_model})[/dim]"
@@ -390,27 +410,27 @@ class CLIStudio:
         if token_stats.last_active:
             table.add_row("Last Activity", token_stats.last_active.replace("T", " ")[:19] + " UTC")
 
-        self.console.print()
         self.console.print(table)
-        self.console.print(f"[dim]To open this project: [bold green]open {target_project.name}[/bold green][/dim]\n")
+        self.console.print(f"[dim]To open this project: [bold cyan]open {target_project.name}[/bold cyan][/dim]\n")
 
     def dashboard_list_projects(self) -> None:
         """Display list of registered research projects."""
         projects = self.project_manager.list_projects()
         if not projects:
             self.console.print("[dim]No projects registered yet.[/dim]")
-            self.console.print("[dim]Create your first project using: [bold green]new <project_name> [folder_path][/bold green][/dim]\n")
+            self.console.print("[dim]Create your first project using: [bold cyan]new <project_name> [folder_path][/bold cyan][/dim]\n")
             return
 
+        self.console.print("\n[bold bright_white]Registered Research Projects[/bold bright_white]")
         table = Table(
-            title="Registered Research Projects",
-            title_style="bold cyan",
-            border_style="cyan",
-            header_style="bold bright_cyan",
+            box=None,
+            padding=(0, 2),
+            show_header=True,
+            header_style="bold cyan",
         )
         table.add_column("#", justify="right", style="dim", width=4)
-        table.add_column("Project Name", style="bold green", width=20)
-        table.add_column("Master Directory Path", style="white")
+        table.add_column("Project Name", style="bold white", width=20)
+        table.add_column("Master Directory Path", style="dim")
         table.add_column("Last Accessed", style="dim", width=20)
 
         for idx, p in enumerate(projects, 1):
@@ -427,15 +447,10 @@ class CLIStudio:
 
         # Step 1: Interactive prompt for project name if not provided
         if not name:
-            self.console.print()
-            self.console.print(Panel(
-                "[bold bright_white]Create New Master Research Project[/bold bright_white]\n\n"
-                "Project master folder will organize your research papers, cache, synthesis notes, and drafts.",
-                title="[bold cyan]New Project Wizard[/bold cyan]",
-                border_style="cyan",
-            ))
+            self.console.print("\n[bold bright_white]New Project Wizard — Create Master Research Project[/bold bright_white]")
+            self.console.print("[dim]Project master folder will organize your research papers, cache, synthesis notes, and drafts.[/dim]\n")
             try:
-                name = self.console.input("[bold cyan]project name[/bold cyan] [bold green]❯[/bold green] ").strip()
+                name = self.console.input("[bold cyan]project name > [/bold cyan]").strip()
             except (KeyboardInterrupt, EOFError):
                 self.console.print("\n[yellow]Project creation canceled.[/yellow]\n")
                 return
@@ -502,6 +517,7 @@ class CLIStudio:
         with self.console.status(f"[cyan]Connecting to project '{target}'...[/cyan]"):
             try:
                 proj = self.project_manager.open_project(target)
+                self.render_mode_divider()
                 self.open_project(proj)
             except Exception as exc:
                 self.console.print(f"[bold red][x] Could not open project:[/bold red] {exc}\n")
@@ -608,98 +624,28 @@ class CLIStudio:
             self.handle_vault_interaction(clean)
         elif self.sub_mode == "processing":
             self.handle_processing_interaction(clean)
+        elif self.sub_mode == "chat_hub":
+            self.handle_chat_hub_interaction(clean)
         elif self.sub_mode == "chat":
             self.handle_chat_submode_interaction(clean)
         else:
             self.handle_project_root_interaction(clean)
 
     def handle_project_root_interaction(self, clean: str) -> None:
-        """Process commands and queries at project root prompt (<project_name>>)."""
-        if clean.startswith("/"):
-            self.handle_project_command(clean)
-            return
-
-        parts = clean.split(maxsplit=1)
-        cmd = parts[0].lower()
-        arg = parts[1].strip() if len(parts) > 1 else ""
-
-        if cmd in ("help", "?"):
-            self.print_project_help()
-        elif cmd in ("vault", "v"):
-            if arg:
-                self.handle_vault_interaction(arg)
-            else:
-                self.sub_mode = "vault"
-                self.render_vault_landing()
-        elif cmd in ("processing", "proc", "p"):
-            if arg:
-                self.handle_processing_interaction(arg)
-            else:
-                self.sub_mode = "processing"
-                self.render_processing_view()
-        elif cmd in ("chat", "c"):
-            if arg:
-                self.handle_chat_root_command(arg)
-            else:
-                session = self._ensure_active_chat_session()
-                self.sub_mode = "chat"
-                self.console.print(f"[bold green][✓] Masuk ke sesi chat:[/bold green] [bold cyan]{session.name}[/bold cyan]")
-                self.console.print("[dim]Ketik pertanyaan riset Anda langsung di bawah ini. Ketik '/back' untuk kembali ke menu project.[/dim]\n")
-        elif cmd == "rename":
-            self.cmd_rename_project(arg)
-        elif cmd in ("findpaper", "scout"):
-            self.cmd_findpaper(arg)
-        elif cmd in ("skills", "skill"):
-            self.cmd_skill(arg)
-        elif cmd in ("dashboard", "back", "close"):
-            self.cmd_return_dashboard()
-        elif cmd == "clear":
-            self.clear_screen()
-        elif cmd in ("status", "info"):
-            self.cmd_project_status()
-        elif cmd in ("delete", "remove", "rm"):
-            self.cmd_delete_project(arg)
-        else:
-            self.console.print(
-                "[yellow][!] Di mode project root, command harus diawali dengan '/' (contoh: [bold cyan]/search[/bold cyan], [bold cyan]/vault[/bold cyan]).[/yellow]\n"
-                "[dim]Untuk berdiskusi atau bertanya kepada AI, masuk ke mode chat terlebih dahulu dengan mengetik [bold cyan]/chat[/bold cyan].[/dim]\n"
-            )
+        """Process commands at project root prompt (<project_name>>). Commands do NOT require leading '/'."""
+        cmd_line = clean if clean.startswith("/") else f"/{clean}"
+        self.handle_project_command(cmd_line)
 
     def print_project_help(self) -> None:
-        """Render a clean borderless table of project commands and sub-modes."""
+        """Render clean available commands for Project mode."""
         proj_name = self.current_project.name if self.current_project else "Active"
-        self.console.print(f"[bold bright_white]Project Commands [{proj_name}]:[/bold bright_white]")
-        table = Table(box=None, padding=(0, 2), show_header=False)
-        table.add_column("Command / Mode", style="bold cyan", no_wrap=True)
-        table.add_column("Arguments", style="dim")
-        table.add_column("Description", style="white")
-
-        commands = [
-            ("/vault", "[subcommand]", "Manage vault documents and archive (or enter sub-mode)"),
-            ("/processing", "[subcommand]", "Track background tasks and downloads (alias: /proc)"),
-            ("/chat", "[new | resume | list]", "Manage conversation sessions with multi-turn memory"),
-            ("/rename", "<new_name>", "Rename the current project"),
-            ("/findpaper", "[topic]", "Search & scout literature on OpenAlex/S2 (alias: /scout)"),
-            ("/docx", "[filename]", "Compile synthesized research into Microsoft Word (.docx)"),
-            ("/skills", "", "List available research skill personas (alias: /skill)"),
-            ("/skill", "[# | name]", "Switch active research persona by number or name"),
-            ("/models", "[list | use | 9router | tokens]", "Manage project LLM model, API keys, and tokens"),
-            ("/gdrive", "<url>", "Ingest research paper directly from Google Drive"),
-            ("/status", "", "View project status, assigned model, and token consumption"),
-            ("/settings", "[show | set-citation]", "Manage workspace and citation settings"),
-            ("/web", "[port]", "Launch Web Studio for this project in browser"),
-            ("/dashboard", "", "Return to Dashboard (alias: /close, /back)"),
-            ("/delete", "[# | name]", "Remove project from Scrpcy (alias: /rm)"),
-            ("/clear", "", "Clear terminal screen"),
-            ("/help", "", "Open interactive help (alias: ?)"),
-            ("/exit", "", "Exit scrpcy"),
-        ]
-
-        for cmd, args, desc in commands:
-            table.add_row(cmd, args, desc)
-
-        self.console.print(table)
-        self.console.print()
+        interactive_help_view(
+            console=self.console,
+            current_model=self.get_active_project_model(),
+            current_effort=self.get_active_project_effort(),
+            mode="project",
+            context_label=proj_name,
+        )
 
     def handle_project_command(self, cmd_line: str) -> None:
         """Route slash commands in Project mode."""
@@ -715,26 +661,27 @@ class CLIStudio:
             self.cmd_return_dashboard()
         elif cmd in ("/delete", "/remove", "/rm"):
             self.cmd_delete_project(args)
-        elif cmd in ("/vault", "/docs", "/ls"):
+        elif cmd in ("/vault", "/docs", "/v"):
+            self.render_mode_divider()
             if args:
                 self.handle_vault_interaction(args)
             else:
                 self.sub_mode = "vault"
                 self.render_vault_landing()
-        elif cmd in ("/processing", "/proc"):
+        elif cmd in ("/processing", "/proc", "/p"):
+            self.render_mode_divider()
             if args:
                 self.handle_processing_interaction(args)
             else:
                 self.sub_mode = "processing"
-                self.render_processing_view()
-        elif cmd in ("/chat",):
+                self.render_processing_summary()
+        elif cmd in ("/chat", "/c"):
+            self.render_mode_divider()
             if args:
-                self.handle_chat_root_command(args)
+                self.handle_chat_hub_interaction(args)
             else:
-                session = self._ensure_active_chat_session()
-                self.sub_mode = "chat"
-                self.console.print(f"[bold green][✓] Masuk ke sesi chat:[/bold green] [bold cyan]{session.name}[/bold cyan]")
-                self.console.print("[dim]Ketik pertanyaan riset Anda langsung di bawah ini. Ketik '/back' untuk kembali ke menu project.[/dim]\n")
+                self.sub_mode = "chat_hub"
+                self.cmd_chat_list_sessions()
         elif cmd in ("/rename",):
             self.cmd_rename_project(args)
         elif cmd in ("/active", "/select"):
@@ -751,6 +698,10 @@ class CLIStudio:
             self.cmd_skill(args)
         elif cmd in ("/models", "/model", "/config"):
             self.cmd_models(args)
+        elif cmd in ("/tokens", "/usage"):
+            self.cmd_models(f"tokens {args}".strip())
+        elif cmd in ("/gdrive",):
+            self.cmd_vault_gdrive(args)
         elif cmd in ("/settings", "/setting", "/style"):
             self.cmd_settings(args)
         elif cmd in ("/docx", "/export"):
@@ -762,7 +713,9 @@ class CLIStudio:
         elif cmd == "/web":
             self.cmd_web(args)
         else:
-            self.console.print(f"[bold red]Unknown project command:[/bold red] {cmd}. Type [bold cyan]/help[/bold cyan] for list of commands.\n")
+            clean_cmd = cmd_line.lstrip("/")
+            self.console.print(f"[yellow]Perintah tidak dikenal: '{clean_cmd}'.[/yellow]")
+            self.console.print("[dim]Ketik 'help' untuk melihat daftar perintah, atau 'chat' untuk mulai berdiskusi dengan AI.[/dim]\n")
 
     def cmd_scout(self) -> None:
         """Interactive natural-language literature scout workflow with OpenAlex."""
@@ -771,18 +724,16 @@ class CLIStudio:
             return
 
         self.console.print()
-        self.console.print(Panel(
-            "[bold bright_white]Intelligent Literature Scout Pipeline[/bold bright_white]\n\n"
+        self.console.print("\n[bold bright_white]Intelligent Literature Scout Pipeline[/bold bright_white]")
+        self.console.print(
             "Tuliskan kebutuhan riset / jurnal Anda secara bebas (bahasa alami).\n"
-            "Sistem akan merumuskan parameter pencarian, menarik paper nyata via [bold cyan]OpenAlex (pyalex)[/bold cyan] "
-            "dan Semantic Scholar, lalu mengkurasi paper yang paling relevan untuk project Anda.\n\n"
-            "[dim]Contoh: 'Saya butuh paper tentang kesehatan mental remaja tahun 2018-2020 yang open access'[/dim]",
-            title="[bold cyan]Literature Scout[/bold cyan]",
-            border_style="cyan",
-        ))
+            "Sistem akan merumuskan parameter pencarian, menarik paper nyata via [bold cyan]OpenAlex[/bold cyan] "
+            "dan Semantic Scholar, lalu mengkurasi paper yang paling relevan untuk project Anda.\n"
+            "[dim]Contoh: 'Paper tentang kesehatan mental remaja tahun 2018-2020 yang open access'[/dim]\n"
+        )
 
         try:
-            user_input = self.console.input("[bold cyan]scout[/bold cyan] [bold green]❯[/bold green] ").strip()
+            user_input = self.console.input("[bold cyan]scout > [/bold cyan]").strip()
         except (KeyboardInterrupt, EOFError):
             self.console.print("\n[yellow]Scout canceled.[/yellow]\n")
             return
@@ -795,21 +746,21 @@ class CLIStudio:
         with self.console.status("[cyan]Formulating academic query strategy from your description...[/cyan]"):
             query_spec = self.scout.extract_search_criteria(user_input, engine=self.engine)
 
-        self.console.print()
-        self.console.print(Panel(
-            f"[bold cyan]Keywords   [/bold cyan]: {query_spec.keywords}\n"
-            f"[bold cyan]Year Filter[/bold cyan]: {f'{query_spec.year_start} - {query_spec.year_end}' if query_spec.year_start else 'All Years'}\n"
-            f"[bold cyan]Open Access[/bold cyan]: {'Yes (OA Only)' if query_spec.is_oa_only else 'Any'}\n"
-            f"[bold cyan]Summary    [/bold cyan]: {query_spec.summary}",
-            title="[green]Extracted Query Strategy[/green]",
-            border_style="green",
-        ))
+        self.console.print("\n[bold bright_white]Extracted Query Strategy[/bold bright_white]")
+        q_table = Table(box=None, padding=(0, 2), show_header=False)
+        q_table.add_column("Field", style="dim", width=14)
+        q_table.add_column("Value", style="white")
+        q_table.add_row("Keywords", query_spec.keywords)
+        q_table.add_row("Year Filter", f"{query_spec.year_start} - {query_spec.year_end}" if query_spec.year_start else "All Years")
+        q_table.add_row("Open Access", "Yes (OA Only)" if query_spec.is_oa_only else "Any")
+        q_table.add_row("Summary", query_spec.summary)
+        self.console.print(q_table)
         self.console.print()
 
         # Phase 2: Multi-Source Scraping
         with self.console.status("[cyan]Scraping verified scholarly works across OpenAlex & Semantic Scholar...[/cyan]"):
             try:
-                candidates = asyncio.run(self.scout.search_multi_source(query_spec, limit=15))
+                candidates = asyncio.run(self.scout.search_multi_source(query_spec, limit=30))
             except Exception as exc:
                 self.console.print(f"[bold red][x] Search scraping failed:[/bold red] {exc}\n")
                 return
@@ -818,42 +769,39 @@ class CLIStudio:
             self.console.print("[yellow]No scholarly candidates found matching the criteria.[/yellow]\n")
             return
 
-        # Phase 3: AI Curation & Ranking
+        # Phase 3: AI Curation & Ranking (No hard limit, ranked by relevance with most relevant on top)
         with self.console.status(f"[cyan]Evaluating and ranking {len(candidates)} candidates against your research intent...[/cyan]"):
             try:
-                curated = self.scout.curate_and_rank(user_input, candidates, engine=self.engine, max_output=8)
+                curated = self.scout.curate_and_rank(user_input, candidates, engine=self.engine, max_output=None)
             except Exception:
-                curated = candidates[:8]
+                curated = candidates
 
         self.last_scout_results = curated
 
-        # Phase 4: Render Table
-        table = Table(
-            title=f"Curated Literature Results ({len(curated)} papers)",
-            title_style="bold cyan",
-            border_style="cyan",
-            header_style="bold bright_cyan",
-        )
-        table.add_column("#", justify="right", style="dim", width=3)
-        table.add_column("Badge", justify="center", width=14)
-        table.add_column("Title", style="bold white", width=34, overflow="fold")
-        table.add_column("Authors", style="dim", width=18, overflow="fold")
-        table.add_column("Year", justify="center", width=6)
-        table.add_column("PDF Status", justify="center", width=13)
-        table.add_column("Relevance / Summary", style="italic white", overflow="fold")
+        # Phase 4 & 5: Paginated Carousel Table & Interactive Ingestion
+        columns = [
+            {"name": "#", "justify": "right", "style": "dim", "width": 3},
+            {"name": "Badge", "justify": "center", "width": 14},
+            {"name": "Title", "style": "bold white", "width": 34, "overflow": "fold"},
+            {"name": "Authors", "style": "dim", "width": 18, "overflow": "fold"},
+            {"name": "Year", "justify": "center", "width": 6, "style": "dim"},
+            {"name": "PDF Status", "justify": "center", "width": 13},
+            {"name": "Relevance / Summary", "style": "dim", "overflow": "fold"},
+        ]
 
+        rows = []
         for idx, item in enumerate(curated, 1):
             if item.source == "openalex":
                 source_badge = "[bold cyan][OpenAlex][/bold cyan]"
             elif item.source == "ai_recommended":
                 source_badge = "[bold cyan][AI Seminal][/bold cyan]"
             else:
-                source_badge = "[bold blue][S2/ArXiv][/bold blue]"
+                source_badge = "[dim][S2/ArXiv][/dim]"
 
-            pdf_status = "[bold green][Open Access][/bold green]" if item.has_pdf else "[dim][Paywalled][/dim]"
+            pdf_status = "[bold cyan][Open Access][/bold cyan]" if item.has_pdf else "[dim][Paywalled][/dim]"
             authors_str = ", ".join(item.authors[:2]) if item.authors else "Unknown"
 
-            table.add_row(
+            rows.append([
                 str(idx),
                 source_badge,
                 item.title,
@@ -861,18 +809,17 @@ class CLIStudio:
                 str(item.year or "n.d."),
                 pdf_status,
                 item.relevance_reason or "Matched search parameters.",
-            )
+            ])
 
-        self.console.print(table)
-        self.console.print()
-
-        # Phase 5: Interactive Ingestion
-        self.console.print("[bold yellow]Ingest to Vault:[/bold yellow] [dim]Ketik nomor paper yang ingin diunduh ke vault project (contoh: '1, 2' atau '1' atau 'all', atau 'q' untuk selesai):[/dim]")
-        try:
-            dl_choice = self.console.input("[bold cyan]download[/bold cyan] [bold green]❯[/bold green] ").strip()
-        except (KeyboardInterrupt, EOFError):
-            self.console.print("\n")
-            return
+        dl_choice = interactive_carousel_table(
+            title="Curated Literature Results",
+            columns=columns,
+            rows=rows,
+            console=self.console,
+            prompt_label="download > ",
+            help_text="Ketik nomor paper yang ingin diunduh ke vault project (contoh: '1, 2' atau 'all', 'q' untuk batal):",
+            item_label="papers",
+        )
 
         if not dl_choice or dl_choice.lower() in ("q", "quit", "cancel", "n", "no"):
             self.console.print("[dim]No papers ingested.[/dim]\n")
@@ -974,9 +921,9 @@ class CLIStudio:
 
         self.task_manager.log(task_id, f"Curating & ranking {len(candidates)} candidates against research intent...")
         try:
-            curated = self.scout.curate_and_rank(query, candidates, engine=self.engine, max_output=8)
+            curated = self.scout.curate_and_rank(query, candidates, engine=self.engine, max_output=None)
         except Exception:
-            curated = candidates[:8]
+            curated = candidates
 
         self.last_scout_results = curated
 
@@ -1010,6 +957,7 @@ class CLIStudio:
 
     def cmd_return_dashboard(self) -> None:
         """Disconnect from active project and return to dashboard."""
+        self.render_mode_divider()
         proj_name = self.current_project.name if self.current_project else "project"
         self.current_project = None
         self.workspace = None
@@ -1064,39 +1012,38 @@ class CLIStudio:
             self.console.print(f"[bold red][x] Failed to remove project '{project_info.name}'.[/bold red]\n")
 
     def cmd_project_status(self) -> None:
-        """Display status for the current active master project."""
+        """Display status, assigned model, and token consumption for the active master project."""
         if not self.current_project or not self.workspace:
-            self.dashboard_status()
+            self.console.print("[dim]Belum ada project yang aktif. Buka project terlebih dahulu dengan 'open <nama>'.[/dim]\n")
             return
 
         cached_docs = self._get_cached_stems()
+        active_count = len(self.active_documents)
         model_name = self.get_active_project_model()
-
+        model_display = _format_model_display_name(model_name)
+        effort = self.get_active_project_effort()
         token_stats = TokenTracker.get_project_tokens(self.workspace.root_dir)
 
-        table = Table(
-            title=f"Master Project Status: {self.current_project.name}",
-            title_style="bold cyan",
-            border_style="cyan",
-            header_style="bold bright_cyan",
-        )
-        table.add_column("Property", style="bold white", width=22)
+        self.console.print(f"\n[bold bright_white]Status Project: {self.current_project.name}[/bold bright_white]")
+        table = Table(box=None, padding=(0, 2), show_header=False)
+        table.add_column("Property", style="dim", width=22)
         table.add_column("Details", style="white")
 
-        table.add_row("Project Name", self.current_project.name)
-        table.add_row("Master Path", str(self.workspace.root_dir))
-        table.add_row("Vault Papers", f"{len(cached_docs)} indexed ({active_count} active rujukan)")
-        table.add_row("Project Model", f"[bold cyan]{model_name}[/bold cyan]")
-        table.add_row("Active Skill", self.active_skill_name)
-        table.add_row("Citation Style", self.config.citation.style.upper())
+        table.add_row("Project Name", f"[bold bright_white]{self.current_project.name}[/bold bright_white]")
+        table.add_row("Project Model", f"[bold cyan]{model_display}[/bold cyan] [dim]({effort} effort)[/dim]")
 
         token_display = (
-            f"Input: {token_stats.input_tokens:,} | Output: {token_stats.output_tokens:,} | "
-            f"Total: {token_stats.total_tokens:,} tokens ({token_stats.request_count} reqs)"
+            f"Total: [bold bright_white]{token_stats.total_tokens:,}[/bold bright_white] tokens "
+            f"[dim](In: {token_stats.input_tokens:,} | Out: {token_stats.output_tokens:,} | {token_stats.request_count} reqs)[/dim]"
         )
         table.add_row("Project Token Usage", token_display)
         if token_stats.last_active:
             table.add_row("Last LLM Activity", token_stats.last_active.replace("T", " ")[:19] + " UTC")
+
+        table.add_row("Active Skill", self.active_skill_name)
+        table.add_row("Vault Papers", f"{len(cached_docs)} indexed ({active_count} active rujukan)")
+        table.add_row("Citation Style", self.config.citation.style.upper())
+        table.add_row("Master Path", str(self.workspace.root_dir))
         table.add_row("Drafts Folder", str(self.workspace.root_dir / "drafts"))
 
         self.console.print(table)
@@ -1163,7 +1110,7 @@ class CLIStudio:
     # =========================================================================
 
     def render_vault_landing(self) -> None:
-        """Render concise status overview of vault and detailed command guide."""
+        """Render concise status overview of vault resources."""
         if not self.vault_manager or not self.workspace:
             return
 
@@ -1173,49 +1120,17 @@ class CLIStudio:
         archived_count = len(self.vault_manager.list_archived_files())
         vault_path = self.workspace.root_dir / "vault"
 
-        panel_content = (
-            f"[bold bright_white]STATUS VAULT :[/bold bright_white] [bold green]● AKTIF[/bold green]\n"
-            f"[bold bright_white]FOLDER VAULT :[/bold bright_white] [cyan]{vault_path}[/cyan]\n"
-            f"[bold bright_white]TOTAL BERKAS :[/bold bright_white] [bold green]{len(active_items)} berkas aktif[/bold green] "
-            f"([bold cyan]{cached_count}[/bold cyan] terindeks Markdown, "
-            f"[yellow]{needs_reload}[/yellow] perlu reload)\n"
-            f"[bold bright_white]DIARSIPKAN   :[/bold bright_white] {archived_count} berkas di .archive/ (tidak aktif di konteks AI)\n"
-            f"[bold bright_white]FORMAT BISA  :[/bold bright_white] [dim]PDF, DOCX, PPTX, XLSX, TXT, HTML, MD (didukung Microsoft MarkItDown)[/dim]"
-        )
-
+        self.console.print(f"\n[bold bright_white]Vault Resources [{self.current_project.name if self.current_project else 'Active'}][/bold bright_white]")
+        v_table = Table(box=None, padding=(0, 2), show_header=False)
+        v_table.add_column("Label", style="dim", width=18)
+        v_table.add_column("Value", style="white")
+        v_table.add_row("Status", "[bold cyan]Aktif[/bold cyan]")
+        v_table.add_row("Folder Vault", str(vault_path))
+        v_table.add_row("Total Berkas", f"{len(active_items)} berkas aktif ({cached_count} terindeks Markdown, {needs_reload} perlu reload)")
+        v_table.add_row("Diarsipkan", f"{archived_count} berkas di .archive/ (tidak aktif di konteks AI)")
+        v_table.add_row("Format Dokumen", "[dim]PDF, DOCX, PPTX, XLSX, TXT, HTML, MD (didukung Microsoft MarkItDown)[/dim]")
+        self.console.print(v_table)
         self.console.print()
-        self.console.print(Panel(
-            panel_content,
-            title=f"[bold cyan] Vault Resources [{self.current_project.name if self.current_project else 'Active'}] [/bold cyan]",
-            border_style="cyan",
-        ))
-        self.console.print()
-
-        self.console.print("[bold bright_white]Perintah Vault & Panduan Penggunaan:[/bold bright_white]")
-        table = Table(box=None, padding=(0, 2), show_header=False)
-        table.add_column("Command", style="bold green", no_wrap=True)
-        table.add_column("Args", style="yellow", no_wrap=True)
-        table.add_column("Description", style="white")
-
-        commands = [
-            ("list", "", "Tampilkan seluruh daftar berkas di vault & status markdown (alias: ls)"),
-            ("reload", "", "Pindai folder & konversi semua file baru/diedit ke Markdown (MarkItDown)"),
-            ("add", "<path>", "Salin dokumen dari komputer ke vault dan langsung dikonversi"),
-            ("findpaper", r"\[topik]", "Cari, kurasi & unduh paper akademis (OpenAlex & Semantic Scholar)"),
-            ("gdrive", r"\[link|id]", "Unduh file Google Drive langsung ke vault via link publik atau OAuth"),
-            ("remove", r"<# | nama>", "Arsipkan berkas dari project aktif ke .archive/ (tanpa hapus file fisik)"),
-            ("archived", "", "Lihat daftar berkas yang sedang diarsipkan di .archive/"),
-            ("restore", r"<# | nama>", "Kembalikan berkas arsip ke vault aktif"),
-            ("view", r"<# | stem>", "Lihat pratinjau teks Markdown hasil konversi di terminal"),
-            ("clear", "", "Bersihkan tampilan layar terminal"),
-            ("back", "", "Kembali ke prompt project utama (skripsi>)"),
-        ]
-
-        for cmd, args, desc in commands:
-            table.add_row(cmd, args, f"-> {desc}")
-
-        self.console.print(table)
-        self.console.print("\n[dim]Tip: Ketik 'list' untuk melihat rincian setiap berkas, atau gunakan perintah di atas untuk beraksi.[/dim]\n")
 
     def render_vault_view(self) -> None:
         """Render active vault items table and usage hint."""
@@ -1227,21 +1142,22 @@ class CLIStudio:
             self.console.print("[dim]Gunakan 'add <path>', 'findpaper <topik>', atau 'gdrive' untuk menambahkan berkas.[/dim]\n")
             return
 
+        self.console.print(f"\n[bold bright_white]Daftar Berkas Vault [{self.current_project.name if self.current_project else 'Vault'}][/bold bright_white]")
         table = Table(
-            title=f"Daftar Berkas Vault [{self.current_project.name if self.current_project else 'Vault'}]",
-            title_style="bold cyan",
-            border_style="cyan",
-            header_style="bold bright_cyan",
+            box=None,
+            padding=(0, 2),
+            show_header=True,
+            header_style="bold cyan",
         )
         table.add_column("#", justify="right", style="dim", width=3)
         table.add_column("Filename", style="bold white")
-        table.add_column("Format", justify="center", width=8)
-        table.add_column("Size", justify="right", width=10)
+        table.add_column("Format", justify="center", width=8, style="dim")
+        table.add_column("Size", justify="right", width=10, style="dim")
         table.add_column("Markdown Status", justify="center", width=18)
         table.add_column("Cite Key / Title", style="cyan")
 
         for idx, item in enumerate(items, 1):
-            md_status = "[bold green][Ready / Cached][/bold green]" if item.is_cached else "[yellow][Needs Reload][/yellow]"
+            md_status = "[bold cyan][Ready / Cached][/bold cyan]" if item.is_cached else "[dim][Needs Reload][/dim]"
             table.add_row(
                 str(idx),
                 item.filename,
@@ -1260,7 +1176,13 @@ class CLIStudio:
 
     def print_vault_help(self) -> None:
         """Render instructions for Vault sub-mode."""
-        self.render_vault_landing()
+        interactive_help_view(
+            console=self.console,
+            current_model=self.get_active_project_model(),
+            current_effort=self.get_active_project_effort(),
+            mode="vault",
+            context_label=self.current_project.name if self.current_project else "",
+        )
 
     def handle_vault_interaction(self, raw_input: str) -> None:
         """Route input when inside vault sub-mode (skripsi/vault>)."""
@@ -1273,12 +1195,15 @@ class CLIStudio:
         arg = parts[1].strip() if len(parts) > 1 else ""
 
         if cmd in ("back", "exit", "quit", "cd..", "close") or clean in ("cd ..", ".."):
+            self.render_mode_divider()
             self.sub_mode = None
             self.console.print(f"[dim]Returned to project root: {self.current_project.name}>[/dim]\n")
             return
 
-        if cmd in ("help", "?", "vault", "status"):
+        if cmd in ("help", "?"):
             self.print_vault_help()
+        elif cmd in ("vault", "status"):
+            self.render_vault_landing()
         elif cmd in ("list", "ls"):
             if arg in ("archive", "archived", ".archive"):
                 self.cmd_vault_list_archived()
@@ -1318,6 +1243,21 @@ class CLIStudio:
         self.console.print(f"[bold green][✓] Vault reload completed:[/bold green] {total} total resource(s), [bold cyan]{converted} converted/refreshed[/bold cyan] into Markdown cache.")
         self.console.print(f"[dim]Active citation context updated ({len(self.active_documents)} items active).[/dim]\n")
 
+    def _background_vault_add_worker(self, task_id: str, path_str: str) -> str:
+        """Background worker ingesting local document and converting to Markdown."""
+        src_path = Path(path_str).expanduser().resolve()
+        self.task_manager.log(task_id, f"Ingesting '{src_path.name}' into vault...")
+        try:
+            item = self.vault_manager.add_resource(src_path)
+            self.active_documents.add(item.path.stem)
+            self._sync_vault_cache()
+            summary = f"Added {item.filename} ({item.readable_size}) to vault"
+            self.task_manager.log(task_id, f"[✓] {summary}")
+            return summary
+        except Exception as exc:
+            self.task_manager.log(task_id, f"[x] Ingest failed: {exc}")
+            raise
+
     def cmd_vault_add(self, path_str: str) -> None:
         """Add external file into project vault and convert with MarkItDown."""
         if not self.vault_manager or not self.workspace:
@@ -1331,6 +1271,22 @@ class CLIStudio:
         src_path = Path(path_str).expanduser().resolve()
         if not src_path.exists():
             self.console.print(f"[bold red][x] File not found at:[/bold red] '{src_path}'\n")
+            return
+
+        if self.sub_mode == "chat":
+            task = self.task_manager.submit(
+                name=f"Ingest Document: {src_path.name}",
+                task_type="convert",
+                target_fn=self._background_vault_add_worker,
+                path_str=str(src_path),
+            )
+            self.console.print()
+            self.console.print(
+                f"[bold green][✓] Proses ingest berkas dikirim ke antrean Processing:[/bold green] [bold cyan]{task.id}[/bold cyan]"
+            )
+            self.console.print(f" [dim]• Berkas : {src_path.name}[/dim]")
+            self.console.print(" [dim]• Konversi markdown dan sinkronisasi cache berjalan di background.[/dim]")
+            self.console.print(" [dim]• Ketik [bold cyan]/proc[/bold cyan] untuk memantau status.[/dim]\n")
             return
 
         with self.console.status(f"[cyan]Adding and converting '{src_path.name}' with MarkItDown...[/cyan]"):
@@ -1389,17 +1345,18 @@ class CLIStudio:
             self.console.print("[dim]No archived files in .archive/. All vault files are currently active.[/dim]\n")
             return
 
+        self.console.print(f"\n[bold bright_white]Archived Vault Files ({len(archived)} files in .archive/)[/bold bright_white]")
         table = Table(
-            title=f"Archived Vault Files ({len(archived)} files in .archive/)",
-            title_style="bold yellow",
-            border_style="yellow",
-            header_style="bold bright_yellow",
+            box=None,
+            padding=(0, 2),
+            show_header=True,
+            header_style="bold cyan",
         )
         table.add_column("#", justify="right", style="dim", width=3)
         table.add_column("Filename", style="bold white")
-        table.add_column("Format", justify="center", width=8)
-        table.add_column("Size", justify="right", width=10)
-        table.add_column("Status", justify="center", width=14)
+        table.add_column("Format", justify="center", width=8, style="dim")
+        table.add_column("Size", justify="right", width=10, style="dim")
+        table.add_column("Status", justify="center", width=14, style="dim")
 
         for idx, f in enumerate(archived, 1):
             table.add_row(
@@ -1413,6 +1370,25 @@ class CLIStudio:
         self.console.print(table)
         self.console.print("[dim]Use [bold cyan]restore <# | name>[/bold cyan] to move an archived file back to active vault.[/dim]\n")
 
+    def _background_gdrive_worker(self, task_id: str, file_id: str) -> str:
+        """Background worker downloading Google Drive file and ingesting into vault."""
+        self.task_manager.log(task_id, f"Connecting to Google Drive to download file ID: {file_id}")
+        try:
+            downloaded = self.gdrive_manager.download_public_file(
+                file_id=file_id,
+                dest_dir=self.workspace.vault_dir,
+            )
+            self.task_manager.log(task_id, f"Downloaded '{downloaded.name}'. Converting to Markdown via MarkItDown...")
+            self.vault_manager.convert_file(downloaded, force=True)
+            self.active_documents.add(downloaded.stem)
+            self._sync_vault_cache()
+            summary = f"Downloaded & indexed Google Drive file: {downloaded.name}"
+            self.task_manager.log(task_id, f"[✓] {summary}")
+            return summary
+        except Exception as exc:
+            self.task_manager.log(task_id, f"[x] GDrive download error: {exc}")
+            raise
+
     def cmd_vault_gdrive(self, arg: str = "") -> None:
         """Download and ingest files from Google Drive into vault with MarkItDown conversion."""
         if not self.workspace or not self.vault_manager:
@@ -1421,17 +1397,15 @@ class CLIStudio:
 
         clean_arg = arg.strip()
         if not clean_arg:
-            self.console.print(Panel(
-                "[bold bright_white]Google Drive Vault Ingestion[/bold bright_white]\n\n"
+            self.console.print("\n[bold bright_white]Google Drive Vault Ingestion[/bold bright_white]")
+            self.console.print(
                 "Anda dapat mengunduh dokumen dari Google Drive langsung ke vault:\n"
                 "  1. Masukkan [bold cyan]link berbagi (share link)[/bold cyan] atau [bold cyan]File ID[/bold cyan] Google Drive.\n"
-                "  2. Atau ketik [bold yellow]auth[/bold yellow] untuk menghasilkan tautan OAuth login Google Drive Anda.\n\n"
-                "[dim]Contoh link: https://drive.google.com/file/d/1A2B3C4D5E.../view?usp=sharing[/dim]",
-                title="[bold cyan]Google Drive Ingestion[/bold cyan]",
-                border_style="cyan",
-            ))
+                "  2. Atau ketik [bold cyan]auth[/bold cyan] untuk menghasilkan tautan OAuth login Google Drive Anda.\n\n"
+                "[dim]Contoh link: https://drive.google.com/file/d/1A2B3C4D5E.../view?usp=sharing[/dim]\n"
+            )
             try:
-                clean_arg = self.console.input("[bold cyan]gdrive[/bold cyan] [bold green]❯[/bold green] ").strip()
+                clean_arg = self.console.input("[bold cyan]gdrive > [/bold cyan]").strip()
             except (KeyboardInterrupt, EOFError):
                 self.console.print("\n")
                 return
@@ -1468,24 +1442,47 @@ class CLIStudio:
             self.console.print(f"[bold red][x] Format link atau ID Google Drive tidak valid:[/bold red] '{clean_arg}'\n")
             return
 
-        with self.console.status(f"[cyan]Downloading Google Drive file (ID: {file_id[:12]}...)...[/cyan]"):
-            try:
-                downloaded = self.gdrive_manager.download_public_file(
-                    file_id=file_id,
-                    dest_dir=self.workspace.vault_dir,
-                )
-                self.vault_manager.convert_file(downloaded, force=True)
-                self.active_documents.add(downloaded.stem)
-                self._sync_vault_cache()
-            except Exception as exc:
-                self.console.print(f"[bold red][x] GDrive download failed:[/bold red] {exc}\n")
-                return
-
-        self.console.print(f"[bold green][✓] Berhasil diunduh dari Google Drive & dikonversi ke markdown:[/bold green] [bold cyan]{downloaded.name}[/bold cyan]\n")
+        task = self.task_manager.submit(
+            name=f"Google Drive Ingest: {file_id[:12]}...",
+            task_type="gdrive",
+            target_fn=self._background_gdrive_worker,
+            file_id=file_id,
+        )
+        self.console.print()
+        self.console.print(
+            f"[bold green][✓] Proses download Google Drive dikirim ke antrean Processing:[/bold green] [bold cyan]{task.id}[/bold cyan]"
+        )
+        self.console.print(f" [dim]• File ID : {file_id}[/dim]")
+        self.console.print(" [dim]• Proses unduh dan konversi markdown berjalan di background.[/dim]")
+        self.console.print(" [dim]• Ketik [bold cyan]processing[/bold cyan] atau [bold cyan]/proc[/bold cyan] untuk memantau status & log real-time.[/dim]\n")
 
     # =========================================================================
     # PROCESSING SUB-MODE (skripsi/processing>)
     # =========================================================================
+
+    def render_processing_summary(self) -> None:
+        """Render concise status overview of background processing tasks."""
+        tasks = self.task_manager.list_tasks()
+        running_tasks = [t for t in tasks if t.status == "running"]
+        completed_tasks = [t for t in tasks if t.status == "completed"]
+        failed_tasks = [t for t in tasks if t.status == "failed"]
+        cancelled_tasks = [t for t in tasks if t.status == "cancelled"]
+
+        status_text = "[bold cyan]Active Processing[/bold cyan]" if running_tasks else "[dim]Idle[/dim]"
+
+        self.console.print(f"\n[bold bright_white]Processing Status [{self.current_project.name if self.current_project else 'Studio'}][/bold bright_white]")
+        table = Table(box=None, padding=(0, 2), show_header=False)
+        table.add_column("Property", style="dim", width=18)
+        table.add_column("Value", style="white")
+
+        table.add_row("Status", status_text)
+        table.add_row("Running Tasks", f"[bold cyan]{len(running_tasks)}[/bold cyan] proses sedang berjalan" if running_tasks else "0 proses")
+        table.add_row("Completed Tasks", f"[bold white]{len(completed_tasks)}[/bold white] selesai")
+        table.add_row("Failed / Cancelled", f"{len(failed_tasks)} gagal, {len(cancelled_tasks)} dibatalkan")
+        table.add_row("Total Riwayat", f"{len(tasks)} tasks terdaftar")
+
+        self.console.print(table)
+        self.console.print()
 
     def render_processing_view(self) -> None:
         """Render borderless duotone table of background tasks."""
@@ -1529,25 +1526,17 @@ class CLIStudio:
         self.console.print(table)
         if not tasks:
             self.console.print("[dim]No background tasks currently registered.[/dim]")
-        self.console.print("[dim]Commands: [bold cyan]/list[/bold cyan], [bold cyan]/detail <#|id>[/bold cyan], [bold cyan]/log <#|id>[/bold cyan], [bold cyan]/cancel <#|id>[/bold cyan], [bold cyan]/clear[/bold cyan], [bold cyan]/back[/bold cyan][/dim]\n")
+        self.console.print("[dim]Commands: [bold cyan]list[/bold cyan], [bold cyan]detail <#|id>[/bold cyan], [bold cyan]log <#|id>[/bold cyan], [bold cyan]cancel <#|id>[/bold cyan], [bold cyan]clear[/bold cyan], [bold cyan]back[/bold cyan][/dim]\n")
 
     def print_processing_help(self) -> None:
         """Render instructions for Processing sub-mode."""
-        self.console.print("[bold bright_white]Processing Sub-Mode Commands:[/bold bright_white]")
-        table = Table(box=None, padding=(0, 2), show_header=False)
-        table.add_column("Command", style="bold cyan")
-        table.add_column("Args", style="dim")
-        table.add_column("Description", style="white")
-
-        table.add_row("/list", "", "List all background tasks (alias: /ls, list)")
-        table.add_row("/detail", "<# | task_id>", "View full details, input args, and result summary")
-        table.add_row("/log", "<# | task_id>", "View live output logs for a background job")
-        table.add_row("/cancel", "<# | task_id>", "Abort / cancel a running background job (alias: /kill)")
-        table.add_row("/clear", "", "Remove completed or cancelled jobs from list")
-        table.add_row("/back", "", "Return to project root prompt (alias: back, exit)")
-
-        self.console.print(table)
-        self.console.print()
+        interactive_help_view(
+            console=self.console,
+            current_model=self.get_active_project_model(),
+            current_effort=self.get_active_project_effort(),
+            mode="processing",
+            context_label=self.current_project.name if self.current_project else "",
+        )
 
     def handle_processing_interaction(self, raw_input: str) -> None:
         """Route input when inside processing sub-mode (skripsi/processing>)."""
@@ -1560,6 +1549,7 @@ class CLIStudio:
         arg = parts[1].strip() if len(parts) > 1 else ""
 
         if cmd in ("back", "exit", "quit", "cd..", "close") or clean in ("cd ..", ".."):
+            self.render_mode_divider()
             self.sub_mode = None
             self.console.print(f"[dim]Returned to project root: {self.current_project.name}>[/dim]\n")
             return
@@ -1568,6 +1558,8 @@ class CLIStudio:
             self.print_processing_help()
         elif cmd in ("list", "ls"):
             self.render_processing_view()
+        elif cmd in ("status", "summary"):
+            self.render_processing_summary()
         elif cmd in ("detail", "view", "show"):
             self.cmd_processing_detail(arg)
         elif cmd in ("log", "logs"):
@@ -1578,7 +1570,7 @@ class CLIStudio:
             count = self.task_manager.clear_completed()
             self.console.print(f"[green][✓] Cleared {count} completed/cancelled task(s) from history.[/green]\n")
         else:
-            self.console.print(f"[yellow]Unknown processing command: '{clean}'. Type 'help' or 'back' to return.[/yellow]\n")
+            self.console.print(f"[yellow]Unknown processing command: '{clean}'. Type '?' or '/' for available commands, or 'back' to return.[/yellow]\n")
 
     def cmd_processing_detail(self, arg: str) -> None:
         """Display detailed metadata and result summary for a task."""
@@ -1591,23 +1583,23 @@ class CLIStudio:
             self.console.print(f"[bold red][x] Task '{arg}' not found.[/bold red]\n")
             return
 
-        panel_content = (
-            f"[bold bright_white]ID          :[/bold bright_white] [bold cyan]{task.id}[/bold cyan]\n"
-            f"[bold bright_white]Name        :[/bold bright_white] {task.name}\n"
-            f"[bold bright_white]Type        :[/bold bright_white] {task.task_type.upper()}\n"
-            f"[bold bright_white]Status      :[/bold bright_white] {task.status.upper()}\n"
-            f"[bold bright_white]Started At  :[/bold bright_white] {task.started_at}\n"
-            f"[bold bright_white]Finished At :[/bold bright_white] {task.finished_at or 'Running...'}\n"
-            f"[bold bright_white]Duration    :[/bold bright_white] {task.duration_seconds:.2f} seconds\n"
-            f"[bold bright_white]Progress    :[/bold bright_white] {task.progress}\n"
-        )
+        self.console.print(f"\n[bold bright_white]Task Detail: {task.id}[/bold bright_white]")
+        t_table = Table(box=None, padding=(0, 2), show_header=False)
+        t_table.add_column("Property", style="dim", width=16)
+        t_table.add_column("Details", style="white")
+        t_table.add_row("ID", f"[bold cyan]{task.id}[/bold cyan]")
+        t_table.add_row("Name", task.name)
+        t_table.add_row("Type", task.task_type.upper())
+        t_table.add_row("Status", task.status.upper())
+        t_table.add_row("Started At", str(task.started_at))
+        t_table.add_row("Finished At", str(task.finished_at or 'Running...'))
+        t_table.add_row("Duration", f"{task.duration_seconds:.2f} seconds")
+        t_table.add_row("Progress", task.progress)
         if task.error:
-            panel_content += f"[bold red]Error       :[/bold red] {task.error}\n"
+            t_table.add_row("Error", f"[bold red]{task.error}[/bold red]")
         if task.result_summary:
-            panel_content += f"[bold green]Result      :[/bold green] {task.result_summary}\n"
-
-        self.console.print()
-        self.console.print(Panel(panel_content, title=f"Task Detail: {task.id}", border_style="cyan"))
+            t_table.add_row("Result", f"[bold cyan]{task.result_summary}[/bold cyan]")
+        self.console.print(t_table)
         self.console.print()
 
     def cmd_processing_log(self, arg: str) -> None:
@@ -1646,77 +1638,123 @@ class CLIStudio:
     # CHAT SUB-MODE (skripsi/chat1>)
     # =========================================================================
 
-    def prompt_chat_launcher(self) -> None:
-        """Interactive launcher for chat mode: new, resume, or list."""
-        if not self.chat_manager:
-            return
-
-        self.console.print()
-        self.console.print(Panel(
-            "[bold bright_white]Scrpcy Research Chat Sessions[/bold bright_white]\n\n"
-            "Pilih opsi percakapan riset:\n"
-            "  1. [bold green]new [name][/bold green]    -> Mulai sesi chat baru (misal: 'new skripsi_bab2' atau cukup 'new' untuk 'chat1')\n"
-            "  2. [bold cyan]resume <#|id>[/bold cyan] -> Lanjutkan sesi chat yang tersimpan\n"
-            "  3. [bold yellow]list[/bold yellow]          -> Lihat semua riwayat percakapan yang tersimpan\n"
-            "  4. [bold dim]back[/bold dim]          -> Kembali ke menu project",
-            title="[bold cyan]Chat Mode[/bold cyan]",
-            border_style="cyan",
-        ))
-
-        try:
-            choice = self.console.input("[bold cyan]chat[/bold cyan] [bold green]❯[/bold green] ").strip()
-        except (KeyboardInterrupt, EOFError):
-            self.console.print("\n")
-            return
-
-        if not choice or choice.lower() in ("back", "q", "quit", "exit"):
-            return
-
-        self.handle_chat_root_command(choice)
+    def cmd_chat(self, arg: str = "") -> None:
+        """Route to chat hub or directly process chat command."""
+        self.render_mode_divider()
+        clean = arg.strip()
+        if clean:
+            self.handle_chat_hub_interaction(clean)
+        else:
+            self.sub_mode = "chat_hub"
+            self.cmd_chat_list_sessions()
 
     def handle_chat_root_command(self, arg_str: str) -> None:
-        """Process chat shortcut command from root or launcher."""
-        if not self.chat_manager:
+        """Alias for handle_chat_hub_interaction for backwards compatibility."""
+        self.handle_chat_hub_interaction(arg_str)
+
+    def handle_chat_hub_interaction(self, raw_input: str) -> None:
+        """Process commands when in chat hub (skripsi/chat>)."""
+        clean = raw_input.strip()
+        if not clean:
             return
 
-        parts = arg_str.split(maxsplit=1)
-        sub = parts[0].lower()
+        parts = clean.split(maxsplit=1)
+        sub = parts[0].lower().lstrip("/")
         param = parts[1].strip() if len(parts) > 1 else ""
 
+        if sub in ("back", "exit", "quit", "cd..", "close", ".."):
+            self.render_mode_divider()
+            self.sub_mode = None
+            self.console.print(f"[dim]Returned to project root: {self.current_project.name}>[/dim]\n")
+            return
+
+        if sub in ("list", "ls", "sessions"):
+            self.cmd_chat_list_sessions()
+            return
+
         if sub == "new":
+            if not self.chat_manager:
+                return
             session = self.chat_manager.create_session(
                 name=param if param else None,
                 active_skill=self.active_skill_name,
             )
+            self.render_mode_divider()
             self.active_chat_session = session
             self.sub_mode = "chat"
             self.console.print(f"[bold green][✓] Sesi chat baru dibuat:[/bold green] [bold cyan]{session.name}[/bold cyan]")
-            self.console.print("[dim]Ketik pertanyaan riset Anda langsung di bawah ini. Ketik 'back' untuk kembali.[/dim]\n")
-        elif sub in ("resume", "open", "load"):
-            if not param:
+            self.console.print("[dim]Ketik pertanyaan riset Anda langsung di bawah ini. Gunakan '/' untuk perintah (contoh: /back).[/dim]\n")
+            return
+
+        if sub in ("resume", "open", "load", "switch"):
+            if not self.chat_manager:
+                return
+            target = param
+            if not target:
                 self.cmd_chat_list_sessions()
                 try:
-                    param = self.console.input("Masukkan nomor atau nama chat yang ingin di-resume: ").strip()
+                    target = self.console.input("Masukkan nomor atau nama chat yang ingin dibuka: ").strip()
                 except (KeyboardInterrupt, EOFError):
                     return
-            session = self.chat_manager.get_session(param)
+            session = self.chat_manager.get_session(target)
             if session:
+                self.render_mode_divider()
                 self.active_chat_session = session
                 self.sub_mode = "chat"
-                self.console.print(f"[bold green][✓] Melanjutkan sesi chat:[/bold green] [bold cyan]{session.name}[/bold cyan] ({session.message_count} pesan)")
-                self.console.print("[dim]Ketik pertanyaan riset Anda langsung di bawah ini. Ketik 'back' untuk kembali.[/dim]\n")
+                self.console.print(f"[bold green][✓] Masuk ke sesi percakapan:[/bold green] [bold cyan]{session.name}[/bold cyan] ({session.message_count} pesan)")
+                self.console.print("[dim]Ketik pertanyaan riset Anda langsung di bawah ini. Gunakan '/' untuk perintah (contoh: /back).[/dim]\n")
             else:
-                self.console.print(f"[red][x] Sesi chat '{param}' tidak ditemukan.[/red]\n")
-        elif sub in ("list", "ls", "sessions"):
-            self.cmd_chat_list_sessions()
-        else:
+                self.console.print(f"[red][x] Sesi chat '{target}' tidak ditemukan.[/red]\n")
+            return
+
+        if sub in ("delete", "remove", "rm"):
+            if not self.chat_manager:
+                return
+            target = param
+            if not target:
+                self.cmd_chat_list_sessions()
+                try:
+                    target = self.console.input("Masukkan nomor atau nama chat yang ingin dihapus: ").strip()
+                except (KeyboardInterrupt, EOFError):
+                    return
+            session = self.chat_manager.get_session(target)
+            if session:
+                deleted_name = session.name
+                self.chat_manager.delete_session(session.id)
+                if self.active_chat_session and self.active_chat_session.id == session.id:
+                    self.active_chat_session = None
+                self.console.print(f"[bold green][✓] Sesi chat '{deleted_name}' berhasil dihapus.[/bold green]\n")
+                self.cmd_chat_list_sessions()
+            else:
+                self.console.print(f"[red][x] Sesi chat '{target}' tidak ditemukan.[/red]\n")
+            return
+
+        if sub == "clear":
+            self.clear_screen()
+            return
+
+        if sub in ("help", "?"):
+            interactive_help_view(
+                console=self.console,
+                current_model=self.get_active_project_model(),
+                current_effort=self.get_active_project_effort(),
+                mode="chat_hub",
+                context_label=self.current_project.name if self.current_project else "",
+            )
+            return
+
+        # Direct number or session name shorthand (e.g. typing "1" or "chat1" directly)
+        if self.chat_manager:
             session = self.chat_manager.get_session(sub)
             if session:
+                self.render_mode_divider()
                 self.active_chat_session = session
                 self.sub_mode = "chat"
-                self.console.print(f"[bold green][✓] Masuk ke sesi chat:[/bold green] [bold cyan]{session.name}[/bold cyan]\n")
-            else:
-                self.prompt_chat_launcher()
+                self.console.print(f"[bold green][✓] Masuk ke sesi percakapan:[/bold green] [bold cyan]{session.name}[/bold cyan] ({session.message_count} pesan)")
+                self.console.print("[dim]Ketik pertanyaan riset Anda langsung di bawah ini. Gunakan '/' untuk perintah (contoh: /back).[/dim]\n")
+                return
+
+        self.console.print(f"[yellow]Perintah tidak dikenal: '{clean}'. Ketik '?' atau '/' untuk melihat perintah yang tersedia.[/yellow]\n")
 
     def handle_chat_submode_interaction(self, raw_input: str) -> None:
         """Process input when inside a specific chat session (skripsi/chat1>)."""
@@ -1724,32 +1762,58 @@ class CLIStudio:
         if not clean:
             return
 
-        if clean.lower() in ("back", "exit", "quit", "cd..", "/back", "/exit", "close", "cd ..", ".."):
-            self.sub_mode = None
-            self.console.print(f"[dim]Returned to project root: {self.current_project.name}>[/dim]\n")
-            return
-
+        # In chat mode, commands MUST start with "/"
         if clean.startswith("/"):
             parts = clean.split(maxsplit=1)
             cmd = parts[0].lower()
             arg = parts[1].strip() if len(parts) > 1 else ""
 
-            if cmd in ("/help", "/?"):
-                self.print_chat_submode_help()
+            if cmd in ("/back", "/exit", "/quit", "/close", "/cd..", "/.."):
+                self.render_mode_divider()
+                self.sub_mode = "chat_hub"
+                self.console.print(f"[dim]Kembali ke menu chat: {self.current_project.name}/chat>[/dim]\n")
+                return
+            elif cmd in ("/help", "/?"):
+                interactive_help_view(
+                    console=self.console,
+                    current_model=self.get_active_project_model(),
+                    current_effort=self.get_active_project_effort(),
+                    mode="chat",
+                    context_label=self.current_project.name if self.current_project else "",
+                )
             elif cmd == "/history":
                 self.cmd_chat_history()
             elif cmd == "/clear":
                 if self.active_chat_session and self.chat_manager:
                     self.chat_manager.clear_messages(self.active_chat_session.id)
-                self.console.print("[yellow][✓] Riwayat pesan untuk sesi ini telah dibersihkan.[/yellow]\n")
+                self.console.print("[dim][✓] Riwayat pesan untuk sesi ini telah dibersihkan.[/dim]\n")
+            elif cmd in ("/status", "/info"):
+                self.cmd_project_status()
             elif cmd in ("/skill", "/persona"):
                 self.cmd_skill(arg)
                 if self.active_chat_session and self.chat_manager:
                     self.chat_manager.update_session_skill(self.active_chat_session.id, self.active_skill_name)
             elif cmd == "/new":
-                self.handle_chat_root_command(f"new {arg}")
+                if not self.chat_manager:
+                    return
+                session = self.chat_manager.create_session(
+                    name=arg if arg else None,
+                    active_skill=self.active_skill_name,
+                )
+                self.render_mode_divider()
+                self.active_chat_session = session
+                self.console.print(f"[bold green][✓] Sesi chat baru dibuat:[/bold green] [bold cyan]{session.name}[/bold cyan]")
+                self.console.print("[dim]Ketik pertanyaan riset Anda langsung di bawah ini. Gunakan '/' untuk perintah (contoh: /back).[/dim]\n")
             elif cmd in ("/resume", "/open", "/switch"):
-                self.handle_chat_root_command(f"resume {arg}")
+                if not self.chat_manager:
+                    return
+                session = self.chat_manager.get_session(arg)
+                if session:
+                    self.render_mode_divider()
+                    self.active_chat_session = session
+                    self.console.print(f"[bold green][✓] Berpindah ke sesi percakapan:[/bold green] [bold cyan]{session.name}[/bold cyan] ({session.message_count} pesan)\n")
+                else:
+                    self.console.print(f"[red][x] Sesi chat '{arg}' tidak ditemukan.[/red]\n")
             elif cmd in ("/export",):
                 self.cmd_chat_export()
             else:
@@ -1758,26 +1822,6 @@ class CLIStudio:
 
         # Any input without leading "/" in chat mode is strictly treated as an AI conversation prompt
         self.handle_chat(clean)
-
-    def print_chat_submode_help(self) -> None:
-        """Render instructions for Chat sub-mode."""
-        self.console.print(f"[bold bright_white]Chat Session Commands [{self.active_chat_session.name if self.active_chat_session else 'Chat'}]:[/bold bright_white]")
-        table = Table(box=None, padding=(0, 2), show_header=False)
-        table.add_column("Command", style="bold cyan")
-        table.add_column("Args", style="dim")
-        table.add_column("Description", style="white")
-
-        table.add_row("<text>", "", "Send research question directly to AI with active vault context")
-        table.add_row("/history", "", "View all previous turns in this chat session")
-        table.add_row("/clear", "", "Clear messages in this chat session")
-        table.add_row("/skill", "[# | name]", "Switch active persona skill for this chat")
-        table.add_row("/export", "", "Export conversation to Markdown in drafts/")
-        table.add_row("/new", "[name]", "Start a new chat session")
-        table.add_row("/resume", "<# | name>", "Switch to another chat session")
-        table.add_row("/back", "", "Return to project root prompt")
-
-        self.console.print(table)
-        self.console.print()
 
     def cmd_chat_list_sessions(self) -> None:
         """Render table of all chat sessions stored in this project."""
@@ -1789,21 +1833,22 @@ class CLIStudio:
             self.console.print("[dim]No saved chat sessions found in this project. Type 'chat new' to start one.[/dim]\n")
             return
 
+        self.console.print(f"\n[bold bright_white]Saved Chat Sessions [{self.current_project.name if self.current_project else 'Active'}][/bold bright_white]")
         table = Table(
-            title=f"Saved Chat Sessions [{self.current_project.name if self.current_project else 'Active'}]",
-            title_style="bold cyan",
-            border_style="cyan",
-            header_style="bold bright_cyan",
+            box=None,
+            padding=(0, 2),
+            show_header=True,
+            header_style="bold cyan",
         )
         table.add_column("#", justify="right", style="dim", width=3)
-        table.add_column("Session Name", style="bold green")
+        table.add_column("Session Name", style="bold white")
         table.add_column("Persona", style="cyan")
-        table.add_column("Messages", justify="center", width=10)
+        table.add_column("Messages", justify="center", width=10, style="dim")
         table.add_column("Last Updated", style="dim")
 
         for idx, s in enumerate(sessions, 1):
             is_active = self.active_chat_session and s.id == self.active_chat_session.id
-            active_badge = f" [bold green](Current)[/bold green]" if is_active else ""
+            active_badge = f" [bold cyan](Current)[/bold cyan]" if is_active else ""
             table.add_row(
                 str(idx),
                 f"{s.name}{active_badge}",
@@ -1858,22 +1903,23 @@ class CLIStudio:
             self.console.print("[dim]Project vault is currently empty. Use [bold cyan]/search[/bold cyan] or [bold cyan]/parse <file.pdf>[/bold cyan] to add papers.[/dim]\n")
             return
 
+        self.console.print(f"\n[bold bright_white]Indexed Research Papers ({len(stems)} total, {len(self.active_documents)} active)[/bold bright_white]")
         table = Table(
-            title=f"Indexed Research Papers ({len(stems)} total, {len(self.active_documents)} active)",
-            title_style="bold cyan",
-            border_style="cyan",
-            header_style="bold bright_cyan",
+            box=None,
+            padding=(0, 2),
+            show_header=True,
+            header_style="bold cyan",
         )
         table.add_column("#", justify="right", style="dim", width=4)
         table.add_column("Active", justify="center", width=8)
-        table.add_column("Cite Key", style="bold green", overflow="fold")
+        table.add_column("Cite Key", style="bold white", overflow="fold")
         table.add_column("Title", style="white")
-        table.add_column("Year", justify="center", width=6)
+        table.add_column("Year", justify="center", width=6, style="dim")
         table.add_column("Authors", style="dim")
 
         for idx, stem in enumerate(stems, 1):
             is_active = stem in self.active_documents
-            active_marker = "[bold green][✓][/bold green]" if is_active else "[dim][ ][/dim]"
+            active_marker = "[bold cyan][✓][/bold cyan]" if is_active else "[dim][ ][/dim]"
 
             content = self.workspace.read_from_cache(f"{stem}.md")
             meta, _ = DocumentMetadata.from_frontmatter(content)
@@ -2000,7 +2046,8 @@ class CLIStudio:
 
         content = self.workspace.read_from_cache(f"{target_stem}.md")
         preview = "\n".join(content.splitlines()[:35]) + "\n\n... (truncated) ..."
-        self.console.print(Panel(preview, title=f"Paper: {target_stem}", border_style="cyan"))
+        self.console.print(f"\n[bold bright_white]Paper Preview: {target_stem}[/bold bright_white]")
+        self.console.print(preview)
         self.console.print()
 
     def cmd_search(self, arg: str) -> None:
@@ -2052,16 +2099,17 @@ class CLIStudio:
                     self._is_recovering = False
             return
 
+        self.console.print(f"\n[bold bright_white]Literature Search Results for '{query}' ({len(results)} found)[/bold bright_white]")
         table = Table(
-            title=f"Literature Search Results for '{query}' ({len(results)} found)",
-            title_style="bold cyan",
-            border_style="cyan",
-            header_style="bold bright_cyan",
+            box=None,
+            padding=(0, 2),
+            show_header=True,
+            header_style="bold cyan",
         )
         table.add_column("#", justify="right", style="dim", width=4)
         table.add_column("PDF Status", justify="center", width=14)
         table.add_column("Title", style="bold white")
-        table.add_column("Year", justify="center", width=6)
+        table.add_column("Year", justify="center", width=6, style="dim")
         table.add_column("Authors", style="dim")
 
         for idx, res in enumerate(results, 1):
@@ -2287,6 +2335,10 @@ class CLIStudio:
                     if target_proj:
                         self.project_manager.set_project_model(target_proj.name, chosen_m)
                         self.project_manager.set_project_effort(target_proj.name, chosen_eff)
+                        if self.current_project:
+                            self.current_project.model = chosen_m
+                        if self.engine:
+                            self.engine.default_model = chosen_m
                         m_label = _format_model_display_name(chosen_m)
                         self.console.print(
                             f"\n[bold green][✓] Active model updated to:[/bold green] [bold cyan]{m_label}[/bold cyan] [dim]({chosen_eff} effort)[/dim]\n"
@@ -2294,6 +2346,8 @@ class CLIStudio:
                     else:
                         self.config.default_model = chosen_m
                         self.config.save()
+                        if self.engine:
+                            self.engine.default_model = chosen_m
                         self.console.print(
                             f"\n[bold green][✓] Updated global fallback model to:[/bold green] [bold cyan]{chosen_m}[/bold cyan]\n"
                         )
@@ -2572,16 +2626,16 @@ class CLIStudio:
         sub = parts[0].lower() if parts else "show"
 
         if sub in ("show", "list", "ls") or not parts:
-            self.console.print()
-            self.console.print(Panel(
-                f"[bold cyan]Workspace Path[/bold cyan] : {self.config.workspace_path}\n"
-                f"[bold cyan]Skills Dir    [/bold cyan] : {self.config.skills_dir}\n"
-                f"[bold cyan]Citation Style[/bold cyan] : {self.config.citation.style.upper()}\n"
-                f"[bold cyan]Include DOI   [/bold cyan] : {self.config.citation.include_doi}\n"
-                f"[bold cyan]Max Evidence  [/bold cyan] : {self.config.citation.max_evidence_chunks} chunks",
-                title="scrpcy Workspace & Citation Settings",
-                border_style="cyan",
-            ))
+            self.console.print("\n[bold bright_white]Workspace & Citation Settings[/bold bright_white]")
+            s_table = Table(box=None, padding=(0, 2), show_header=False)
+            s_table.add_column("Property", style="dim", width=18)
+            s_table.add_column("Value", style="white")
+            s_table.add_row("Workspace Path", str(self.config.workspace_path))
+            s_table.add_row("Skills Dir", str(self.config.skills_dir))
+            s_table.add_row("Citation Style", self.config.citation.style.upper())
+            s_table.add_row("Include DOI", str(self.config.citation.include_doi))
+            s_table.add_row("Max Evidence", f"{self.config.citation.max_evidence_chunks} chunks")
+            self.console.print(s_table)
             self.console.print("[dim]Commands: settings set-citation <apa|ieee> | settings set-workspace <path>[/dim]\n")
             return
 
@@ -2613,7 +2667,53 @@ class CLIStudio:
         """Alias for backward compatibility directing to cmd_models."""
         self.cmd_models(arg)
 
-    def cmd_docx(self, arg: str) -> None:
+    def _background_docx_worker(self, task_id: str, filename: str) -> str:
+        """Background worker compiling conversation synthesis into Word (.docx) manuscript."""
+        self.task_manager.log(task_id, f"Initializing manuscript compilation: {filename}")
+        drafts_dir = self.workspace.root_dir / "drafts"
+        drafts_dir.mkdir(parents=True, exist_ok=True)
+        dest_path = drafts_dir / filename
+
+        sections = []
+        if self.conversation_history:
+            for idx, item in enumerate(self.conversation_history, 1):
+                heading = f"{idx}. {item['query'][:60]}"
+                sections.append({
+                    "heading": heading,
+                    "level": 1,
+                    "content": item["response"],
+                })
+        else:
+            sections.append({
+                "heading": "1. Literature Summary",
+                "level": 1,
+                "content": "This draft summarizes the active papers currently curated in the scrpcy research vault.",
+            })
+
+        references = []
+        for stem in self.active_documents:
+            content = self.workspace.read_from_cache(f"{stem}.md")
+            meta, _ = DocumentMetadata.from_frontmatter(content)
+            references.append(meta.model_dump())
+
+        self.task_manager.log(task_id, f"Formatting {len(sections)} sections and {len(references)} citations via WordCraft...")
+        self.wordcraft.create_document(
+            title=f"Academic Research Synthesis - {self.config.citation.style.upper()}",
+            path=dest_path,
+        )
+        for sec in sections:
+            self.wordcraft.append_heading(sec["heading"], level=sec.get("level", 1))
+            self.wordcraft.add_paragraph_with_citation(sec["content"])
+
+        if references:
+            self.wordcraft.append_reference_list(references, style=self.config.citation.style)
+
+        self.wordcraft.save(dest_path)
+        summary = f"Generated manuscript: {dest_path.name}"
+        self.task_manager.log(task_id, f"[✓] {summary}")
+        return summary
+
+    def cmd_docx(self, arg: str, in_background: bool = False) -> None:
         """Export current research synthesis session into a Word (.docx) manuscript."""
         if not self.workspace or not self.wordcraft:
             self.console.print("[red][x] No active project to export manuscript from.[/red]\n")
@@ -2627,42 +2727,25 @@ class CLIStudio:
         drafts_dir.mkdir(parents=True, exist_ok=True)
         dest_path = drafts_dir / filename
 
+        if in_background or self.sub_mode == "chat":
+            task = self.task_manager.submit(
+                name=f"WordCraft Export: {filename}",
+                task_type="convert",
+                target_fn=self._background_docx_worker,
+                filename=filename,
+            )
+            self.console.print()
+            self.console.print(
+                f"[bold green][✓] Proses kompilasi Word (.docx) dikirim ke antrean Processing:[/bold green] [bold cyan]{task.id}[/bold cyan]"
+            )
+            self.console.print(f" [dim]• File Target : drafts/{filename}[/dim]")
+            self.console.print(f" [dim]• Gaya Sitasi : {self.config.citation.style.upper()}[/dim]")
+            self.console.print(" [dim]• Ketik [bold cyan]/proc[/bold cyan] untuk memantau status pembuatan berkas.[/dim]\n")
+            return
+
         with self.console.status("[cyan]Compiling manuscript and formatting citations via WordCraft...[/cyan]"):
             try:
-                sections = []
-                if self.conversation_history:
-                    for idx, item in enumerate(self.conversation_history, 1):
-                        heading = f"{idx}. {item['query'][:60]}"
-                        sections.append({
-                            "heading": heading,
-                            "level": 1,
-                            "content": item["response"],
-                        })
-                else:
-                    sections.append({
-                        "heading": "1. Literature Summary",
-                        "level": 1,
-                        "content": "This draft summarizes the active papers currently curated in the scrpcy research vault.",
-                    })
-
-                references = []
-                for stem in self.active_documents:
-                    content = self.workspace.read_from_cache(f"{stem}.md")
-                    meta, _ = DocumentMetadata.from_frontmatter(content)
-                    references.append(meta.model_dump())
-
-                self.wordcraft.create_document(
-                    title=f"Academic Research Synthesis - {self.config.citation.style.upper()}",
-                    path=dest_path,
-                )
-                for sec in sections:
-                    self.wordcraft.append_heading(sec["heading"], level=sec.get("level", 1))
-                    self.wordcraft.add_paragraph_with_citation(sec["content"])
-
-                if references:
-                    self.wordcraft.append_reference_list(references, style=self.config.citation.style)
-
-                self.wordcraft.save(dest_path)
+                self._background_docx_worker("sync", filename)
             except Exception as exc:
                 self.console.print(f"[bold red][x] Document export failed:[/bold red] {exc}\n")
                 return
@@ -2706,6 +2789,30 @@ class CLIStudio:
             self.console.print("[red][x] No active project workspace loaded.[/red]\n")
             return
 
+        # Check if user query in chat explicitly contains a Google Drive link or download intent
+        gdrive_id = extract_drive_file_id(query)
+        if gdrive_id and ("download" in query.lower() or "unduh" in query.lower() or "ingest" in query.lower() or "masuk" in query.lower() or query.strip().startswith("http")):
+            self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Mendeteksi link Google Drive[/bold bright_white] [cyan]ID: {gdrive_id[:12]}...[/cyan]")
+            task = self.task_manager.submit(
+                name=f"Google Drive Ingest: {gdrive_id[:12]}...",
+                task_type="gdrive",
+                target_fn=self._background_gdrive_worker,
+                file_id=gdrive_id,
+            )
+            self.console.print(
+                f"[bold green][✓] Proses download Google Drive dikirim ke antrean Processing:[/bold green] [bold cyan]{task.id}[/bold cyan]"
+            )
+            self.console.print(" [dim]• File akan otomatis diunduh, dikonversi ke Markdown, dan diindeks ke dalam vault.[/dim]")
+            self.console.print(" [dim]• Ketik [bold cyan]/proc[/bold cyan] untuk memantau status atau log.[/dim]\n")
+            return
+
+        if self.vault_manager:
+            try:
+                self.vault_manager.reload_vault()
+            except Exception:
+                pass
+        self._sync_vault_cache()
+
         active_paths = [self.workspace.get_cache_path(f"{s}.md") for s in self.active_documents]
         existing_paths = [p for p in active_paths if p.exists()]
 
@@ -2714,6 +2821,26 @@ class CLIStudio:
             documents=existing_paths,
             max_chunks=self.config.citation.max_evidence_chunks,
         )
+
+        # High Token Consumption Warning & Confirmation (if > 5 chunks)
+        if len(evidence) > 5:
+            sources = sorted(list({c.source for c in evidence}))
+            evidence_tokens = sum(c.token_estimate or estimate_tokens(c.text) for c in evidence)
+            est_total_input = estimate_tokens(query) + 250 + evidence_tokens
+
+            choice = interactive_token_warning_confirm(
+                chunk_count=len(evidence),
+                doc_count=len(sources),
+                token_estimate=est_total_input,
+                console=self.console,
+            )
+
+            if choice == "cancel":
+                self.console.print("[dim]● Pertanyaan dibatalkan oleh pengguna (hemat token).[/dim]\n")
+                return
+            elif choice == "limit":
+                evidence = evidence[:5]
+                self.console.print("[dim]● Dibatasi ke 5 chunks teratas untuk penghematan token.[/dim]")
 
         # 1. Action Indicator: Membaca
         if evidence:
@@ -2757,6 +2884,7 @@ class CLIStudio:
                     documents=existing_paths,
                     skill_name=self.active_skill_name,
                     model=model_name,
+                    max_evidence_chunks=self.config.citation.max_evidence_chunks,
                 ):
                     accumulated_tokens.append(token)
 
@@ -2789,6 +2917,12 @@ class CLIStudio:
             # 5. Suggested actions & Action Indicator: Mengubah / Menulis
             self._handle_suggested_actions(full_response)
 
+        except (KeyboardInterrupt, asyncio.CancelledError):
+            self.console.print("\n\n[bold yellow]● Pertanyaan dibatalkan oleh pengguna (Ctrl+C).[/bold yellow]\n")
+            if accumulated_tokens and self.chat_manager:
+                partial_resp = "".join(accumulated_tokens).strip()
+                self.chat_manager.add_message(session.id, "assistant", f"{partial_resp} [Dibatalkan]")
+            return
         except Exception as exc:
             self.console.print(f"\n[bold red][x] Generation error:[/bold red] {exc}\n")
 

@@ -229,7 +229,7 @@ class LiteratureScout:
             summary=data.get("summary") or text,
         )
 
-    def search_openalex(self, query: ScoutQuery, limit: int = 15) -> list[ScoutResult]:
+    def search_openalex(self, query: ScoutQuery, limit: int = 30) -> list[ScoutResult]:
         """Query OpenAlex using pyalex with full text search and metadata filters."""
         if not PYALEX_AVAILABLE:
             return []
@@ -299,7 +299,7 @@ class LiteratureScout:
     async def search_multi_source(
         self,
         query: ScoutQuery,
-        limit: int = 15,
+        limit: int = 30,
     ) -> list[ScoutResult]:
         """Execute parallel search across OpenAlex, Semantic Scholar, and ArXiv."""
         loop = asyncio.get_running_loop()
@@ -359,7 +359,7 @@ class LiteratureScout:
         user_input: str,
         candidates: list[ScoutResult],
         engine: LLMEngine | None = None,
-        max_output: int = 8,
+        max_output: int | None = None,
     ) -> list[ScoutResult]:
         """Rank candidates according to user intent and optionally inject seminal papers."""
         if not candidates:
@@ -381,17 +381,21 @@ class LiteratureScout:
             key=lambda c: (c.has_pdf, c.citation_count or 0),
             reverse=True,
         )
-        return sorted_candidates[:max_output]
+        if max_output:
+            return sorted_candidates[:max_output]
+        return sorted_candidates
 
     def _curate_via_llm(
         self,
         user_input: str,
         candidates: list[ScoutResult],
         engine: LLMEngine,
-        max_output: int,
+        max_output: int | None = None,
     ) -> list[ScoutResult]:
         """Prompt LLM to evaluate relevance, provide reasons, and add seminal literature."""
         import litellm
+
+        target_limit = max_output or len(candidates)
 
         brief_catalog = []
         for idx, c in enumerate(candidates, 1):
@@ -417,7 +421,7 @@ class LiteratureScout:
             "- year: integer\n"
             "- relevance_reason: string\n"
             "- is_ai_seminal: boolean"
-        ).format(user_input=user_input, max_output=max_output)
+        ).format(user_input=user_input, max_output=target_limit)
 
         import litellm
         litellm.suppress_debug_info = True
@@ -482,7 +486,18 @@ class LiteratureScout:
                 seminal.ensure_cite_key()
                 final_curated.append(seminal)
 
-        return final_curated or candidates[:max_output]
+        # Append remaining candidates not in final_curated, sorted by pdf availability and citations
+        seen_titles = {re.sub(r"[^\w]", "", c.title.lower()) for c in final_curated}
+        remaining = [
+            c for c in candidates
+            if re.sub(r"[^\w]", "", c.title.lower()) not in seen_titles
+        ]
+        remaining.sort(key=lambda c: (c.has_pdf, c.citation_count or 0), reverse=True)
+        final_curated.extend(remaining)
+
+        if max_output:
+            return final_curated[:max_output]
+        return final_curated
 
     async def download_scout_paper(self, paper: ScoutResult) -> Path:
         """Download open-access paper PDF into the master project vault and cache it."""

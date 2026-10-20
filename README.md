@@ -1,113 +1,129 @@
 # scrpcy
 
-A local-first academic research studio.
+A local-first academic research studio with autonomous literature scouting, multi-model AI synthesis, and publication-ready manuscript generation.
 
-## Module 1: File Vault & Document Ingestion
+---
 
-Module 1 provides local-first ingestion of academic papers (PDF format), clean Markdown conversion via `pymupdf4llm`, publication metadata extraction using Gemini structured outputs (via Google GenAI SDK or LiteLLM), and workspace cache management with YAML frontmatter.
+## Architecture & Modules
 
-## Module 2: BYOK LLM Engine & Markdown Skills Loader
+### Module 1: File Vault & Document Ingestion
+Provides local-first ingestion and parsing of academic papers (PDF format):
+- **Clean Markdown Conversion**: Extracts structure and body text via `pymupdf4llm` and `markitdown`.
+- **Publication Metadata Extraction**: Extracts Title, Authors, Year, DOI, and Cite Keys using Gemini structured outputs (via Google GenAI SDK or LiteLLM).
+- **Workspace Cache Management**: Stores parsed documents with YAML frontmatter headers for lightning-fast retrieval and caching.
+- **Active Document Selection**: Selectively toggle papers into active context for focused literature review synthesis.
 
-Module 2 provides flexible model orchestration and dynamic prompt management:
+### Module 2: BYOK LLM Engine & Markdown Skills Loader
+Flexible model orchestration and dynamic prompt management:
 - **Local BYOK Configuration** (`~/.scrpcy/config.json`): Secure local storage of API keys, default models (e.g. `gemini/gemini-2.5-pro`, `openai/gpt-4o`, `ollama/llama3`), and citation preferences.
-- **Dynamic Markdown Skills Loader** (`./skills/`): Load and modify system prompts (e.g. `academic_writer.md`, `literature_synthesizer.md`) with YAML frontmatter and hot-reloading without restarting.
+- **Dynamic Markdown Skills Loader** (`./skills/`): Load and modify system prompts (e.g. `academic_writer.md`, `literature_synthesizer.md`, `methodology_critic.md`) with YAML frontmatter and live hot-reloading.
 - **PaperQA-Style Evidence Synthesis**: Filters and ranks document chunks using BM25-inspired lexical relevance and context token budgeting to minimize token usage.
-- **LiteLLM Streaming Orchestration**: Full async streaming (`acompletion`) and non-streaming synthesis.
+- **Real-Time Streaming & Telemetry**: Full async streaming (`acompletion`) with token consumption telemetry (input, output, and total tokens).
 
-## Module 3: Paper Search Fallback & PDF Retrieval
-
-Module 3 adds academic paper search and direct open-access PDF downloading:
+### Module 3: Paper Search Fallback & PDF Retrieval
+Global academic paper search and direct open-access PDF downloading:
 - **Multi-API Fallback Search**: Queries Semantic Scholar Graph API with automatic fallback to ArXiv Atom API on rate limits (HTTP 429), server errors, or timeouts.
-- **Clean Structured Metadata**: Standardizes Title, Authors, Abstract, Year, DOI, and direct PDF download links via [`SearchResult`](file:///c:/Users/mfthn/OneDrive/Documents/Pemograman/Ai/scrpcy/scrpcy/core/search.py#L32).
+- **Clean Structured Metadata**: Standardizes Title, Authors, Abstract, Year, DOI, and direct PDF download links via `SearchResult`.
 - **Workspace PDF Ingestion**: Downloads approved papers via streaming HTTP into the local workspace vault directory for direct ingestion by Module 1.
 
-## Module 4: WordCraft MCP Client & Document Generator
-
-Module 4 produces publication-ready `.docx` academic manuscripts:
+### Module 4: WordCraft MCP Client & Document Generator
+Produces publication-ready `.docx` academic manuscripts:
 - **Model Context Protocol (MCP) Integration**: Dispatches document authoring commands via JSON-RPC stdio to `wordcraft-cli mcp`.
 - **Transparent Python-Docx Fallback**: Automatic, resilient error boundary falling back to direct `python-docx` generation if the MCP server is unreachable or fails.
 - **Academic Citation Formatting**: Full formatting support for APA 7th edition (`(Vaswani et al., 2017)`) and IEEE (`[1]`) inline citations and bibliographies.
 - **Standard Tool Interface**: Exposes `create_document`, `append_heading`, `add_paragraph_with_citation`, and `append_reference_list`.
 
+### Module 5: Autonomous Literature Scout & Multi-Source Synthesis
+Autonomous academic research assistant that discovers and curates relevant scholarly works:
+- **Multi-Source Scraping**: Queries OpenAlex and Semantic Scholar/ArXiv in parallel to gather comprehensive literature candidates.
+- **Natural Language Strategy Formulation**: Automatically extracts keywords, publication year ranges, and open-access constraints from free-form user descriptions.
+- **AI-Driven Relevance Ranking**: Ranks candidates from highest relevance to lowest without artificial cutoffs, appending seminal groundbreaking literature recommendations.
+- **Zero-Scroll Paginated Carousel**: Horizontal slide navigation (`←` / `→`) with explicit slide indicators (`[ Slide X/Y ]`) and cross-slide multi-paper selection (`download > 1, 4`).
+
+### Module 6: Google Drive Vault Ingestion (Public Share & OAuth 2.0)
+Seamless ingestion of remote research documents from Google Drive:
+- **Public & Shared Links**: Ingests files directly via Google Drive shareable URLs or bare File IDs.
+- **OAuth 2.0 Desktop Integration**: Secure login flow with personal `credentials.json` for private Google Drive access.
+- **Automatic Conversion & Vault Sync**: Streams files to the project vault, converts them to clean Markdown via `MarkItDown`, and updates the active evidence index.
+- **Non-Blocking Background Processing**: All Google Drive downloads run as background tasks in `TaskManager` to ensure the studio and chat never freeze.
+
+### Module 7: Background Task Processing & Task Manager
+Asynchronous execution engine keeping Scrpcy responsive during heavy operations:
+- **ThreadPool Execution Queue**: Offloads literature scouting, PDF downloads, Google Drive ingests, and `.docx` compilations to background worker threads.
+- **Live Timestamped Telemetry**: Detailed logs recorded per-task (`[HH:MM:SS] Progress message...`).
+- **Dedicated Sub-Mode (`/processing`)**: View concise status summaries (running, completed, failed, cancelled) or inspect full task tables and logs.
+- **Task Cancellation**: Gracefully cancel running background jobs via `/proc cancel <task_id>`.
+
+### Module 8: Antigravity-Style Terminal Studio & UX Architecture
+High-craft terminal user interface following Google Antigravity design principles:
+- **Duotone Minimalist Palette**: Clean borderless interface using a single Cyan accent (`#06B6D4`) with neutral dark and bright white text (`#F3F4F6`).
+- **Outlier Input Framing**: Borderless horizontal framing rules with live `/` slash command autocompletion.
+- **Sub-Mode Isolation**: Contextual prompts for Project Root (`skripsi>`), Vault (`skripsi/vault>`), Processing (`skripsi/processing>`), and Chat Hub (`skripsi/chat>`).
+- **Interactive Chat Hub & Multi-Session History**: Manage distinct SQLite chat sessions (`new`, `open`, `delete`, `list`) with beautiful LaTeX math rendering and academic Markdown formatting.
+- **Dynamic Token Budget Warnings**: Automatically warns and prompts user confirmation when queries exceed high token thresholds (> 5 evidence chunks).
+
 ---
 
-## CLI & 3-Panel Research Studio (FastAPI + Typer)
+## Scrpcy CLI & Terminal Studio
 
-### CLI Commands
-
-The `scrpcy` command-line executable manages configuration and starts the local studio:
+### Starting Scrpcy Studio
 
 ```bash
-# Start backend server and automatically open the 3-panel studio in your default browser
+# Launch interactive Antigravity CLI Studio
+scrpcy
+
+# Launch backend server and open the 3-panel Web Studio in browser
 scrpcy start
 
-# Start on custom port and directory without auto-opening browser
+# Start Web Studio on custom port without auto-opening browser
 scrpcy start --port 8080 --dir ~/my_research_vault --no-browser
+```
 
-# Model, API Keys & 9Router Management
+### Models & API Key Management
+
+```bash
 scrpcy models list                           # List configured models, API keys, 9Router status
 scrpcy models use openai/gpt-4o              # Switch active default model
 scrpcy models set-key openai YOUR_API_KEY   # Store API key per-provider (gemini, openai, anthropic, deepseek)
 scrpcy models 9router                        # Interactive 1-step 9Router local gateway setup
-scrpcy models 9router --port 20128 --key sk-9r --model 9router/claude-3-5-sonnet # Flag-based 9Router setup
-scrpcy models tokens                         # Inspect global & per-project token consumption (Input, Output, Total)
-
-# Project Status & Settings
-scrpcy status                                # Inspect active/last research project (vault count & token usage)
-scrpcy status my_thesis                      # Inspect specific research project status
-scrpcy settings show                         # View workspace and citation style preferences
-
-# Ingest and parse a local PDF from the command line
-scrpcy parse path/to/paper.pdf
-
-# Search global academic literature from the terminal
-scrpcy search "Transformer Attention Mechanism" --limit 5
+scrpcy models 9router --port 20128 --key sk-9r --model 9router/claude-3-5-sonnet
+scrpcy models tokens                         # Inspect global & per-project token consumption
 ```
+
+### Project & Sub-Mode Navigation
+
+Inside the Scrpcy Studio, navigate effortlessly between modes:
+
+| Slash Command | Context | Deskripsi |
+| :--- | :--- | :--- |
+| `/vault` atau `/v` | Project Root | Masuk ke sub-mode perpustakaan berkas (`skripsi/vault>`) |
+| `/processing` atau `/proc` | Project Root | Masuk ke sub-mode pemantauan antrean tugas background |
+| `/chat` atau `/c` | Project Root | Masuk ke menu hub percakapan riset (`skripsi/chat>`) |
+| `/scout <query>` | Project Root | Menjalankan pencarian & kurasi literatur otomatis |
+| `/findpaper <topik>` | Project / Chat | Menjalankan pencarian paper di background via OpenAlex |
+| `/gdrive <url>` | Project / Vault / Chat | Mengunduh berkas Google Drive langsung ke vault |
+| `/docx [nama.docx]` | Project / Chat | Mengompilasi naskah Word lengkap dengan format sitasi |
+| `/status` | Project / Chat | Melihat model aktif, level effort, dan konsumsi token project |
+| `/skill` | Project / Chat | Membuka selektor interaktif persona asisten AI |
+| `/back` | Sub-Mode / Chat | Kembali satu tingkat ke konteks sebelumnya |
+| `?` | Semua Mode | Membuka daftar perintah interaktif yang tersedia |
 
 ---
 
-## 3-Panel Academic Studio Frontend Architecture
+## Quickstart (Python API)
 
-The studio provides a high-efficiency 3-panel workspace:
-
-1. **Left Panel — Sources & Literature**:
-   - **Vault / Library Tab**: Lists all ingested papers with title, authors, year, cite key badge, file size, and active checkboxes to select which papers are provided as context to the LLM. Includes an upload button for instant PDF parsing.
-   - **Web Search Tab**: Search across Semantic Scholar and ArXiv with 1-click **"Download PDF"** buttons that fetch open-access preprints directly into your local vault.
-2. **Center Panel — Academic Co-Pilot**:
-   - Multi-turn conversation interface with streaming responses via Server-Sent Events (SSE).
-   - Rendered inline citation pills (`[Vaswani2017]`) and an expandable **Retrieved Evidence Drawer** displaying exact quotes and relevance scores.
-   - Dynamic skill persona switcher (`academic_writer`, `literature_synthesizer`) and citation style selector (`APA 7th`, `IEEE`).
-3. **Right Panel — Studio & Artifacts**:
-   - **Live Agent Tool Log**: Real-time telemetry log displaying timestamped agent events (`EvidenceSynthesizer`, `LLMEngine`, `WordCraft`).
-   - **Manuscript Export**: 1-click **"Draft & Export to Word"** compiling your synthesized literature review into a formatted `.docx` manuscript with centered title, section headings, and formatted reference lists.
-
-### Frontend Asset Building
-The frontend is built as a zero-build, responsive Single Page Application (SPA) using Tailwind CSS and ES modules located at [`scrpcy/static/index.html`](file:///c:/Users/mfthn/OneDrive/Documents/Pemograman/Ai/scrpcy/scrpcy/static/index.html). It is served directly by the FastAPI backend on `http://127.0.0.1:8000/`. No Node.js or `npm install` steps are required.
-
----
-
-### Running Tests
-
-Run the complete test suite across all modules, server endpoints, and CLI commands:
-
-```bash
-pytest -v
-```
-
-
-### Quickstart
-
-#### Parsing and Ingestion (Module 1)
+### 1. Document Parsing & Vault Ingestion
 ```python
 from scrpcy import DocumentParser
 
 parser = DocumentParser()
 result = parser.parse("path/to/paper.pdf")
-print(result.metadata.title)
-print(result.cache_path)
+print("Title:", result.metadata.title)
+print("Cite Key:", result.metadata.cite_key)
+print("Markdown Cache:", result.cache_path)
 ```
 
-#### Evidence Synthesis & Streaming (Module 2)
+### 2. Evidence-Based Chat Synthesis & Streaming
 ```python
 import asyncio
 from scrpcy import LLMEngine
@@ -115,7 +131,7 @@ from scrpcy import LLMEngine
 async def main():
     engine = LLMEngine()
     async for token in engine.stream_query(
-        query="What attention mechanisms are used in Transformer models?",
+        query="Bagaimana perbandingan efektivitas model Transformer vs CNN?",
         documents=["path/to/cached_paper.md"],
         skill_name="academic_writer",
     ):
@@ -124,32 +140,31 @@ async def main():
 asyncio.run(main())
 ```
 
-#### Paper Search & PDF Retrieval (Module 3)
+### 3. Autonomous Literature Scouting
 ```python
 import asyncio
-from scrpcy import PaperSearcher
+from scrpcy.core.scout import LiteratureScout, ScoutQuery
 
 async def main():
-    async with PaperSearcher() as searcher:
-        # Search across Semantic Scholar with ArXiv fallback
-        results = await searcher.search("Transformer Attention", limit=3)
-        for paper in results:
-            print(paper.title, paper.year, paper.has_pdf)
-        
-        # Download first paper with open-access PDF into workspace vault
-        if results and results[0].has_pdf:
-            pdf_path = await searcher.download_paper(results[0])
-            print("Downloaded to:", pdf_path)
+    scout = LiteratureScout()
+    query = ScoutQuery(keywords="Transformer attention mechanism", year_start=2021)
+    
+    # Scrape multi-source across OpenAlex and Semantic Scholar
+    candidates = await scout.search_multi_source(query, limit=20)
+    
+    # Curate and rank by relevance
+    ranked = scout.curate_and_rank("Attention mechanisms", candidates)
+    for idx, paper in enumerate(ranked[:5], 1):
+        print(f"{idx}. {paper.title} ({paper.year}) - PDF: {paper.has_pdf}")
 
 asyncio.run(main())
 ```
 
-#### Document Generation & MCP Client (Module 4)
+### 4. Compiling Word Manuscripts (.docx) via WordCraft
 ```python
 from scrpcy import WordCraftClient, DocumentMetadata
 
 with WordCraftClient() as client:
-    # Creates document with centered title
     client.create_document("Emerging Deep Learning Trends")
     client.append_heading("1. Attention Mechanisms", level=1)
     
@@ -160,7 +175,7 @@ with WordCraftClient() as client:
         doi="10.48550/arXiv.1706.03762",
     )
     
-    # Adds paragraph with formatted APA citation: (Vaswani & Shazeer, 2017)
+    # Formatted APA citation: (Vaswani & Shazeer, 2017)
     client.add_paragraph_with_citation(
         "Transformers eliminate recurrence entirely.",
         citations=[meta],
@@ -173,9 +188,12 @@ with WordCraftClient() as client:
     print("Manuscript saved to:", saved_path)
 ```
 
-### Running Tests
+---
+
+## Testing
+
+Run the full automated test suite:
 
 ```bash
-pytest
+pytest -v
 ```
-

@@ -80,13 +80,13 @@ class TestDashboardFlow:
         studio = CLIStudio(console=test_console, project_manager=project_manager)
         studio.print_dashboard_help()
         output = test_console.file.getvalue()
-        assert "Dashboard Commands" in output
-        assert "projects" in output
-        assert "new" in output
-        assert "open" in output
-        assert "models" in output
-        assert "settings" in output
-        assert "status" in output
+        assert "Available Commands [Dashboard]" in output
+        assert "/projects" in output
+        assert "/new" in output
+        assert "/open" in output
+        assert "/models" in output
+        assert "/settings" in output
+        assert "/skills" in output
 
     def test_dashboard_status(self, test_console: Console, project_manager: ProjectManager, tmp_path: Path) -> None:
         cfg = ScrpcyConfig(default_model="gemini/gemini-2.5-pro")
@@ -692,8 +692,72 @@ class TestNewProjectWizardFlow:
             cli_studio.handle_project_root_interaction("Bagaimana cara kerja transformer?")
             assert not mock_chat.called
             output = cli_studio.console.file.getvalue()
-            assert "Di mode project root, command harus diawali dengan '/'" in output
-            assert "/chat" in output
+            assert "Perintah tidak dikenal:" in output
+            assert "chat" in output
+
+    def test_project_root_commands_work_without_slash(
+        self,
+        cli_studio: CLIStudio,
+    ) -> None:
+        cli_studio.sub_mode = None
+        # 1. status without slash
+        cli_studio.handle_project_root_interaction("status")
+        output = cli_studio.console.file.getvalue()
+        assert "Status Project:" in output
+        assert "Project Model" in output
+        assert "Project Token Usage" in output
+
+        # 2. chat without slash enters chat hub
+        cli_studio.handle_project_root_interaction("chat")
+        assert cli_studio.sub_mode == "chat_hub"
+
+    def test_chat_mode_plain_text_like_back_or_exit_sent_to_ai(
+        self,
+        cli_studio: CLIStudio,
+    ) -> None:
+        cli_studio.sub_mode = "chat"
+        with patch.object(cli_studio, "handle_chat") as mock_chat:
+            # Plain "back" without slash MUST be treated as an AI query, not exit
+            cli_studio.handle_chat_submode_interaction("back")
+            assert mock_chat.called
+            mock_chat.assert_called_with("back")
+            assert cli_studio.sub_mode == "chat"
+
+            # Plain "exit" without slash MUST also be treated as an AI query
+            mock_chat.reset_mock()
+            cli_studio.handle_chat_submode_interaction("exit")
+            assert mock_chat.called
+            mock_chat.assert_called_with("exit")
+            assert cli_studio.sub_mode == "chat"
+
+            # Plain "status" without slash is treated as an AI prompt
+            mock_chat.reset_mock()
+            cli_studio.handle_chat_submode_interaction("status")
+            assert mock_chat.called
+            mock_chat.assert_called_with("status")
+
+        # Now with leading slash, /status calls project status
+        with patch.object(cli_studio, "cmd_project_status") as mock_status:
+            cli_studio.handle_chat_submode_interaction("/status")
+            assert mock_status.called
+
+        # /back cleanly exits chat session back to chat hub
+        cli_studio.handle_chat_submode_interaction("/back")
+        assert cli_studio.sub_mode == "chat_hub"
+
+        # back from chat hub exits to project root
+        cli_studio.handle_chat_hub_interaction("back")
+        assert cli_studio.sub_mode is None
+
+    def test_dashboard_status_without_args_prompts_open_project(
+        self,
+        test_console: Console,
+        project_manager: ProjectManager,
+    ) -> None:
+        studio = CLIStudio(console=test_console, project_manager=project_manager)
+        studio.handle_dashboard_command("status")
+        output = test_console.file.getvalue()
+        assert "Perintah 'status' digunakan di dalam project" in output
 
     def test_enter_chat_mode_via_slash_chat(
         self,
@@ -701,15 +765,23 @@ class TestNewProjectWizardFlow:
     ) -> None:
         cli_studio.sub_mode = None
         cli_studio.handle_project_interaction("/chat")
+        assert cli_studio.sub_mode == "chat_hub"
+        output = cli_studio.console.file.getvalue()
+        assert "Saved Chat Sessions" in output
+
+        # In chat hub, create new chat
+        cli_studio.handle_project_interaction("new my_session")
         assert cli_studio.sub_mode == "chat"
         assert cli_studio.active_chat_session is not None
-        output = cli_studio.console.file.getvalue()
-        assert "Masuk ke sesi chat:" in output
+        assert cli_studio.active_chat_session.name == "my_session"
 
-        # Exit back to root via /back
+        # Exit back to chat hub via /back
         cli_studio.handle_project_interaction("/back")
+        assert cli_studio.sub_mode == "chat_hub"
+
+        # Exit back to root via back
+        cli_studio.handle_project_interaction("back")
         assert cli_studio.sub_mode is None
-        assert "Returned to project root:" in cli_studio.console.file.getvalue()
 
     def test_cmd_findpaper_dispatches_background_scout_task(
         self,
@@ -789,8 +861,8 @@ class TestAntigravityDesignSystem:
 
         assert res == "/vault list"
         output = test_console.file.getvalue()
-        # Outlier horizontal line '─' rendered above and below
-        assert "─" in output
+        # No divider line '─' rendered on prompt input
+        assert "─" not in output
 
     def test_interactive_help_view_structure(
         self,
@@ -808,21 +880,22 @@ class TestAntigravityDesignSystem:
                 )
 
         output = test_console.file.getvalue()
-        assert "Scrpcy CLI" in output
-        assert "general" in output
-        assert "commands" in output
-        assert "shortcuts" in output
-        assert "Project Workspace" in output
+        assert "Available Commands [Project]" in output
+        assert "/search" in output
+        assert "/vault" in output
+        assert "Scrpcy CLI" not in output
+        assert "General Workspace" not in output
+        assert "Keyboard Shortcuts" not in output
 
-    def test_interactive_help_view_tab_cycling(
+    def test_interactive_help_view_navigation(
         self,
         test_console: Console,
     ) -> None:
         from scrpcy.ui.interactive import interactive_help_view
 
-        # Press RIGHT (switch to commands tab) then ENTER (exit)
+        # Press DOWN then ENTER (exit)
         with patch("sys.stdin.isatty", return_value=True):
-            with patch("scrpcy.ui.interactive._read_key", side_effect=["RIGHT", "ENTER"]):
+            with patch("scrpcy.ui.interactive._read_key", side_effect=["DOWN", "ENTER"]):
                 interactive_help_view(
                     console=test_console,
                     current_model="gemini/gemini-2.5-pro",
@@ -831,7 +904,7 @@ class TestAntigravityDesignSystem:
                 )
 
         output = test_console.file.getvalue()
-        assert "Slash Commands" in output
+        assert "Available Commands [Project]" in output
         assert "/search" in output
         assert "/vault" in output
 
@@ -924,7 +997,7 @@ class TestAgenticUXAndFormatting:
 
         assert res == "hi"
         out = test_console.file.getvalue()
-        assert "─" in out
+        assert "─" not in out
         assert "> hi" in out
 
     def test_handle_chat_telemetry_and_actions(self, cli_studio: CLIStudio) -> None:
@@ -1012,3 +1085,75 @@ class TestAgenticUXAndFormatting:
         assert "/history" in cmd_names
         assert "/clear" in cmd_names
         assert "/export" in cmd_names
+
+    def test_interactive_help_view_in_place_no_clear(self, test_console: Console) -> None:
+        """Verify interactive_help_view redraws in place without c.clear() to prevent duplicate blocks."""
+        from scrpcy.ui.interactive import interactive_help_view
+
+        with patch("sys.stdin.isatty", return_value=True):
+            with patch("scrpcy.ui.interactive._read_key", side_effect=["DOWN", "ESC"]):
+                with patch.object(test_console, "clear") as mock_clear:
+                    interactive_help_view(console=test_console)
+
+        # c.clear() must NEVER be called, preventing line duplication
+        mock_clear.assert_not_called()
+
+    def test_interactive_token_warning_confirm_options(self, test_console: Console) -> None:
+        """Verify token warning confirmation returns proceed, limit, and cancel."""
+        from scrpcy.ui.interactive import interactive_token_warning_confirm
+
+        with patch("sys.stdin.isatty", return_value=True):
+            # 1. ENTER on first option -> 'proceed'
+            with patch("scrpcy.ui.interactive._read_key", side_effect=["ENTER"]):
+                res1 = interactive_token_warning_confirm(8, 4, 6000, console=test_console)
+                assert res1 == "proceed"
+
+            # 2. DOWN then ENTER -> 'limit'
+            with patch("scrpcy.ui.interactive._read_key", side_effect=["DOWN", "ENTER"]):
+                res2 = interactive_token_warning_confirm(8, 4, 6000, console=test_console)
+                assert res2 == "limit"
+
+            # 3. ESC -> 'cancel'
+            with patch("scrpcy.ui.interactive._read_key", side_effect=["ESC"]):
+                res3 = interactive_token_warning_confirm(8, 4, 6000, console=test_console)
+                assert res3 == "cancel"
+
+    def test_handle_chat_token_warning_cancel_aborts_llm(self, cli_studio: CLIStudio) -> None:
+        """Verify if token warning is cancelled, LLM query is aborted and no generation occurs."""
+        from scrpcy.core.engine import EvidenceChunk
+
+        cli_studio.config.api_keys["gemini"] = "dummy-key"
+        # 8 chunks (> 5 chunk threshold)
+        mock_evidence = [
+            EvidenceChunk(chunk_id=f"c{i}", source=f"paper{i}", text=f"Evidence text {i}", score=1.0)
+            for i in range(8)
+        ]
+        with patch.object(cli_studio.engine.evidence_synthesizer, "retrieve_evidence", return_value=mock_evidence):
+            with patch("scrpcy.cli_studio.interactive_token_warning_confirm", return_value="cancel"):
+                with patch.object(cli_studio.engine, "stream_query") as mock_stream:
+                    cli_studio.handle_chat("rangkum semua paper di vault")
+                    mock_stream.assert_not_called()
+
+        out = cli_studio.console.file.getvalue()
+        assert "Pertanyaan dibatalkan oleh pengguna (hemat token)" in out
+
+    def test_handle_chat_keyboard_interrupt_cancels_cleanly(self, cli_studio: CLIStudio) -> None:
+        """Verify user can cancel a question with Ctrl+C without crashing or exiting chat mode."""
+        from scrpcy.core.engine import EvidenceChunk
+
+        cli_studio.config.api_keys["gemini"] = "dummy-key"
+        cli_studio.sub_mode = "chat"
+        mock_evidence = [EvidenceChunk(chunk_id="c0", source="paper1", text="Sample", score=1.0)]
+
+        with patch.object(cli_studio.engine.evidence_synthesizer, "retrieve_evidence", return_value=mock_evidence):
+            async def mock_interrupt(*args: Any, **kwargs: Any):
+                raise KeyboardInterrupt()
+                yield "never"
+
+            with patch.object(cli_studio.engine, "stream_query", side_effect=mock_interrupt):
+                # Should NOT raise KeyboardInterrupt to caller
+                cli_studio.handle_chat("jelaskan teori ini")
+
+        assert cli_studio.sub_mode == "chat"
+        out = cli_studio.console.file.getvalue()
+        assert "Pertanyaan dibatalkan oleh pengguna (Ctrl+C)" in out

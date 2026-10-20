@@ -231,10 +231,19 @@ class TestCLIModelsAndStatus:
 
         studio = CLIStudio(console=test_console, project_manager=project_manager)
 
-        # Test status at dashboard
+        # Test status at dashboard prompts to open project
         studio.handle_dashboard_command("status")
         output = test_console.file.getvalue()
-        assert "Research Project Status: nlp_study" in output
+        assert "Perintah 'status' digunakan di dalam project" in output
+
+        # Test project status inside active project
+        proj = project_manager.get_project("nlp_study")
+        studio.open_project(proj)
+        studio.cmd_project_status()
+        output2 = test_console.file.getvalue()
+        assert "Status Project: nlp_study" in output2
+        assert "Project Model" in output2
+        assert "Project Token Usage" in output2
 
         # Test models command at dashboard
         studio.handle_dashboard_command("models use 9router/claude-3-5-sonnet")
@@ -244,3 +253,43 @@ class TestCLIModelsAndStatus:
         studio.handle_dashboard_command("models 9router 20128")
         assert studio.config.default_model.startswith("9router/")
         assert studio.config.api_bases.get("9router") == "http://localhost:20128/v1"
+
+    def test_interactive_model_selection_updates_project_and_status(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import io
+        test_console = Console(file=io.StringIO(), force_terminal=True, color_system=None)
+        project_manager = ProjectManager(registry_file=tmp_path / "studio_projects.json")
+
+        proj_dir = tmp_path / "thesis"
+        proj_dir.mkdir(parents=True, exist_ok=True)
+        project_manager.create_project("thesis", proj_dir)
+
+        studio = CLIStudio(console=test_console, project_manager=project_manager)
+        proj = project_manager.get_project("thesis")
+        studio.open_project(proj)
+
+        # Initial model should be default or claude
+        studio.project_manager.set_project_model("thesis", "9router/claude-3-5-sonnet")
+        studio.current_project.model = "9router/claude-3-5-sonnet"
+
+        # Mock isatty and interactive_model_selector
+        monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+        monkeypatch.setattr(
+            "scrpcy.cli_studio.interactive_model_selector",
+            lambda **kwargs: ("9router/gemini-2.5-flash", "high"),
+        )
+
+        studio.cmd_models("")
+
+        # Now check status output
+        test_console.file.seek(0)
+        test_console.file.truncate(0)
+        studio.cmd_project_status()
+        status_output = test_console.file.getvalue()
+
+        assert "Gemini" in status_output or "gemini-2.5-flash" in status_output
+        assert studio.get_active_project_model() == "9router/gemini-2.5-flash"
+        assert studio.current_project.model == "9router/gemini-2.5-flash"
+        assert studio.engine.default_model == "9router/gemini-2.5-flash"
+

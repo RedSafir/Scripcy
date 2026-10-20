@@ -6,6 +6,8 @@ import sys
 from typing import Any
 
 from rich.console import Console
+from rich.markup import escape
+from rich.table import Table
 from rich.text import Text
 
 
@@ -96,6 +98,9 @@ def _format_model_display_name(model_id: str) -> str:
     return clean
 
 
+format_model_display_name = _format_model_display_name
+
+
 EFFORT_LEVELS = ["low", "medium", "high"]
 EFFORT_DESCRIPTIONS = {
     "low": "Fastest responses for quick exploration & basic summarization",
@@ -144,6 +149,7 @@ def interactive_model_selector(
 
     # Hide cursor during rendering if possible
     c.show_cursor(False)
+    prev_lines_drawn = 0
     try:
         while True:
             filtered = get_filtered()
@@ -241,19 +247,28 @@ def interactive_model_selector(
             lines.append(footer)
             lines.append(Text(""))
 
-            # Clear screen or clear block
-            c.clear()
+            # Redraw in place without scrolling
+            if prev_lines_drawn > 0:
+                sys.stdout.write(f"\x1b[{prev_lines_drawn}A\r\x1b[J")
+                sys.stdout.flush()
+
             for line in lines:
                 c.print(line)
+            sys.stdout.flush()
+            prev_lines_drawn = len(lines)
 
             # Wait for key
             key = _read_key()
 
             if key == "ESC":
-                c.clear()
+                if prev_lines_drawn > 0:
+                    sys.stdout.write(f"\x1b[{prev_lines_drawn}A\r\x1b[J")
+                    sys.stdout.flush()
                 return None
             elif key == "ENTER":
-                c.clear()
+                if prev_lines_drawn > 0:
+                    sys.stdout.write(f"\x1b[{prev_lines_drawn}A\r\x1b[J")
+                    sys.stdout.flush()
                 chosen_m = filtered[cursor_idx] if filtered else current_model
                 return chosen_m, active_effort
             elif key == "UP":
@@ -310,6 +325,7 @@ def interactive_skill_selector(
         ]
 
     c.show_cursor(False)
+    prev_lines_drawn = 0
     try:
         while True:
             filtered = get_filtered()
@@ -368,17 +384,27 @@ def interactive_skill_selector(
             lines.append(footer)
             lines.append(Text(""))
 
-            c.clear()
+            # Redraw in place without scrolling
+            if prev_lines_drawn > 0:
+                sys.stdout.write(f"\x1b[{prev_lines_drawn}A\r\x1b[J")
+                sys.stdout.flush()
+
             for line in lines:
                 c.print(line)
+            sys.stdout.flush()
+            prev_lines_drawn = len(lines)
 
             key = _read_key()
 
             if key == "ESC":
-                c.clear()
+                if prev_lines_drawn > 0:
+                    sys.stdout.write(f"\x1b[{prev_lines_drawn}A\r\x1b[J")
+                    sys.stdout.flush()
                 return None
             elif key == "ENTER":
-                c.clear()
+                if prev_lines_drawn > 0:
+                    sys.stdout.write(f"\x1b[{prev_lines_drawn}A\r\x1b[J")
+                    sys.stdout.flush()
                 if filtered:
                     return getattr(filtered[cursor_idx], "name", str(filtered[cursor_idx]))
                 return current_skill
@@ -417,6 +443,7 @@ def interactive_action_confirm(action_text: str, console: Console | None = None)
     prev_lines_drawn = 0
 
     c.show_cursor(False)
+    prev_lines_drawn = 0
     try:
         while True:
             lines: list[Text] = []
@@ -482,6 +509,112 @@ def interactive_action_confirm(action_text: str, console: Console | None = None)
         c.show_cursor(True)
 
 
+def interactive_token_warning_confirm(
+    chunk_count: int,
+    doc_count: int,
+    token_estimate: int,
+    console: Console | None = None,
+) -> str:
+    """Display interactive warning for high token / large chunk operations with in-place cursor options.
+
+    Returns:
+        'proceed': Run full multi-document analysis with all chunks
+        'limit': Restrict to standard 5 chunks for token conservation
+        'cancel': Abort question and return to prompt
+    """
+    c = console or Console(force_terminal=True)
+    if not sys.stdin.isatty():
+        return "proceed"
+
+    options: list[tuple[str, str, str]] = [
+        (
+            f"Lanjutkan analisis penuh ({chunk_count} chunks, ~{token_estimate:,} token)",
+            "proceed",
+            "Membaca seluruh dokumen untuk sintesis komprehensif",
+        ),
+        (
+            "Batasi ke mode hemat (5 chunks teratas)",
+            "limit",
+            "Menghemat token dengan hanya menganalisis kutipan paling relevan",
+        ),
+        (
+            "Batalkan pertanyaan",
+            "cancel",
+            "Kembali ke prompt tanpa memanggil model LLM",
+        ),
+    ]
+
+    cursor_idx = 0
+    prev_lines_drawn = 0
+
+    c.show_cursor(False)
+    try:
+        while True:
+            lines: list[Text] = []
+
+            # Warning header
+            header = Text("! Peringatan Konsumsi Token: ", style="bold yellow")
+            header.append(
+                f"Permintaan ini akan memproses {chunk_count} chunks dari {doc_count} dokumen (est. ~{token_estimate:,} token).",
+                style="bold bright_white",
+            )
+            lines.append(header)
+
+            sub_hint = Text("  Pilih tindakan untuk melanjutkan:", style="dim")
+            lines.append(sub_hint)
+
+            for idx, (label, val, desc) in enumerate(options):
+                is_cursor = idx == cursor_idx
+                item_text = Text()
+                if is_cursor:
+                    item_text.append("  > ", style="bold cyan")
+                    item_text.append(f"{label:<52}", style="bold bright_white")
+                    item_text.append(f"({desc})", style="dim")
+                else:
+                    item_text.append("    [ ] ", style="dim")
+                    item_text.append(f"{label:<52}", style="dim white")
+                    item_text.append(f"({desc})", style="dim")
+                lines.append(item_text)
+
+            footer = Text("  Navigasi: ", style="dim")
+            footer.append("↑/↓", style="bold cyan")
+            footer.append(" Pilih  ", style="dim")
+            footer.append("Enter", style="bold green")
+            footer.append(" Konfirmasi  ", style="dim")
+            footer.append("Esc", style="bold yellow")
+            footer.append(" Batal", style="dim")
+            lines.append(footer)
+
+            # Redraw in place without c.clear()
+            if prev_lines_drawn > 0:
+                sys.stdout.write(f"\x1b[{prev_lines_drawn}A\r\x1b[J")
+                sys.stdout.flush()
+
+            for line in lines:
+                c.print(line)
+            sys.stdout.flush()
+            prev_lines_drawn = len(lines)
+
+            key = _read_key()
+            if key in ("ESC", "q", "Q"):
+                if prev_lines_drawn > 0:
+                    sys.stdout.write(f"\x1b[{prev_lines_drawn}A\r\x1b[J")
+                    sys.stdout.flush()
+                return "cancel"
+            elif key == "ENTER":
+                val = options[cursor_idx][1]
+                if prev_lines_drawn > 0:
+                    sys.stdout.write(f"\x1b[{prev_lines_drawn}A\r\x1b[J")
+                    sys.stdout.flush()
+                return val
+            elif key in ("UP", "LEFT"):
+                cursor_idx = (cursor_idx - 1) % len(options)
+            elif key in ("DOWN", "RIGHT", "TAB"):
+                cursor_idx = (cursor_idx + 1) % len(options)
+    finally:
+        c.show_cursor(True)
+
+
 # =============================================================================
 # SLASH COMMAND DEFINITIONS & AUTOCOMPLETE CATALOGS
 # =============================================================================
@@ -493,7 +626,6 @@ SLASH_COMMANDS_DASHBOARD: list[tuple[str, str]] = [
     ("/delete", "Remove project from Scrpcy (/delete <#|name>)"),
     ("/models", "Manage LLM models, API keys, 9Router, and tokens"),
     ("/skills", "List available AI persona skills"),
-    ("/status", "View research project status and token consumption"),
     ("/settings", "Manage workspace and citation preferences"),
     ("/clear", "Clear terminal screen"),
     ("/help", "Open interactive help and keyboard shortcuts"),
@@ -514,7 +646,7 @@ SLASH_COMMANDS_PROJECT: list[tuple[str, str]] = [
     ("/active", "Toggle active context papers for AI queries"),
     ("/rename", "Rename the current project (/rename <new_name>)"),
     ("/tokens", "Inspect project token usage statistics"),
-    ("/status", "View project status and token consumption"),
+    ("/status", "Lihat model aktif dan konsumsi token proyek saat ini"),
     ("/settings", "Manage workspace and citation settings"),
     ("/web", "Launch 3-panel Web Studio in browser"),
     ("/dashboard", "Return to Dashboard mode (alias: /close, /back)"),
@@ -524,21 +656,50 @@ SLASH_COMMANDS_PROJECT: list[tuple[str, str]] = [
 ]
 
 SLASH_COMMANDS_CHAT: list[tuple[str, str]] = [
-    ("/back", "Return to project workspace prompt (skripsi>)"),
-    ("/new", "Start a new conversation session (/new [name])"),
-    ("/resume", "Switch active conversation session (/resume <id>)"),
-    ("/history", "View session conversation history"),
-    ("/clear", "Clear messages in this chat session"),
-    ("/export", "Export session conversation to markdown"),
-    ("/search", "Search literature on Semantic Scholar, ArXiv, OpenAlex"),
-    ("/scout", "Intelligent literature scout pipeline & AI curation"),
-    ("/vault", "Manage vault documents and soft-archive"),
-    ("/docx", "Compile synthesized research into Microsoft Word (.docx)"),
-    ("/skill", "Switch active research persona (/skill <name|#>)"),
-    ("/models", "Manage LLM models, API keys, 9Router, and tokens"),
-    ("/processing", "View and track background tasks and downloads"),
-    ("/help", "Open interactive help and keyboard shortcuts"),
-    ("/exit", "Exit Scrpcy research studio"),
+    ("/back", "Kembali ke menu daftar chat (skripsi/chat>)"),
+    ("/status", "Lihat model aktif dan konsumsi token proyek saat ini"),
+    ("/new", "Buat sesi percakapan baru (/new [nama])"),
+    ("/resume", "Pindah ke sesi percakapan lain (/resume <#|nama>)"),
+    ("/history", "Lihat riwayat percakapan sesi ini"),
+    ("/clear", "Bersihkan pesan dalam sesi percakapan ini"),
+    ("/export", "Ekspor percakapan sesi ini ke markdown"),
+    ("/help", "Buka panduan perintah chat (alias: ?)"),
+]
+
+SLASH_COMMANDS_CHAT_HUB: list[tuple[str, str]] = [
+    ("/list", "Tampilkan daftar sesi percakapan yang ada (alias: /ls)"),
+    ("/new", "Buat sesi chat baru (/new [nama])"),
+    ("/open", "Buka atau lanjutkan sesi percakapan (/open <#|nama>)"),
+    ("/delete", "Hapus sesi percakapan lama (/delete <#|nama>)"),
+    ("/clear", "Bersihkan tampilan layar terminal"),
+    ("/help", "Tampilkan panduan perintah chat hub (alias: ?)"),
+    ("/back", "Kembali ke prompt project utama"),
+]
+
+SLASH_COMMANDS_VAULT: list[tuple[str, str]] = [
+    ("/list", "Tampilkan seluruh daftar berkas di vault & status markdown (alias: /ls)"),
+    ("/reload", "Pindai folder & konversi semua file baru/diedit ke Markdown"),
+    ("/add", "Salin dokumen dari komputer ke vault dan langsung dikonversi"),
+    ("/findpaper", "Cari, kurasi & unduh paper akademis (OpenAlex & S2)"),
+    ("/gdrive", "Unduh file Google Drive langsung ke vault via link"),
+    ("/remove", "Arsipkan berkas dari project aktif ke .archive/"),
+    ("/archived", "Lihat daftar berkas yang sedang diarsipkan di .archive/"),
+    ("/restore", "Kembalikan berkas arsip ke vault aktif"),
+    ("/view", "Lihat pratinjau teks Markdown hasil konversi di terminal"),
+    ("/clear", "Bersihkan tampilan layar terminal"),
+    ("/help", "Tampilkan panduan perintah vault (alias: ?)"),
+    ("/back", "Kembali ke prompt project utama"),
+]
+
+SLASH_COMMANDS_PROCESSING: list[tuple[str, str]] = [
+    ("/list", "Tampilkan daftar detail semua background tasks (alias: /ls)"),
+    ("/status", "Tampilkan ringkasan status background tasks"),
+    ("/detail", "Lihat rincian lengkap task (/detail <#|id>)"),
+    ("/log", "Lihat log aktivitas background task (/log <#|id>)"),
+    ("/cancel", "Batalkan task yang sedang berjalan (/cancel <#|id>)"),
+    ("/clear", "Bersihkan riwayat task selesai atau dibatalkan"),
+    ("/help", "Tampilkan panduan perintah processing (alias: ?)"),
+    ("/back", "Kembali ke prompt project utama"),
 ]
 
 SUBCOMMAND_SUGGESTIONS: dict[str, list[tuple[str, str]]] = {
@@ -579,125 +740,102 @@ def interactive_help_view(
     current_effort: str = "high",
     is_project_mode: bool = True,
     is_chat_mode: bool = False,
+    mode: str | None = None,
+    context_label: str = "",
 ) -> None:
-    """Antigravity-style interactive Help & Keyboard Shortcuts screen with tab cycling."""
+    """Antigravity-style simple available commands view."""
     c = console or Console(force_terminal=True)
-    if not sys.stdin.isatty():
-        return
+    width = c.width or 80
 
-    tabs = ["general", "commands", "shortcuts"]
-    active_tab_idx = 0
-    cursor_idx = 0
-
-    if is_chat_mode:
+    if mode == "vault":
+        commands_list = SLASH_COMMANDS_VAULT
+        title = f"Available Commands [{context_label or 'Vault'}]"
+    elif mode == "processing":
+        commands_list = SLASH_COMMANDS_PROCESSING
+        title = f"Available Commands [{context_label or 'Processing'}]"
+    elif mode == "chat_hub":
+        commands_list = SLASH_COMMANDS_CHAT_HUB
+        title = f"Available Commands [{context_label or 'Chat'}]"
+    elif mode == "chat" or (mode is None and is_chat_mode):
         commands_list = SLASH_COMMANDS_CHAT
-    elif is_project_mode:
+        title = f"Available Commands [{context_label or 'Chat Session'}]"
+    elif mode == "dashboard":
+        commands_list = SLASH_COMMANDS_DASHBOARD
+        title = f"Available Commands [{context_label or 'Dashboard'}]"
+    elif mode == "project" or (mode is None and is_project_mode):
         commands_list = SLASH_COMMANDS_PROJECT
+        title = f"Available Commands [{context_label or 'Project'}]"
     else:
         commands_list = SLASH_COMMANDS_DASHBOARD
+        title = "Available Commands [Dashboard]"
 
-    general_items: list[tuple[str, str]] = [
-        ("Project Workspace", "Master project folder containing vault, cache, drafts, and logs"),
-        ("Vault Library", "Local storage for academic PDFs and converted markdown papers"),
-        ("AI Co-Pilot", "Literature-grounded synthesis using PaperQA-style evidence retrieval"),
-        ("WordCraft Engine", "Compiles research chapters into formatted Microsoft Word (.docx)"),
-        ("BYOK LLM Engine", "Supports Gemini, OpenAI, Anthropic, DeepSeek, and 9Router proxy"),
-    ]
+    if not sys.stdin.isatty():
+        c.print(f"\n[bold bright_white]{escape(title)}[/bold bright_white]")
+        table = Table(box=None, padding=(0, 2), show_header=False)
+        table.add_column("Command", style="bold cyan", width=20)
+        table.add_column("Description", style="white")
+        for cmd, desc in commands_list:
+            table.add_row(cmd, desc)
+        c.print(table)
+        c.print()
+        return
 
-    shortcuts_items: list[tuple[str, str]] = [
-        (">", "Open slash commands autocomplete"),
-        (r"\ + enter", "Insert newline fallback"),
-        ("ctrl+c, esc", "Go back / dismiss active view"),
-        ("ctrl+d", "Exit studio"),
-        ("ctrl+l", "Clear CLI screen"),
-        ("↑/↓", "Navigate options and history"),
-        ("enter", "Send message or confirm action"),
-        ("tab", "Complete slash command or cycle tabs"),
-        ("?", "Open this interactive help view"),
-    ]
-
+    cursor_idx = 0
     c.show_cursor(False)
+    prev_lines_drawn = 0
     try:
         while True:
-            cur_tab = tabs[active_tab_idx]
-            if cur_tab == "general":
-                items = general_items
-                subhead = "General Workspace"
-            elif cur_tab == "commands":
-                items = commands_list
-                subhead = "Slash Commands"
-            else:
-                items = shortcuts_items
-                subhead = "Keyboard Shortcuts"
-
-            cursor_idx = max(0, min(cursor_idx, len(items) - 1))
-
+            cursor_idx = max(0, min(cursor_idx, len(commands_list) - 1))
             lines: list[Text] = []
 
-            # Header line with tabs
-            header = Text("Scrpcy CLI    ", style="bold bright_white")
-            for t_idx, t_name in enumerate(tabs):
-                if t_idx == active_tab_idx:
-                    header.append(f"{t_name}    ", style="bold cyan underline")
-                else:
-                    header.append(f"{t_name}    ", style="dim")
-            header.append("(←/→ or tab to cycle)", style="dim")
-            lines.append(header)
-            lines.append(Text(subhead, style="bold bright_white"))
-            lines.append(Text("/keybindings to customize" if cur_tab == "shortcuts" else "Type / at prompt to auto-suggest", style="dim"))
+            lines.append(Text(title, style="bold bright_white"))
             lines.append(Text(""))
 
-            for idx, (k, desc) in enumerate(items):
+            for idx, (k, desc) in enumerate(commands_list):
                 is_cursor = idx == cursor_idx
                 row = Text()
                 if is_cursor:
                     row.append("> ", style="bold cyan")
-                    row.append(f"{k:<24}", style="bold bright_white")
+                    row.append(f"{k:<22}", style="bold bright_white")
                     row.append(desc, style="bold white")
                 else:
                     row.append("  ", style="dim")
-                    row.append(f"{k:<24}", style="dim")
+                    row.append(f"{k:<22}", style="dim")
                     row.append(desc, style="dim")
                 lines.append(row)
 
-            lines.append(Text(f"[{cursor_idx + 1}-{len(items)} of {len(items)} items]", style="dim"))
+            lines.append(Text(f"[{cursor_idx + 1}-{len(commands_list)} of {len(commands_list)} items]", style="dim"))
             lines.append(Text(""))
 
             # Footer
-            footer = Text("Keyboard: ", style="dim")
-            footer.append("↑/↓", style="bold cyan")
-            footer.append(" Navigate  ", style="dim")
-            footer.append("←/→", style="bold cyan")
-            footer.append(" Switch View  ", style="dim")
-            footer.append("esc", style="bold yellow")
-            footer.append(" Close", style="dim")
-
+            footer = Text("↑/↓ Navigate · esc Close", style="dim")
             m_label = _format_model_display_name(current_model)
             right_status = f"{m_label} · {current_effort}"
-            total_w = c.width or 80
-            padding_len = max(2, total_w - len(footer.plain) - len(right_status) - 2)
+            padding_len = max(2, width - len(footer.plain) - len(right_status) - 2)
             footer.append(" " * padding_len)
             footer.append(right_status, style="dim")
             lines.append(footer)
 
-            c.clear()
+            # Redraw in place without scrolling
+            if prev_lines_drawn > 0:
+                sys.stdout.write(f"\x1b[{prev_lines_drawn}A\r\x1b[J")
+                sys.stdout.flush()
+
             for line in lines:
                 c.print(line)
+            sys.stdout.flush()
+            prev_lines_drawn = len(lines)
 
             key = _read_key()
             if key in ("ESC", "q", "Q", "ENTER"):
-                c.clear()
+                if prev_lines_drawn > 0:
+                    sys.stdout.write(f"\x1b[{prev_lines_drawn}A\r\x1b[J")
+                    sys.stdout.flush()
                 return
             elif key == "UP":
                 cursor_idx = max(0, cursor_idx - 1)
             elif key == "DOWN":
-                cursor_idx = min(len(items) - 1, cursor_idx + 1)
-            elif key in ("RIGHT", "TAB"):
-                active_tab_idx = (active_tab_idx + 1) % len(tabs)
-                cursor_idx = 0
-            elif key == "LEFT":
-                active_tab_idx = (active_tab_idx - 1) % len(tabs)
-                cursor_idx = 0
+                cursor_idx = min(len(commands_list) - 1, cursor_idx + 1)
     finally:
         c.show_cursor(True)
 
@@ -707,25 +845,35 @@ def interactive_input_prompt(
     prompt_label: str = "> ",
     is_project_mode: bool = True,
     is_chat_mode: bool = False,
+    mode: str | None = None,
+    context_label: str = "",
     current_model: str = "gemini/gemini-2.5-pro",
     current_effort: str = "high",
 ) -> str:
-    """Prompt user with top and bottom horizontal outliers, live slash command autocomplete, and interactive help."""
+    """Prompt user with live slash command autocomplete and interactive help."""
     c = console or Console(force_terminal=True)
     width = c.width or 80
 
     # Non-interactive fallback (tests, pipes, CI)
     if not sys.stdin.isatty():
-        c.print(Text("─" * width, style="grey23"))
         res = c.input(f"[bold cyan]{prompt_label}[/bold cyan]").strip()
         return res
 
-    if is_chat_mode:
+    if mode == "vault":
+        commands_list = SLASH_COMMANDS_VAULT
+    elif mode == "processing":
+        commands_list = SLASH_COMMANDS_PROCESSING
+    elif mode == "chat_hub":
+        commands_list = SLASH_COMMANDS_CHAT_HUB
+    elif mode == "chat" or (mode is None and is_chat_mode):
         commands_list = SLASH_COMMANDS_CHAT
-    elif is_project_mode:
+    elif mode == "dashboard":
+        commands_list = SLASH_COMMANDS_DASHBOARD
+    elif mode == "project" or (mode is None and is_project_mode):
         commands_list = SLASH_COMMANDS_PROJECT
     else:
         commands_list = SLASH_COMMANDS_DASHBOARD
+
     buffer = ""
     suggestion_cursor = 0
     prev_lines_drawn = 0
@@ -748,6 +896,7 @@ def interactive_input_prompt(
         return [item for item in commands_list if item[0].lower().startswith(q) or q in item[0].lower()]
 
     c.show_cursor(False)
+    prev_lines_drawn = 0
     try:
         while True:
             # Check if user entered help shortcut "?"
@@ -762,6 +911,8 @@ def interactive_input_prompt(
                     current_effort=current_effort,
                     is_project_mode=is_project_mode,
                     is_chat_mode=is_chat_mode,
+                    mode=mode,
+                    context_label=context_label,
                 )
                 buffer = ""
                 suggestion_cursor = 0
@@ -772,20 +923,17 @@ def interactive_input_prompt(
             else:
                 suggestion_cursor = max(0, min(suggestion_cursor, len(suggestions) - 1))
 
-            # Build lines to render
+            # Build lines to render (No divider lines on each input)
             lines_to_render: list[Text] = []
 
-            # 1. Top divider line
-            lines_to_render.append(Text("─" * width, style="grey23"))
-
-            # 2. Input line
+            # 1. Input line
             input_row = Text()
             input_row.append(prompt_label, style="bold cyan")
             input_row.append(buffer, style="bold bright_white")
             input_row.append("█", style="blink bold white")
             lines_to_render.append(input_row)
 
-            # 3. Suggestions dropdown if typing a slash command
+            # 2. Suggestions dropdown if typing a slash command
             if suggestions:
                 max_display = 6
                 display_slice = suggestions[:max_display]
@@ -848,7 +996,6 @@ def interactive_input_prompt(
                     sys.stdout.write(f"\x1b[{prev_lines_drawn}A\r\x1b[J")
                     sys.stdout.flush()
 
-                c.print(Text("─" * width, style="grey23"))
                 final_row = Text()
                 final_row.append(prompt_label, style="bold cyan")
                 final_row.append(buffer, style="bold bright_white")
@@ -887,6 +1034,173 @@ def interactive_input_prompt(
             elif len(key) == 1 and key.isprintable():
                 buffer += key
                 suggestion_cursor = 0
+    finally:
+        c.show_cursor(True)
+
+
+def interactive_carousel_table(
+    title: str,
+    columns: list[dict[str, Any]],
+    rows: list[list[str]],
+    console: Console | None = None,
+    page_size: int | None = None,
+    prompt_label: str = "download > ",
+    help_text: str = "Ketik nomor paper yang ingin diunduh ke vault project (contoh: '1, 2' atau 'all', 'q' untuk batal):",
+    item_label: str = "papers",
+) -> str:
+    """Interactive paginated table carousel with horizontal slide navigation (←/→) and action prompt."""
+    import math
+
+    c = console or Console(force_terminal=True)
+    total_items = len(rows)
+    if total_items == 0:
+        return ""
+
+    term_height = c.height or 24
+    if page_size is not None and page_size > 0:
+        effective_page_size = page_size
+    else:
+        # Dynamic calculation fitting terminal height:
+        # Reserve ~9 lines for header, table headers/padding, navigation bar, help text, and prompt line
+        # Assume ~2 terminal lines per wrapped row
+        available_lines = max(6, term_height - 9)
+        effective_page_size = max(3, min(8, available_lines // 2))
+
+    total_slides = max(1, math.ceil(total_items / effective_page_size))
+    current_slide = 0
+
+    # Non-interactive fallback (tests, CI, piped stdin)
+    if not sys.stdin.isatty():
+        start_idx = 0
+        end_idx = min(total_items, effective_page_size)
+        c.print(f"\n[bold bright_white]{title} ({total_items} {item_label})[/bold bright_white]  [dim]•[/dim]  [bold cyan][ Slide 1/{total_slides} ][/bold cyan] [dim](Showing #{start_idx + 1}–{end_idx})[/dim]")
+        table = Table(box=None, padding=(0, 2), show_header=True, header_style="bold cyan")
+        for col in columns:
+            table.add_column(
+                col.get("name", ""),
+                justify=col.get("justify", "left"),
+                style=col.get("style"),
+                width=col.get("width"),
+                overflow=col.get("overflow", "ellipsis"),
+            )
+        for r in rows[start_idx:end_idx]:
+            table.add_row(*r)
+        c.print(table)
+        if help_text:
+            c.print(f"[dim]{help_text}[/dim]")
+        try:
+            return c.input(f"[bold cyan]{prompt_label}[/bold cyan]").strip()
+        except (KeyboardInterrupt, EOFError):
+            return ""
+
+    input_buffer = ""
+    prev_lines_drawn = 0
+    c.show_cursor(False)
+    try:
+        while True:
+            start_idx = current_slide * effective_page_size
+            end_idx = min(total_items, start_idx + effective_page_size)
+            slice_rows = rows[start_idx:end_idx]
+
+            # 1. Header
+            header_text = Text()
+            header_text.append(title, style="bold bright_white")
+            header_text.append(f" ({total_items} {item_label})", style="bold bright_white")
+            header_text.append("   •   ", style="dim")
+            header_text.append(f"[ Slide {current_slide + 1}/{total_slides} ]", style="bold cyan")
+            header_text.append(f" (Showing #{start_idx + 1}–{end_idx})", style="dim")
+
+            # 2. Table
+            table = Table(box=None, padding=(0, 2), show_header=True, header_style="bold cyan")
+            for col in columns:
+                table.add_column(
+                    col.get("name", ""),
+                    justify=col.get("justify", "left"),
+                    style=col.get("style"),
+                    width=col.get("width"),
+                    overflow=col.get("overflow", "ellipsis"),
+                )
+            for r in slice_rows:
+                table.add_row(*r)
+
+            # 3. Navigation Controls Bar
+            nav_bar = Text()
+            if total_slides > 1:
+                nav_bar.append("←", style="bold cyan")
+                nav_bar.append(" Prev Slide   ", style="dim")
+                nav_bar.append("→", style="bold cyan")
+                nav_bar.append(" Next Slide   ", style="dim")
+            nav_bar.append("all", style="bold cyan")
+            nav_bar.append(" Ingest All   ", style="dim")
+            nav_bar.append("esc / q", style="bold yellow")
+            nav_bar.append(" Cancel", style="dim")
+
+            # 4. Help text
+            help_t = Text(help_text, style="dim") if help_text else None
+
+            # 5. Input prompt
+            prompt_t = Text()
+            prompt_t.append(prompt_label, style="bold cyan")
+            prompt_t.append(input_buffer, style="bold bright_white")
+            prompt_t.append("█", style="blink bold white")
+
+            # Render to buffer and count exact lines
+            with c.capture() as capture:
+                c.print()
+                c.print(header_text)
+                c.print(table)
+                c.print(nav_bar)
+                if help_t:
+                    c.print(help_t)
+                c.print(prompt_t)
+
+            rendered = capture.get()
+            lines_count = len(rendered.splitlines())
+
+            # Redraw in place without scrolling
+            if prev_lines_drawn > 0:
+                sys.stdout.write(f"\x1b[{prev_lines_drawn}A\r\x1b[J")
+                sys.stdout.flush()
+
+            sys.stdout.write(rendered)
+            sys.stdout.flush()
+            prev_lines_drawn = lines_count
+
+            # Wait for key
+            key = _read_key()
+
+            if key == "LEFT":
+                current_slide = max(0, current_slide - 1)
+            elif key == "RIGHT":
+                current_slide = min(total_slides - 1, current_slide + 1)
+            elif key == "ENTER":
+                if prev_lines_drawn > 0:
+                    sys.stdout.write(f"\x1b[{prev_lines_drawn}A\r\x1b[J")
+                    sys.stdout.flush()
+                # Print static final state cleanly
+                c.print()
+                c.print(header_text)
+                c.print(table)
+                final_row = Text()
+                final_row.append(prompt_label, style="bold cyan")
+                final_row.append(input_buffer, style="bold bright_white")
+                c.print(final_row)
+                return input_buffer.strip()
+            elif key in ("ESC", "\x03"):
+                if prev_lines_drawn > 0:
+                    sys.stdout.write(f"\x1b[{prev_lines_drawn}A\r\x1b[J")
+                    sys.stdout.flush()
+                return ""
+            elif key == "BACKSPACE":
+                if input_buffer:
+                    input_buffer = input_buffer[:-1]
+            elif len(key) == 1 and key.isprintable():
+                if not input_buffer and key in ("q", "Q"):
+                    if prev_lines_drawn > 0:
+                        sys.stdout.write(f"\x1b[{prev_lines_drawn}A\r\x1b[J")
+                        sys.stdout.flush()
+                    return ""
+                input_buffer += key
     finally:
         c.show_cursor(True)
 

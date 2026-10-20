@@ -349,6 +349,31 @@ class TestEvidenceSynthesizer:
         assert len(selected) >= 1
         assert selected[0].source == "he2016resnet"
 
+    def test_retrieve_evidence_corpus_wide_multi_doc_balance(self) -> None:
+        """Verify that corpus-wide queries ('rangkum semua paper') retrieve chunks from ALL documents."""
+        synthesizer = EvidenceSynthesizer(default_max_chunks=5)
+
+        # 6 distinct papers in the vault
+        doc1 = "Studi Pedagogi: Pembelajaran berbasis student-centered learning meningkatkan kemandirian siswa."
+        doc2 = "Teologi Lingkungan: Kosmologi Al-Quran memandang alam semesta sebagai sunnatullah yang harmonis."
+        doc3 = "Manajemen Sekolah: Integrasi komite dan kemandirian guru membentuk sinergi sekolah efektif."
+        doc4 = "Kecerdasan Buatan: Arsitektur Transformer memanfaatkan mekanisme self-attention tanpa rekurensi."
+        doc5 = "Etika Digital: Perlindungan privasi data siswa dalam platform edukasi daring."
+        doc6 = "Metodologi Riset: Pendekatan mixed methods untuk evaluasi kurikulum merdeka."
+
+        docs = [doc1, doc2, doc3, doc4, doc5, doc6]
+
+        selected = synthesizer.retrieve_evidence(
+            query="rangkum semua paper yang ada di vault",
+            documents=docs,
+        )
+
+        # In corpus query mode, budget expands to cover all papers and round-robin guarantees representation
+        sources = {c.source for c in selected}
+        # All 6 documents MUST be represented in the evidence
+        assert len(sources) == 6
+        assert len(selected) >= 6
+
 
 class TestLLMEngine:
     """Tests for LiteLLM streaming orchestration and offline mock capabilities."""
