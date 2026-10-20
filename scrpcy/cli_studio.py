@@ -21,7 +21,7 @@ from rich.text import Text
 
 from scrpcy.core.chats import ChatManager, ChatSession
 from scrpcy.core.config import ConfigManager, ScrpcyConfig, detect_9router_key, fetch_9router_models
-from scrpcy.core.engine import LLMEngine
+from scrpcy.core.engine import LLMEngine, estimate_tokens
 from scrpcy.core.gdrive import GoogleDriveManager, extract_drive_file_id
 from scrpcy.core.mcp_client import WordCraftClient
 from scrpcy.core.models import DocumentMetadata, ParsedDocument
@@ -46,9 +46,12 @@ if sys.platform == "win32":
 from scrpcy.ui.interactive import (
     _format_model_display_name,
     interactive_action_confirm,
+    interactive_help_view,
+    interactive_input_prompt,
     interactive_model_selector,
     interactive_skill_selector,
 )
+from scrpcy.ui.formatters import render_academic_markdown
 
 SCRPCY_LOGO = r"""
   ███████╗ ██████╗██████╗ ██████╗  ██████╗██╗   ██╗
@@ -98,6 +101,7 @@ class CLIStudio:
         self.chat_manager: ChatManager | None = None
         self.sub_mode: str | None = None
         self.active_chat_session: ChatSession | None = None
+        self._has_printed_banner: bool = False
 
         self.current_project: ProjectInfo | None = None
         self.workspace: WorkspaceManager | None = None
@@ -183,9 +187,19 @@ class CLIStudio:
         return cached_files
 
     def print_banner(self) -> None:
-        """Render the large ASCII art logo with version and direct command prompt."""
-        self.console.print(f"[bold cyan]{SCRPCY_LOGO.strip()}[/bold cyan]\n")
-        self.console.print(f" [dim]{SCRPCY_VERSION} • Local-First Academic Research Studio[/dim]\n")
+        """Render the large ASCII art logo at most once."""
+        if not self._has_printed_banner:
+            self.console.print(f"[bold cyan]{SCRPCY_LOGO.strip()}[/bold cyan]\n")
+            self.console.print(f" [dim]{SCRPCY_VERSION} • Local-First Academic Research Studio[/dim]\n")
+            self._has_printed_banner = True
+
+    def print_dashboard_banner(self) -> None:
+        """Render minimal borderless dashboard status without command suggestion blocks."""
+        projects = self.project_manager.list_projects()
+        p_count = len(projects)
+        self.console.print(
+            f" [bold cyan]scrpcy[/bold cyan] [dim]•[/dim] [dim]dashboard ({p_count} projects)[/dim]"
+        )
 
     def run(self) -> None:
         """Main interaction loop handling Dashboard and Project modes."""
@@ -194,35 +208,31 @@ class CLIStudio:
         if self.current_project:
             self.print_project_banner()
         else:
-            self.print_dashboard_help()
+            self.print_dashboard_banner()
 
         while True:
             try:
-                if self.current_project:
-                    effort = self.get_active_project_effort()
-                    m_label = _format_model_display_name(self.get_active_project_model())
-                    if self.sub_mode == "vault":
-                        prompt = f"[bold green]{self.current_project.name}[/bold green][dim]/[/dim][bold yellow]vault[/bold yellow][bold cyan]>[/bold cyan] "
-                    elif self.sub_mode == "processing":
-                        prompt = f"[bold green]{self.current_project.name}[/bold green][dim]/[/dim][bold magenta]processing[/bold magenta][bold cyan]>[/bold cyan] "
-                    elif self.sub_mode == "chat":
-                        effort = self.get_active_project_effort()
-                        m_label = _format_model_display_name(self.get_active_project_model())
-                        grid = Table.grid(expand=True)
-                        grid.add_column(justify="left")
-                        grid.add_column(justify="right")
-                        grid.add_row(
-                            "[dim]│ esc to dismiss (ketik 'back' untuk kembali)[/dim]",
-                            f"[dim]{self.active_skill_name} • {m_label} • {effort}[/dim]",
-                        )
-                        self.console.print(grid)
-                        prompt = "[bold cyan]>[/bold cyan] "
-                    else:
-                        prompt = f"[bold green]{self.current_project.name}[/bold green][bold cyan]>[/bold cyan] "
-                else:
-                    prompt = "[bold cyan]>[/bold cyan] "
+                eff = self.get_active_project_effort() if self.current_project else "high"
+                mod = self.get_active_project_model() if self.current_project else self.config.default_model
 
-                raw_input = self.console.input(prompt).strip()
+                if self.sub_mode == "vault":
+                    prompt_lbl = f"{self.current_project.name}/vault> " if self.current_project else "vault> "
+                elif self.sub_mode == "processing":
+                    prompt_lbl = f"{self.current_project.name}/processing> " if self.current_project else "processing> "
+                elif self.sub_mode == "chat":
+                    prompt_lbl = "> "
+                elif self.current_project:
+                    prompt_lbl = f"{self.current_project.name}> "
+                else:
+                    prompt_lbl = "> "
+
+                raw_input = interactive_input_prompt(
+                    console=self.console,
+                    prompt_label=prompt_lbl,
+                    is_project_mode=(self.current_project is not None),
+                    current_model=mod,
+                    current_effort=eff,
+                ).strip()
 
                 if not raw_input:
                     continue
@@ -230,6 +240,15 @@ class CLIStudio:
                 if self.sub_mode is None and raw_input in ("/exit", "/quit", "exit", "quit", "q"):
                     self.console.print("\n[bold cyan]Closing scrpcy research studio. Goodbye![/bold cyan]")
                     break
+
+                if raw_input in ("?", "/help"):
+                    interactive_help_view(
+                        console=self.console,
+                        current_model=mod,
+                        current_effort=eff,
+                        is_project_mode=(self.current_project is not None),
+                    )
+                    continue
 
                 if self.current_project is None:
                     self.handle_dashboard_command(raw_input)
@@ -257,23 +276,24 @@ class CLIStudio:
         """Render instructions for Dashboard mode."""
         self.console.print("[bold bright_white]Dashboard Commands:[/bold bright_white]")
         table = Table(box=None, padding=(0, 2), show_header=False)
-        table.add_column("Command", style="bold green")
-        table.add_column("Args", style="yellow")
+        table.add_column("Command", style="bold cyan")
+        table.add_column("Args", style="dim")
         table.add_column("Description", style="white")
 
-        table.add_row("projects", "", "List registered research projects (alias: list, ls)")
-        table.add_row("new", "<name> [folder_path]", "Create and connect a master project folder")
-        table.add_row("open", "<# | name | folder_path>", "Open an existing project folder")
-        table.add_row("delete", "<# | name>", "Remove project from Scrpcy (alias: remove, rm)")
-        table.add_row("skills", "", "List available AI persona skills (alias: skill)")
-        table.add_row("models", "[list | use | 9router | tokens]", "Manage LLM models, API keys, 9Router, and token usage")
-        table.add_row("status", "[project_name]", "View research project status, assigned model, and token consumption")
-        table.add_row("settings", "[show | set-citation]", "Manage workspace path and citation preferences")
-        table.add_row("clear", "", "Clear terminal screen")
-        table.add_row("exit", "", "Exit the studio (alias: quit, q)")
+        table.add_row("/projects", "", "List registered research projects (alias: /list, /ls, projects)")
+        table.add_row("/new", "<name> [folder_path]", "Create and connect a master project folder")
+        table.add_row("/open", "<# | name | folder_path>", "Open an existing project folder")
+        table.add_row("/delete", "<# | name>", "Remove project from Scrpcy (alias: /rm)")
+        table.add_row("/skills", "", "List available AI persona skills (alias: /skill, skills)")
+        table.add_row("/models", "[list | use | 9router | tokens]", "Manage LLM models, API keys, 9Router, and tokens (models)")
+        table.add_row("/status", "[project_name]", "View research project status, assigned model, and token consumption (status)")
+        table.add_row("/settings", "[show | set-citation]", "Manage workspace path and citation preferences (settings)")
+        table.add_row("/clear", "", "Clear terminal screen")
+        table.add_row("/help", "", "Open interactive help (alias: ?)")
+        table.add_row("/exit", "", "Exit the studio (alias: /quit, /q)")
 
         self.console.print(table)
-        self.console.print("\n[dim]Tip: Type 'new <name>' or 'open <path>' to begin working on a project.[/dim]\n")
+        self.console.print()
 
     def handle_dashboard_command(self, raw_line: str) -> None:
         """Process commands while on the initial dashboard."""
@@ -557,15 +577,9 @@ class CLIStudio:
 
         self.console.print()
         self.console.print(
-            f" [bold green]◆[/bold green] [bold bright_white]{self.current_project.name}[/bold bright_white]  "
-            f"[dim]•[/dim]  [bold cyan]{model_label}[/bold cyan] [dim]({effort} effort)[/dim]  "
+            f" [bold cyan]scrpcy[/bold cyan] [dim]•[/dim] [bold bright_white]{self.current_project.name}[/bold bright_white]  "
+            f"[dim]•[/dim]  [bold cyan]{model_label}[/bold cyan] [dim]({effort})[/dim]  "
             f"[dim]•[/dim]  [dim]vault: {cached_count} indexed ({active_count} active)[/dim]"
-        )
-        self.console.print(
-            f" [dim]  Location: {self.current_project.path}[/dim]"
-        )
-        self.console.print(
-            " [dim]  Type [cyan]/help[/cyan] for commands, [cyan]models[/cyan] to switch model, or ask a question directly.[/dim]\n"
         )
 
     # =========================================================================
@@ -636,32 +650,32 @@ class CLIStudio:
             self.handle_chat(clean)
 
     def print_project_help(self) -> None:
-        """Render a clean table of project commands and sub-modes."""
-        table = Table(
-            title=f"Project Commands [{self.current_project.name if self.current_project else 'Active'}]",
-            title_style="bold cyan",
-            border_style="cyan",
-            header_style="bold bright_cyan",
-        )
-        table.add_column("Command / Mode", style="bold green", no_wrap=True)
-        table.add_column("Arguments", style="yellow")
+        """Render a clean borderless table of project commands and sub-modes."""
+        proj_name = self.current_project.name if self.current_project else "Active"
+        self.console.print(f"[bold bright_white]Project Commands [{proj_name}]:[/bold bright_white]")
+        table = Table(box=None, padding=(0, 2), show_header=False)
+        table.add_column("Command / Mode", style="bold cyan", no_wrap=True)
+        table.add_column("Arguments", style="dim")
         table.add_column("Description", style="white")
 
         commands = [
-            ("vault", "[subcommand]", "Enter Vault sub-mode (skripsi/vault>) or execute vault action"),
-            ("processing", "[subcommand]", "Enter Processing sub-mode (skripsi/processing>) to track background tasks"),
-            ("chat", "[new | resume | list]", "Enter Chat mode (skripsi/chat1>) with multi-session memory"),
-            ("rename", "<new_name>", "Rename the current project"),
-            ("findpaper", "[topic]", "Search & scout literature on OpenAlex/S2 (alias: /scout)"),
+            ("/vault", "[subcommand]", "Manage vault documents and archive (or enter sub-mode)"),
+            ("/processing", "[subcommand]", "Track background tasks and downloads (alias: /proc)"),
+            ("/chat", "[new | resume | list]", "Manage conversation sessions with multi-turn memory"),
+            ("/rename", "<new_name>", "Rename the current project"),
+            ("/findpaper", "[topic]", "Search & scout literature on OpenAlex/S2 (alias: /scout)"),
+            ("/docx", "[filename]", "Compile synthesized research into Microsoft Word (.docx)"),
             ("/skills", "", "List available research skill personas (alias: /skill)"),
-            ("/skill", "[# | name]", "Switch active research persona by number or name (e.g. /skill 2)"),
-            ("/models", "[list | use | 9router | tokens]", "Manage project LLM model, API keys, 9Router, and tokens (alias: /model)"),
+            ("/skill", "[# | name]", "Switch active research persona by number or name"),
+            ("/models", "[list | use | 9router | tokens]", "Manage project LLM model, API keys, and tokens"),
+            ("/gdrive", "<url>", "Ingest research paper directly from Google Drive"),
             ("/status", "", "View project status, assigned model, and token consumption"),
-            ("/settings", "[show | set-citation]", "Manage workspace and citation settings (alias: /style)"),
+            ("/settings", "[show | set-citation]", "Manage workspace and citation settings"),
             ("/web", "[port]", "Launch Web Studio for this project in browser"),
             ("/dashboard", "", "Return to Dashboard (alias: /close, /back)"),
-            ("/delete", "[# | name]", "Remove project from Scrpcy (alias: /remove, /rm)"),
+            ("/delete", "[# | name]", "Remove project from Scrpcy (alias: /rm)"),
             ("/clear", "", "Clear terminal screen"),
+            ("/help", "", "Open interactive help (alias: ?)"),
             ("/exit", "", "Exit scrpcy"),
         ]
 
@@ -669,7 +683,7 @@ class CLIStudio:
             table.add_row(cmd, args, desc)
 
         self.console.print(table)
-        self.console.print("\n[dim]Tip: Ketik 'vault' untuk kelola file, 'processing' untuk lihat background task, atau 'chat' untuk diskusi riset.[/dim]\n")
+        self.console.print()
 
     def handle_project_command(self, cmd_line: str) -> None:
         """Route slash commands in Project mode."""
@@ -813,7 +827,7 @@ class CLIStudio:
             if item.source == "openalex":
                 source_badge = "[bold cyan][OpenAlex][/bold cyan]"
             elif item.source == "ai_recommended":
-                source_badge = "[bold magenta][AI Seminal][/bold magenta]"
+                source_badge = "[bold cyan][AI Seminal][/bold cyan]"
             else:
                 source_badge = "[bold blue][S2/ArXiv][/bold blue]"
 
@@ -1454,27 +1468,28 @@ class CLIStudio:
     # =========================================================================
 
     def render_processing_view(self) -> None:
-        """Render table of background tasks."""
+        """Render borderless duotone table of background tasks."""
         tasks = self.task_manager.list_tasks()
         table = Table(
             title=f"Background Processing Tasks [{self.current_project.name if self.current_project else 'Studio'}]",
-            title_style="bold magenta",
-            border_style="magenta",
-            header_style="bold bright_magenta",
+            box=None,
+            padding=(0, 2),
+            title_style="bold bright_white",
+            header_style="bold cyan",
         )
         table.add_column("#", justify="right", style="dim", width=3)
         table.add_column("Task ID", style="bold cyan", width=10)
-        table.add_column("Type", justify="center", width=10)
+        table.add_column("Type", justify="center", style="dim", width=10)
         table.add_column("Description", style="white")
-        table.add_column("Status", justify="center", width=12)
-        table.add_column("Duration", justify="right", width=9)
+        table.add_column("Status", justify="center", width=14)
+        table.add_column("Duration", justify="right", style="dim", width=9)
         table.add_column("Progress / Note", style="dim")
 
         for idx, t in enumerate(tasks, 1):
             if t.status == "running":
-                status_badge = "[bold yellow][Running][/bold yellow]"
+                status_badge = "[bold cyan][Running][/bold cyan]"
             elif t.status == "completed":
-                status_badge = "[bold green][Completed][/bold green]"
+                status_badge = "[bold white][Completed][/bold white]"
             elif t.status == "cancelled":
                 status_badge = "[dim][Cancelled][/dim]"
             else:
@@ -1494,22 +1509,22 @@ class CLIStudio:
         self.console.print(table)
         if not tasks:
             self.console.print("[dim]No background tasks currently registered.[/dim]")
-        self.console.print("[dim]Commands: [bold cyan]list[/bold cyan], [bold cyan]detail <#|id>[/bold cyan], [bold cyan]log <#|id>[/bold cyan], [bold cyan]cancel <#|id>[/bold cyan], [bold cyan]clear[/bold cyan], [bold cyan]back[/bold cyan][/dim]\n")
+        self.console.print("[dim]Commands: [bold cyan]/list[/bold cyan], [bold cyan]/detail <#|id>[/bold cyan], [bold cyan]/log <#|id>[/bold cyan], [bold cyan]/cancel <#|id>[/bold cyan], [bold cyan]/clear[/bold cyan], [bold cyan]/back[/bold cyan][/dim]\n")
 
     def print_processing_help(self) -> None:
         """Render instructions for Processing sub-mode."""
         self.console.print("[bold bright_white]Processing Sub-Mode Commands:[/bold bright_white]")
         table = Table(box=None, padding=(0, 2), show_header=False)
-        table.add_column("Command", style="bold green")
-        table.add_column("Args", style="yellow")
+        table.add_column("Command", style="bold cyan")
+        table.add_column("Args", style="dim")
         table.add_column("Description", style="white")
 
-        table.add_row("list", "", "List all background tasks (alias: ls)")
-        table.add_row("detail", "<# | task_id>", "View full details, input args, and result summary")
-        table.add_row("log", "<# | task_id>", "View live output logs for a background job")
-        table.add_row("cancel", "<# | task_id>", "Abort / cancel a running background job (alias: kill)")
-        table.add_row("clear", "", "Remove completed or cancelled jobs from list")
-        table.add_row("back", "", "Return to project root prompt")
+        table.add_row("/list", "", "List all background tasks (alias: /ls, list)")
+        table.add_row("/detail", "<# | task_id>", "View full details, input args, and result summary")
+        table.add_row("/log", "<# | task_id>", "View live output logs for a background job")
+        table.add_row("/cancel", "<# | task_id>", "Abort / cancel a running background job (alias: /kill)")
+        table.add_row("/clear", "", "Remove completed or cancelled jobs from list")
+        table.add_row("/back", "", "Return to project root prompt (alias: back, exit)")
 
         self.console.print(table)
         self.console.print()
@@ -2358,7 +2373,7 @@ class CLIStudio:
                 box=None,
                 padding=(0, 2),
                 show_header=True,
-                header_style="bold bright_magenta",
+                header_style="bold cyan",
             )
             cat_table.add_column("Provider / Router", style="bold white", width=18)
             cat_table.add_column("Contoh Model Identifiers", style="cyan")
@@ -2381,18 +2396,18 @@ class CLIStudio:
                 box=None,
                 padding=(0, 2),
                 show_header=True,
-                header_style="bold bright_yellow",
+                header_style="bold cyan",
             )
-            cmd_table.add_column("Perintah", style="bold green", width=34)
+            cmd_table.add_column("Perintah", style="bold cyan", width=34)
             cmd_table.add_column("Deskripsi & Contoh", style="white")
 
-            cmd_table.add_row("models", "Buka menu pemilihan model interaktif (cursor & effort)")
-            cmd_table.add_row("models list", "Menampilkan katalog model teks lengkap")
-            cmd_table.add_row("models use <model> [project]", "Mengatur model LLM (contoh: models use 9router/ag/gemini-3.8-flash)")
-            cmd_table.add_row("models 9router [port] [model]", "Menghubungkan 9Router lokal dan memindai model aktif")
-            cmd_table.add_row("models set-key <provider> <key>", "Menyimpan API key (contoh: models set-key 9router <key>)")
-            cmd_table.add_row("models tokens [project]", "Melihat statistik token input, output, dan riwayat sintesis")
-            cmd_table.add_row("models status [project]", "Melihat status project dan model aktif")
+            cmd_table.add_row("/models", "Buka menu pemilihan model interaktif (cursor & effort)")
+            cmd_table.add_row("/models list", "Menampilkan katalog model teks lengkap")
+            cmd_table.add_row("/models use <model> [project]", "Mengatur model LLM (contoh: /models use 9router/ag/gemini-3.8-flash)")
+            cmd_table.add_row("/models 9router [port] [model]", "Menghubungkan 9Router lokal dan memindai model aktif")
+            cmd_table.add_row("/models set-key <provider> <key>", "Menyimpan API key (contoh: /models set-key 9router <key>)")
+            cmd_table.add_row("/models tokens [project]", "Melihat statistik token input, output, dan riwayat sintesis")
+            cmd_table.add_row("/models status [project]", "Melihat status project dan model aktif")
 
             self.console.print(cmd_table)
             self.console.print()
@@ -2406,15 +2421,16 @@ class CLIStudio:
             self.console.print()
             table = Table(
                 title="Global Token Consumption Summary",
-                title_style="bold cyan",
-                border_style="cyan",
-                header_style="bold bright_cyan",
+                box=None,
+                padding=(0, 2),
+                title_style="bold bright_white",
+                header_style="bold cyan",
             )
             table.add_column("Metric", style="bold white", width=24)
-            table.add_column("Count", justify="right", style="bold green")
+            table.add_column("Count", justify="right", style="bold cyan")
             table.add_row("Total Input Tokens", f"{summary.total_input_tokens:,}")
             table.add_row("Total Output Tokens", f"{summary.total_output_tokens:,}")
-            table.add_row("Grand Total Tokens", f"[bold bright_green]{summary.total_tokens:,}[/bold bright_green]")
+            table.add_row("Grand Total Tokens", f"[bold bright_white]{summary.total_tokens:,}[/bold bright_white]")
             table.add_row("Total Requests", f"{summary.total_requests:,}")
             self.console.print(table)
             self.console.print()
@@ -2422,16 +2438,18 @@ class CLIStudio:
             if summary.projects:
                 p_table = Table(
                     title="Token Usage Breakdown by Project",
-                    title_style="bold magenta",
-                    border_style="magenta",
-                    header_style="bold bright_magenta",
+                    box=None,
+                    padding=(0, 2),
+                    title_style="bold bright_white",
+                    header_style="bold cyan",
                 )
                 p_table.add_column("Project Name", style="bold white", width=22)
                 p_table.add_column("Input", justify="right", style="cyan")
                 p_table.add_column("Output", justify="right", style="cyan")
-                p_table.add_column("Total", justify="right", style="bold green")
+                p_table.add_column("Total", justify="right", style="bold white")
                 p_table.add_column("Requests", justify="right", style="dim", width=10)
                 p_table.add_column("Last Active (UTC)", style="dim", width=20)
+
 
                 for p_name, p_sum in summary.projects.items():
                     if filter_proj and filter_proj.lower() not in p_name.lower():
@@ -2697,13 +2715,16 @@ class CLIStudio:
             max_chunks=self.config.citation.max_evidence_chunks,
         )
 
+        # 1. Action Indicator: Membaca
         if evidence:
-            sources_summary = ", ".join({c.source for c in evidence})
-            self.console.print(f"[dim]● Sourced {len(evidence)} evidence chunks from: {sources_summary}[/dim]")
+            sources = sorted(list({c.source for c in evidence}))
+            for src in sources:
+                count = sum(1 for c in evidence if c.source == src)
+                self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Membaca[/bold bright_white] [cyan]cache/{src}[/cyan] [dim]({count} evidence chunks)[/dim]")
         elif existing_paths:
-            self.console.print("[dim]● No high-relevance evidence chunks identified from active papers.[/dim]")
+            self.console.print("[bold cyan]●[/bold cyan] [dim]Membaca: Tidak ada chunk relevan dari paper aktif[/dim]")
         else:
-            self.console.print("[dim]● Notice: No papers are active in the vault. Operating in general synthesis mode.[/dim]")
+            self.console.print("[bold cyan]●[/bold cyan] [dim]Membaca: Tidak ada paper aktif di vault (mode sintesis umum)[/dim]")
 
         model_name = self.get_active_project_model()
         api_key = self.config.get_api_key_for_model(model_name)
@@ -2723,9 +2744,11 @@ class CLIStudio:
         if self.chat_manager:
             self.chat_manager.add_message(session.id, "user", query)
 
-        accumulated_tokens: list[str] = []
-        self.console.print(f"\n[bold cyan]✦ {model_label}[/bold cyan] [dim]({self.active_skill_name} • {effort} effort)[/dim]")
+        # 2. Action Indicator: Berpikir
+        self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Berpikir[/bold bright_white] [dim]Menganalisis literatur dan menyusun sintesis ilmiah...[/dim]")
+        self.console.print(f"\n[bold cyan]✦ {model_label}[/bold cyan] [dim]({self.active_skill_name} • {effort} effort)[/dim]\n")
 
+        accumulated_tokens: list[str] = []
         start_time = time.time()
         try:
             async def _stream_chat() -> None:
@@ -2736,17 +2759,25 @@ class CLIStudio:
                     model=model_name,
                 ):
                     accumulated_tokens.append(token)
-                    sys.stdout.write(token)
-                    sys.stdout.flush()
 
             asyncio.run(_stream_chat())
             elapsed = time.time() - start_time
-            self.console.print("\n")
 
             full_response = "".join(accumulated_tokens)
-            approx_tokens = len(full_response.split()) * 4 // 3
+
+            # 3. Clean academic Markdown with LaTeX math beautification
+            render_academic_markdown(full_response, console=self.console)
+            self.console.print()
+
+            # 4. Accurate token consumption telemetry
+            evidence_tokens = sum(c.token_estimate or estimate_tokens(c.text) for c in evidence)
+            input_tokens = estimate_tokens(query) + 250 + evidence_tokens
+            output_tokens = estimate_tokens(full_response)
+            total_tokens = input_tokens + output_tokens
             style_name = self.config.citation.style.upper()
-            self.console.print(f"[dim]── {approx_tokens} tokens • {elapsed:.1f}s • {style_name} style ──[/dim]\n")
+            self.console.print(
+                f"[dim]── Tokens: {input_tokens:,} in · {output_tokens:,} out · {total_tokens:,} total ({model_label}) • {elapsed:.1f}s • {style_name} style ──[/dim]\n"
+            )
 
             if self.chat_manager:
                 self.chat_manager.add_message(session.id, "assistant", full_response)
@@ -2755,6 +2786,7 @@ class CLIStudio:
                 "response": full_response,
             })
 
+            # 5. Suggested actions & Action Indicator: Mengubah / Menulis
             self._handle_suggested_actions(full_response)
 
         except Exception as exc:
@@ -2778,9 +2810,17 @@ class CLIStudio:
                 unique_actions.append(a)
 
         for action in unique_actions:
+            # Action Pill: Mengubah / Menulis
+            if "docx " in action:
+                doc_arg = action.split("docx", 1)[1].strip()
+                self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Menulis[/bold bright_white] [cyan]drafts/{doc_arg}[/cyan]")
+            elif "vault add " in action:
+                v_arg = action.split("vault add", 1)[1].strip()
+                self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Mengubah[/bold bright_white] [cyan]vault/{v_arg}[/cyan]")
+
             confirmed = interactive_action_confirm(action, console=self.console)
             if confirmed:
-                self.console.print(f"[bold cyan]❯ Menjalankan aksi di background:[/bold cyan] [bold green]{action}[/bold green]\n")
+                self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Menjalankan aksi:[/bold bright_white] [cyan]{action}[/cyan]\n")
                 cmd_to_run = action if action.startswith("/") else f"/{action}"
                 self.handle_project_command(cmd_to_run)
             else:

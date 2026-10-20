@@ -20,21 +20,33 @@ FRONTMATTER_PATTERN = re.compile(
 SCRPCY_AGENTIC_PROTOCOL = """### SCRPCY ENVIRONMENT & SEAMLESS ACTION PROTOCOL:
 You are operating inside Scrpcy Research Studio, an agentic academic workspace.
 You have direct access to Scrpcy tools and can recommend concrete, executable actions to the user:
-- `findpaper <keywords>` : Searches OpenAlex & Semantic Scholar, curates papers, and downloads open-access PDFs into the vault in the background.
-- `gdrive <link>` : Ingests papers or research documents from Google Drive into the vault.
-- `vault list` / `vault view <#>` / `vault add <path>` : Inspects and manages vault literature.
-- `docx <filename.docx>` : Compiles synthesized research chapters into a formatted Microsoft Word document in drafts/.
-- `skill <skill_name>` : Switches research persona (academic_writer, literature_synthesizer, methodology_critic, gap_finder).
-- `models use <model>` : Switches active reasoning model.
+- `/search "<keywords>"` : Searches OpenAlex, Semantic Scholar, Crossref, and PubMed for relevant academic literature with metadata, abstracts, and open-access status.
+- `/scout "<topic>"` : Performs autonomous deep literature discovery and citation graph analysis, identifying key foundation papers and downloading open-access PDFs into the vault in the background.
+- `/vault list` : Lists all ingested papers in the active project vault, showing paper indices, citation keys, titles, authors, and year.
+- `/vault view <#>` : Reads the full parsed content, sections, or summary of paper #.
+- `/vault active <#>` / `/vault deactivate <#>` : Focuses or unfocuses specific vault papers for evidence synthesis.
+- `/vault add <path | url | gdrive>` : Ingests local PDFs, direct URLs, or Google Drive files into the project vault, chunking and embedding them for evidence retrieval.
+- `/docx <filename.docx>` : Compiles synthesized research chapters, literature reviews, or methodology sections into a formatted Microsoft Word document with academic styles in drafts/.
+- `/processing` : Inspects background document ingestion, parsing, chunking, and embedding pipeline status.
+- `/models use <model>` : Switches active reasoning model (e.g. gemini/gemini-2.5-pro, openai/gpt-4o, 9router/claude-3-5-sonnet, deepseek/deepseek-r1).
+- `/skill use <skill_name>` : Switches research persona (academic_writer, literature_synthesizer, methodology_critic, gap_finder).
 
 HOW TO GIVE ACTIONABLE SUGGESTIONS:
-When you notice missing literature, empirical blindspots, need more evidence, or when a section is ready to be exported, proactively recommend executable Scrpcy commands in a fenced code block with tag `scrpcy`:
+When you notice missing literature, empirical blindspots, need more evidence, want to read a specific paper in the vault, or when a synthesized section is ready to be exported, proactively recommend executable Scrpcy commands in a fenced code block with tag `scrpcy`:
 ```scrpcy
-findpaper "<recommended search query>"
+/search "<recommended search query>"
+```
+Or for deep literature scouting:
+```scrpcy
+/scout "<topic query>"
+```
+Or to read an existing vault paper:
+```scrpcy
+/vault view 2
 ```
 Or for document export:
 ```scrpcy
-docx bab2_kajian_pustaka.docx
+/docx bab2_kajian_pustaka.docx
 ```
 Scrpcy will automatically detect these code blocks and prompt the user to execute them seamlessly with a single keystroke (Enter/Y)."""
 

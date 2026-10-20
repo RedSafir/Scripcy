@@ -688,3 +688,240 @@ class TestNewProjectWizardFlow:
         tasks = cli_studio.task_manager.list_tasks()
         assert len(tasks) > 0
         assert tasks[0].task_type == "scout"
+
+
+class TestAntigravityDesignSystem:
+    """Tests for borderless layout, outlier input framing, slash autocomplete, and interactive help."""
+
+    def test_print_banner_shown_at_most_once(
+        self,
+        test_console: Console,
+        project_manager: ProjectManager,
+    ) -> None:
+        studio = CLIStudio(console=test_console, project_manager=project_manager)
+        assert studio._has_printed_banner is False
+
+        # First call prints logo
+        studio.print_banner()
+        assert studio._has_printed_banner is True
+        output1 = test_console.file.getvalue()
+        assert "Local-First Academic Research Studio" in output1
+
+        # Second call does not re-print logo
+        studio.print_banner()
+        output2 = test_console.file.getvalue()
+        assert output2.count("Local-First Academic Research Studio") == 1
+
+    def test_clean_dashboard_banner_no_command_clutter(
+        self,
+        test_console: Console,
+        project_manager: ProjectManager,
+    ) -> None:
+        studio = CLIStudio(console=test_console, project_manager=project_manager)
+        studio.print_dashboard_banner()
+        output = test_console.file.getvalue()
+        assert "scrpcy" in output
+        assert "dashboard" in output
+        # Ensure no giant table of command suggestions is dumped
+        assert "Dashboard Commands" not in output
+        assert "/new" not in output
+        assert "/delete" not in output
+
+    def test_clean_project_banner_no_tips_clutter(
+        self,
+        cli_studio: CLIStudio,
+    ) -> None:
+        cli_studio.console.file.truncate(0)
+        cli_studio.console.file.seek(0)
+        cli_studio.print_project_banner()
+        output = cli_studio.console.file.getvalue()
+        assert "scrpcy" in output
+        assert cli_studio.current_project.name in output
+        # Ensure no command tip footer is printed
+        assert "Type /help for commands" not in output
+
+    def test_interactive_input_prompt_non_interactive_outliers(
+        self,
+        test_console: Console,
+    ) -> None:
+        from scrpcy.ui.interactive import interactive_input_prompt
+
+        with patch.object(test_console, "input", return_value="/vault list"):
+            res = interactive_input_prompt(
+                console=test_console,
+                prompt_label="> ",
+                is_project_mode=True,
+            )
+
+        assert res == "/vault list"
+        output = test_console.file.getvalue()
+        # Outlier horizontal line '─' rendered above and below
+        assert "─" in output
+
+    def test_interactive_help_view_structure(
+        self,
+        test_console: Console,
+    ) -> None:
+        from scrpcy.ui.interactive import interactive_help_view
+
+        with patch("sys.stdin.isatty", return_value=True):
+            with patch("scrpcy.ui.interactive._read_key", side_effect=["ENTER"]):
+                interactive_help_view(
+                    console=test_console,
+                    current_model="gemini/gemini-2.5-pro",
+                    current_effort="high",
+                    is_project_mode=True,
+                )
+
+        output = test_console.file.getvalue()
+        assert "Scrpcy CLI" in output
+        assert "general" in output
+        assert "commands" in output
+        assert "shortcuts" in output
+        assert "Project Workspace" in output
+
+    def test_interactive_help_view_tab_cycling(
+        self,
+        test_console: Console,
+    ) -> None:
+        from scrpcy.ui.interactive import interactive_help_view
+
+        # Press RIGHT (switch to commands tab) then ENTER (exit)
+        with patch("sys.stdin.isatty", return_value=True):
+            with patch("scrpcy.ui.interactive._read_key", side_effect=["RIGHT", "ENTER"]):
+                interactive_help_view(
+                    console=test_console,
+                    current_model="gemini/gemini-2.5-pro",
+                    current_effort="high",
+                    is_project_mode=True,
+                )
+
+        output = test_console.file.getvalue()
+        assert "Slash Commands" in output
+        assert "/search" in output
+        assert "/vault" in output
+
+    def test_interactive_slash_autocomplete_and_subcommand_tab(
+        self,
+        test_console: Console,
+    ) -> None:
+        from scrpcy.ui.interactive import interactive_input_prompt
+
+        # Keystrokes:
+        # 1. '/' -> triggers suggestions dropdown
+        # 2. 'v' -> filters to /vault
+        # 3. 'TAB' -> auto-completes to '/vault ' and drills down to subcommands (/vault list, add, view, archive)
+        # 4. 'ENTER' -> confirms /vault list
+        keystrokes = ["/", "v", "TAB", "ENTER"]
+
+        with patch("sys.stdin.isatty", return_value=True):
+            with patch("scrpcy.ui.interactive._read_key", side_effect=keystrokes):
+                result = interactive_input_prompt(
+                    console=test_console,
+                    prompt_label="> ",
+                    is_project_mode=True,
+                )
+
+        assert result.startswith("/vault")
+
+
+class TestAgenticUXAndFormatting:
+    """Tests for math formatting, action telemetry, input prompt scrollback UX, and skills protocol."""
+
+    def test_beautify_academic_math(self) -> None:
+        from scrpcy.ui.formatters import beautify_academic_math
+
+        latex_sample = (
+            r"Fungsi dot-product: $$\mathrm{Attention}(Q, K, V) = \mathrm{softmax}\left(\frac{Q K^T}{\sqrt{d_k}}\right) V$$ "
+            r"dengan parameter $\lambda \approx 0.05$ dan loss $\sum_{i=1}^N (y_i - \hat{y}_i)^2$."
+        )
+        beautified = beautify_academic_math(latex_sample)
+        assert "softmax((Q Kᵀ / √(dₖ))) V" in beautified
+        assert "λ ≈ 0.05" in beautified
+        assert "∑(i=1..N) (yᵢ - ŷᵢ)²" in beautified
+        # Ensure raw backslashes and LaTeX tags are not present
+        assert r"\mathrm" not in beautified
+        assert r"\frac" not in beautified
+        assert r"\sqrt" not in beautified
+
+    def test_render_academic_markdown(self, test_console: Console) -> None:
+        from scrpcy.ui.formatters import render_academic_markdown
+
+        md_sample = (
+            "## 1. Analisis Metodologi\n\n"
+            "Penelitian ini membuktikan bahwa **transformer** mengungguli *recurrent networks*.\n\n"
+            "- Poin pertama: $d_k = 64$\n"
+            "- Poin kedua: $\\alpha \\le 0.01$"
+        )
+        render_academic_markdown(md_sample, console=test_console)
+        out = test_console.file.getvalue()
+        assert "1. Analisis Metodologi" in out
+        assert "transformer" in out
+        assert "**transformer**" not in out
+        assert "α ≤ 0.01" in out
+
+    def test_skills_agentic_protocol_completeness(self) -> None:
+        from scrpcy.core.skills import SkillsLoader
+
+        loader = SkillsLoader()
+        skills = loader.list_skills()
+        skill_names = [s.name for s in skills]
+        assert "academic_writer" in skill_names
+        assert "literature_synthesizer" in skill_names
+        assert "methodology_critic" in skill_names
+        assert "gap_finder" in skill_names
+
+        for skill in skills:
+            assert "/search" in skill.system_prompt
+            assert "/vault" in skill.system_prompt
+            assert "/docx" in skill.system_prompt
+            assert "```scrpcy" in skill.system_prompt
+
+    def test_interactive_input_prompt_clean_history(self, test_console: Console) -> None:
+        from scrpcy.ui.interactive import interactive_input_prompt
+
+        with patch("sys.stdin.isatty", return_value=True):
+            with patch("scrpcy.ui.interactive._read_key", side_effect=["h", "i", "ENTER"]):
+                res = interactive_input_prompt(
+                    console=test_console,
+                    prompt_label="> ",
+                    is_project_mode=True,
+                )
+
+        assert res == "hi"
+        out = test_console.file.getvalue()
+        assert "─" in out
+        assert "> hi" in out
+
+    def test_handle_chat_telemetry_and_actions(self, cli_studio: CLIStudio) -> None:
+        from scrpcy.core.engine import EvidenceChunk
+
+        cli_studio.config.api_keys["gemini"] = "dummy-key"
+        mock_evidence = [
+            EvidenceChunk(
+                chunk_id="chk1",
+                source="paper1.pdf.md",
+                text="Transformer models rely entirely on self-attention mechanisms.",
+                score=0.92,
+                token_estimate=12,
+            )
+        ]
+        with patch.object(cli_studio.engine.evidence_synthesizer, "retrieve_evidence", return_value=mock_evidence):
+            async def mock_stream(*args: Any, **kwargs: Any):
+                yield "Berdasarkan literatur, model ini menggunakan rumus $$L = \\frac{1}{2} x^2$$.\n"
+                yield "```scrpcy\n/docx bab1.docx\n```"
+
+            with patch.object(cli_studio.engine, "stream_query", side_effect=mock_stream):
+                with patch("scrpcy.cli_studio.interactive_action_confirm", return_value=False):
+                    cli_studio.handle_chat("Bagaimana cara kerja self-attention?")
+
+        out = cli_studio.console.file.getvalue()
+        assert "Membaca" in out
+        assert "paper1.pdf.md" in out
+        assert "Berpikir" in out
+        assert "Menulis" in out or "drafts/bab1.docx" in out
+        assert "Tokens:" in out
+        assert "in" in out
+        assert "out" in out
+        assert "total" in out
+        assert "L = (1 / 2) x²" in out

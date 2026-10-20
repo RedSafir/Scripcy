@@ -125,9 +125,10 @@ def models_list() -> None:
     # 2. Supported Model Presets (Request 4)
     presets_table = Table(
         title="Katalog Model yang Didukung (Supported Model Architecture Presets)",
-        title_style="bold magenta",
-        border_style="magenta",
-        header_style="bold bright_magenta",
+        box=None,
+        padding=(0, 2),
+        title_style="bold bright_white",
+        header_style="bold cyan",
     )
     presets_table.add_column("Provider / Router", style="bold white", width=18)
     presets_table.add_column("Contoh Model Identifiers", style="cyan")
@@ -296,9 +297,10 @@ def models_tokens(
     if summary.projects:
         proj_table = Table(
             title="Token Usage Breakdown by Research Project",
-            title_style="bold magenta",
-            border_style="magenta",
-            header_style="bold bright_magenta",
+            box=None,
+            padding=(0, 2),
+            title_style="bold bright_white",
+            header_style="bold cyan",
         )
         proj_table.add_column("#", justify="right", style="dim", width=4)
         proj_table.add_column("Project Name", style="bold white", width=22)

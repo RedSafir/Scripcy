@@ -29,6 +29,8 @@ def _read_key() -> str:
             return "SPECIAL"
         elif ch == "\r" or ch == "\n":
             return "ENTER"
+        elif ch == "\t":
+            return "TAB"
         elif ch == "\x1b":
             return "ESC"
         elif ch == "\x08" or ch == "\x7f":
@@ -60,6 +62,8 @@ def _read_key() -> str:
                 return "ESC"
             elif ch in ("\r", "\n"):
                 return "ENTER"
+            elif ch == "\t":
+                return "TAB"
             elif ch in ("\x7f", "\x08"):
                 return "BACKSPACE"
             return ch
@@ -461,3 +465,382 @@ def interactive_action_confirm(action_text: str, console: Console | None = None)
                 return True
     finally:
         c.show_cursor(True)
+
+
+# =============================================================================
+# SLASH COMMAND DEFINITIONS & AUTOCOMPLETE CATALOGS
+# =============================================================================
+
+SLASH_COMMANDS_DASHBOARD: list[tuple[str, str]] = [
+    ("/projects", "List registered research projects (alias: /list)"),
+    ("/new", "Create and connect a master project folder (/new <name>)"),
+    ("/open", "Open an existing project folder (/open <#|name>)"),
+    ("/delete", "Remove project from Scrpcy (/delete <#|name>)"),
+    ("/models", "Manage LLM models, API keys, 9Router, and tokens"),
+    ("/skills", "List available AI persona skills"),
+    ("/status", "View research project status and token consumption"),
+    ("/settings", "Manage workspace and citation preferences"),
+    ("/clear", "Clear terminal screen"),
+    ("/help", "Open interactive help and keyboard shortcuts"),
+    ("/exit", "Exit Scrpcy research studio"),
+]
+
+SLASH_COMMANDS_PROJECT: list[tuple[str, str]] = [
+    ("/search", "Search literature on Semantic Scholar, ArXiv, OpenAlex"),
+    ("/findpaper", "Search & scout literature on OpenAlex/S2"),
+    ("/scout", "Intelligent literature scout pipeline & AI curation"),
+    ("/vault", "Manage vault documents and soft-archive"),
+    ("/docx", "Compile synthesized research into Microsoft Word (.docx)"),
+    ("/chat", "Manage multi-session conversation history (/chat new|list)"),
+    ("/skill", "Switch active research persona (/skill <name|#>)"),
+    ("/models", "Manage LLM models, API keys, 9Router, and tokens"),
+    ("/processing", "View and track background tasks and downloads"),
+    ("/gdrive", "Ingest research paper directly from Google Drive"),
+    ("/active", "Toggle active context papers for AI queries"),
+    ("/rename", "Rename the current project (/rename <new_name>)"),
+    ("/tokens", "Inspect project token usage statistics"),
+    ("/status", "View project status and token consumption"),
+    ("/settings", "Manage workspace and citation settings"),
+    ("/web", "Launch 3-panel Web Studio in browser"),
+    ("/dashboard", "Return to Dashboard mode (alias: /close, /back)"),
+    ("/clear", "Clear terminal screen"),
+    ("/help", "Open interactive help and keyboard shortcuts"),
+    ("/exit", "Exit Scrpcy research studio"),
+]
+
+SUBCOMMAND_SUGGESTIONS: dict[str, list[tuple[str, str]]] = {
+    "/vault": [
+        ("/vault list", "List all documents and cached papers in vault"),
+        ("/vault add", "Add local paper or document to vault (/vault add <file>)"),
+        ("/vault view", "Read paper summary or text (/vault view <#>)"),
+        ("/vault archive", "Move paper to archive (/vault archive <#>)"),
+    ],
+    "/models": [
+        ("/models list", "List configured models, API keys, and providers"),
+        ("/models use", "Switch active LLM model (/models use <model>)"),
+        ("/models 9router", "Configure 9Router local gateway proxy"),
+        ("/models tokens", "Inspect global and project token consumption"),
+        ("/models set-key", "Store API key per-provider (/models set-key <provider> <key>)"),
+    ],
+    "/chat": [
+        ("/chat new", "Create and start a new conversation session (/chat new [name])"),
+        ("/chat list", "List all conversation sessions for this project"),
+        ("/chat switch", "Switch active conversation session (/chat switch <id>)"),
+    ],
+    "/settings": [
+        ("/settings show", "Show current workspace and citation settings"),
+        ("/settings set-citation", "Change citation style preference (apa | ieee)"),
+    ],
+    "/skill": [
+        ("/skill academic_writer", "Elite scientific writer with citation grounding"),
+        ("/skill literature_synthesizer", "Synthesizes consensus and debates across papers"),
+        ("/skill gap_finder", "Identifies unexplored research gaps and blindspots"),
+        ("/skill methodology_critic", "Critiques experimental rigor and limitations"),
+    ],
+}
+
+
+def interactive_help_view(
+    console: Console | None = None,
+    current_model: str = "gemini/gemini-2.5-pro",
+    current_effort: str = "high",
+    is_project_mode: bool = True,
+) -> None:
+    """Antigravity-style interactive Help & Keyboard Shortcuts screen with tab cycling."""
+    c = console or Console(force_terminal=True)
+    if not sys.stdin.isatty():
+        return
+
+    tabs = ["general", "commands", "shortcuts"]
+    active_tab_idx = 0
+    cursor_idx = 0
+
+    commands_list = SLASH_COMMANDS_PROJECT if is_project_mode else SLASH_COMMANDS_DASHBOARD
+
+    general_items: list[tuple[str, str]] = [
+        ("Project Workspace", "Master project folder containing vault, cache, drafts, and logs"),
+        ("Vault Library", "Local storage for academic PDFs and converted markdown papers"),
+        ("AI Co-Pilot", "Literature-grounded synthesis using PaperQA-style evidence retrieval"),
+        ("WordCraft Engine", "Compiles research chapters into formatted Microsoft Word (.docx)"),
+        ("BYOK LLM Engine", "Supports Gemini, OpenAI, Anthropic, DeepSeek, and 9Router proxy"),
+    ]
+
+    shortcuts_items: list[tuple[str, str]] = [
+        (">", "Open slash commands autocomplete"),
+        (r"\ + enter", "Insert newline fallback"),
+        ("ctrl+c, esc", "Go back / dismiss active view"),
+        ("ctrl+d", "Exit studio"),
+        ("ctrl+l", "Clear CLI screen"),
+        ("↑/↓", "Navigate options and history"),
+        ("enter", "Send message or confirm action"),
+        ("tab", "Complete slash command or cycle tabs"),
+        ("?", "Open this interactive help view"),
+    ]
+
+    c.show_cursor(False)
+    try:
+        while True:
+            cur_tab = tabs[active_tab_idx]
+            if cur_tab == "general":
+                items = general_items
+                subhead = "General Workspace"
+            elif cur_tab == "commands":
+                items = commands_list
+                subhead = "Slash Commands"
+            else:
+                items = shortcuts_items
+                subhead = "Keyboard Shortcuts"
+
+            cursor_idx = max(0, min(cursor_idx, len(items) - 1))
+
+            lines: list[Text] = []
+
+            # Header line with tabs
+            header = Text("Scrpcy CLI    ", style="bold bright_white")
+            for t_idx, t_name in enumerate(tabs):
+                if t_idx == active_tab_idx:
+                    header.append(f"{t_name}    ", style="bold cyan underline")
+                else:
+                    header.append(f"{t_name}    ", style="dim")
+            header.append("(←/→ or tab to cycle)", style="dim")
+            lines.append(header)
+            lines.append(Text(subhead, style="bold bright_white"))
+            lines.append(Text("/keybindings to customize" if cur_tab == "shortcuts" else "Type / at prompt to auto-suggest", style="dim"))
+            lines.append(Text(""))
+
+            for idx, (k, desc) in enumerate(items):
+                is_cursor = idx == cursor_idx
+                row = Text()
+                if is_cursor:
+                    row.append("> ", style="bold cyan")
+                    row.append(f"{k:<24}", style="bold bright_white")
+                    row.append(desc, style="bold white")
+                else:
+                    row.append("  ", style="dim")
+                    row.append(f"{k:<24}", style="dim")
+                    row.append(desc, style="dim")
+                lines.append(row)
+
+            lines.append(Text(f"[{cursor_idx + 1}-{len(items)} of {len(items)} items]", style="dim"))
+            lines.append(Text(""))
+
+            # Footer
+            footer = Text("Keyboard: ", style="dim")
+            footer.append("↑/↓", style="bold cyan")
+            footer.append(" Navigate  ", style="dim")
+            footer.append("←/→", style="bold cyan")
+            footer.append(" Switch View  ", style="dim")
+            footer.append("esc", style="bold yellow")
+            footer.append(" Close", style="dim")
+
+            m_label = _format_model_display_name(current_model)
+            right_status = f"{m_label} · {current_effort}"
+            total_w = c.width or 80
+            padding_len = max(2, total_w - len(footer.plain) - len(right_status) - 2)
+            footer.append(" " * padding_len)
+            footer.append(right_status, style="dim")
+            lines.append(footer)
+
+            c.clear()
+            for line in lines:
+                c.print(line)
+
+            key = _read_key()
+            if key in ("ESC", "q", "Q", "ENTER"):
+                c.clear()
+                return
+            elif key == "UP":
+                cursor_idx = max(0, cursor_idx - 1)
+            elif key == "DOWN":
+                cursor_idx = min(len(items) - 1, cursor_idx + 1)
+            elif key in ("RIGHT", "TAB"):
+                active_tab_idx = (active_tab_idx + 1) % len(tabs)
+                cursor_idx = 0
+            elif key == "LEFT":
+                active_tab_idx = (active_tab_idx - 1) % len(tabs)
+                cursor_idx = 0
+    finally:
+        c.show_cursor(True)
+
+
+def interactive_input_prompt(
+    console: Console | None = None,
+    prompt_label: str = "> ",
+    is_project_mode: bool = True,
+    current_model: str = "gemini/gemini-2.5-pro",
+    current_effort: str = "high",
+) -> str:
+    """Prompt user with top and bottom horizontal outliers, live slash command autocomplete, and interactive help."""
+    c = console or Console(force_terminal=True)
+    width = c.width or 80
+
+    # Non-interactive fallback (tests, pipes, CI)
+    if not sys.stdin.isatty():
+        c.print(Text("─" * width, style="grey23"))
+        res = c.input(f"[bold cyan]{prompt_label}[/bold cyan]").strip()
+        return res
+
+    commands_list = SLASH_COMMANDS_PROJECT if is_project_mode else SLASH_COMMANDS_DASHBOARD
+    buffer = ""
+    suggestion_cursor = 0
+    prev_lines_drawn = 0
+
+    def get_suggestions(buf: str) -> list[tuple[str, str]]:
+        clean = buf.strip()
+        if not clean.startswith("/"):
+            return []
+
+        # Check if user typed a command with trailing space for subcommands
+        for cmd_prefix, sub_list in SUBCOMMAND_SUGGESTIONS.items():
+            if clean == cmd_prefix or clean.startswith(cmd_prefix + " "):
+                sub_query = clean[len(cmd_prefix):].strip().lower()
+                if not sub_query:
+                    return sub_list
+                return [item for item in sub_list if sub_query in item[0].lower() or sub_query in item[1].lower()]
+
+        # Filter root slash commands
+        q = clean.lower()
+        return [item for item in commands_list if item[0].lower().startswith(q) or q in item[0].lower()]
+
+    c.show_cursor(False)
+    try:
+        while True:
+            # Check if user entered help shortcut "?"
+            if buffer.strip() == "?":
+                if prev_lines_drawn > 0:
+                    sys.stdout.write(f"\x1b[{prev_lines_drawn}A\r\x1b[J")
+                    sys.stdout.flush()
+                    prev_lines_drawn = 0
+                interactive_help_view(
+                    console=c,
+                    current_model=current_model,
+                    current_effort=current_effort,
+                    is_project_mode=is_project_mode,
+                )
+                buffer = ""
+                suggestion_cursor = 0
+
+            suggestions = get_suggestions(buffer)
+            if not suggestions:
+                suggestion_cursor = 0
+            else:
+                suggestion_cursor = max(0, min(suggestion_cursor, len(suggestions) - 1))
+
+            # Build lines to render
+            lines_to_render: list[Text] = []
+
+            # 1. Top divider line
+            lines_to_render.append(Text("─" * width, style="grey23"))
+
+            # 2. Input line
+            input_row = Text()
+            input_row.append(prompt_label, style="bold cyan")
+            input_row.append(buffer, style="bold bright_white")
+            input_row.append("█", style="blink bold white")
+            lines_to_render.append(input_row)
+
+            # 3. Suggestions dropdown if typing a slash command
+            if suggestions:
+                max_display = 6
+                display_slice = suggestions[:max_display]
+                for idx, (cmd_name, cmd_desc) in enumerate(display_slice):
+                    is_sel = idx == suggestion_cursor
+                    s_row = Text()
+                    if is_sel:
+                        s_row.append("> ", style="bold cyan")
+                        s_row.append(f"{cmd_name:<22}", style="bold bright_white")
+                        s_row.append(cmd_desc, style="bold white")
+                    else:
+                        s_row.append("  ", style="dim")
+                        s_row.append(f"{cmd_name:<22}", style="dim")
+                        s_row.append(cmd_desc, style="dim")
+                    lines_to_render.append(s_row)
+
+                if len(suggestions) > max_display:
+                    rem = len(suggestions) - max_display
+                    lines_to_render.append(Text(f"  ↓ {rem} more", style="dim"))
+
+                # Navigation hint & right status
+                s_footer = Text("↑/↓ Navigate · enter Select · tab Complete · esc to cancel", style="dim")
+                m_label = _format_model_display_name(current_model)
+                right_st = f"{m_label} · {current_effort}"
+                pad_w = max(2, width - len(s_footer.plain) - len(right_st) - 2)
+                s_footer.append(" " * pad_w)
+                s_footer.append(right_st, style="dim")
+                lines_to_render.append(s_footer)
+
+            # Redraw in place
+            if prev_lines_drawn > 0:
+                sys.stdout.write(f"\x1b[{prev_lines_drawn}A\r\x1b[J")
+                sys.stdout.flush()
+
+            for line in lines_to_render:
+                c.print(line)
+            sys.stdout.flush()
+            prev_lines_drawn = len(lines_to_render)
+
+            # Read keystroke
+            key = _read_key()
+
+            if key == "ENTER":
+                if suggestions:
+                    chosen = suggestions[suggestion_cursor][0]
+                    # If chosen has subcommands and buffer was just prefix, complete with space
+                    if chosen in SUBCOMMAND_SUGGESTIONS and buffer.strip() == chosen:
+                        buffer = chosen + " "
+                        suggestion_cursor = 0
+                        continue
+                    elif buffer.strip() != chosen and not buffer.strip().endswith(" "):
+                        buffer = chosen
+                        if chosen in SUBCOMMAND_SUGGESTIONS:
+                            buffer = chosen + " "
+                            suggestion_cursor = 0
+                            continue
+
+                # Final redraw without dropdown
+                if prev_lines_drawn > 0:
+                    sys.stdout.write(f"\x1b[{prev_lines_drawn}A\r\x1b[J")
+                    sys.stdout.flush()
+
+                c.print(Text("─" * width, style="grey23"))
+                final_row = Text()
+                final_row.append(prompt_label, style="bold cyan")
+                final_row.append(buffer, style="bold bright_white")
+                c.print(final_row)
+                return buffer.strip()
+
+            elif key == "TAB":
+                if suggestions:
+                    chosen = suggestions[suggestion_cursor][0]
+                    buffer = chosen + " "
+                    suggestion_cursor = 0
+                continue
+
+            elif key == "UP":
+                if suggestions:
+                    suggestion_cursor = max(0, suggestion_cursor - 1)
+                continue
+
+            elif key == "DOWN":
+                if suggestions:
+                    suggestion_cursor = min(len(suggestions) - 1, suggestion_cursor + 1)
+                continue
+
+            elif key == "ESC":
+                if suggestions:
+                    suggestion_cursor = 0
+                    buffer = ""
+                continue
+
+            elif key == "BACKSPACE":
+                if buffer:
+                    buffer = buffer[:-1]
+                    suggestion_cursor = 0
+                continue
+
+            elif len(key) == 1 and key.isprintable():
+                buffer += key
+                suggestion_cursor = 0
+    finally:
+        c.show_cursor(True)
+
