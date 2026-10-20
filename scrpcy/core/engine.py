@@ -9,6 +9,9 @@ import re
 from typing import Any, Callable
 
 import litellm
+litellm.suppress_debug_info = True
+litellm.set_verbose = False
+litellm.drop_params = True
 from pydantic import BaseModel, Field
 
 from scrpcy.core.config import ScrpcyConfig

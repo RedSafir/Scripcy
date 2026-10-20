@@ -664,7 +664,7 @@ class TestNewProjectWizardFlow:
         assert "Aksi Scrpcy Disarankan AI" in output
         assert "dilewati" in output
 
-    def test_chat_submode_direct_project_commands_never_sent_to_llm(
+    def test_chat_submode_slash_commands_and_plain_queries(
         self,
         cli_studio: CLIStudio,
     ) -> None:
@@ -672,10 +672,44 @@ class TestNewProjectWizardFlow:
         executed_args: list[str] = []
         with patch.object(cli_studio, "cmd_findpaper", side_effect=lambda arg: executed_args.append(arg)):
             with patch.object(cli_studio, "handle_chat") as mock_chat:
-                cli_studio.handle_chat_submode_interaction("findpaper deep learning 2024")
+                # 1. Slash command inside chat mode -> routes to command handler, never sent to LLM
+                cli_studio.handle_chat_submode_interaction("/findpaper deep learning 2024")
                 assert not mock_chat.called
                 assert len(executed_args) == 1
                 assert executed_args[0] == "deep learning 2024"
+
+                # 2. Plain text without slash -> strictly treated as query, never intercepts command
+                cli_studio.handle_chat_submode_interaction("findpaper deep learning 2024")
+                assert mock_chat.called
+                mock_chat.assert_called_once_with("findpaper deep learning 2024")
+
+    def test_project_root_plain_text_prompts_to_enter_chat_mode(
+        self,
+        cli_studio: CLIStudio,
+    ) -> None:
+        cli_studio.sub_mode = None
+        with patch.object(cli_studio, "handle_chat") as mock_chat:
+            cli_studio.handle_project_root_interaction("Bagaimana cara kerja transformer?")
+            assert not mock_chat.called
+            output = cli_studio.console.file.getvalue()
+            assert "Di mode project root, command harus diawali dengan '/'" in output
+            assert "/chat" in output
+
+    def test_enter_chat_mode_via_slash_chat(
+        self,
+        cli_studio: CLIStudio,
+    ) -> None:
+        cli_studio.sub_mode = None
+        cli_studio.handle_project_interaction("/chat")
+        assert cli_studio.sub_mode == "chat"
+        assert cli_studio.active_chat_session is not None
+        output = cli_studio.console.file.getvalue()
+        assert "Masuk ke sesi chat:" in output
+
+        # Exit back to root via /back
+        cli_studio.handle_project_interaction("/back")
+        assert cli_studio.sub_mode is None
+        assert "Returned to project root:" in cli_studio.console.file.getvalue()
 
     def test_cmd_findpaper_dispatches_background_scout_task(
         self,
@@ -925,3 +959,56 @@ class TestAgenticUXAndFormatting:
         assert "out" in out
         assert "total" in out
         assert "L = (1 / 2) x²" in out
+
+    def test_interactive_action_confirm_in_place_no_clear(self, test_console: Console) -> None:
+        from scrpcy.ui.interactive import interactive_action_confirm
+
+        with patch("sys.stdin.isatty", return_value=True):
+            with patch("scrpcy.ui.interactive._read_key", side_effect=["ENTER"]):
+                with patch.object(test_console, "clear") as mock_clear:
+                    confirmed = interactive_action_confirm("/search test", console=test_console)
+
+        assert confirmed is True
+        # Ensure c.clear() was NEVER called (prevents screen jumps and lost history)
+        mock_clear.assert_not_called()
+
+    def test_cmd_search_zero_results_triggers_ai_recovery(self, cli_studio: CLIStudio) -> None:
+        async def mock_empty_search(*args: Any, **kwargs: Any):
+            return []
+
+        with patch.object(cli_studio, "_execute_search", mock_empty_search):
+            with patch.object(cli_studio, "handle_chat") as mock_chat:
+                cli_studio.cmd_search('"nonexistent quantum algorithm 1900"')
+
+        output = cli_studio.console.file.getvalue()
+        assert "No academic results found" in output
+        assert "Menganalisis kendala" in output
+        mock_chat.assert_called_once()
+        call_arg = mock_chat.call_args[0][0]
+        assert "nonexistent quantum algorithm 1900" in call_arg
+        assert "kata kunci pencarian alternatif" in call_arg
+
+    def test_chat_submode_prompt_label_and_slash_catalog(
+        self,
+        cli_studio: CLIStudio,
+    ) -> None:
+        from scrpcy.ui.interactive import SLASH_COMMANDS_CHAT
+
+        cli_studio.sub_mode = "chat"
+        session = cli_studio._ensure_active_chat_session()
+        assert session is not None
+        session.name = "chat4"
+
+        sess_name = session.name if session else "chat1"
+        prompt_lbl = f"{cli_studio.current_project.name}/{sess_name}> " if cli_studio.current_project else f"{sess_name}> "
+        assert prompt_lbl == f"{cli_studio.current_project.name}/chat4> "
+        assert prompt_lbl == "test_proj/chat4> "
+
+        # Verify SLASH_COMMANDS_CHAT contains /back, /new, /resume, /history, /clear, /vault, etc.
+        cmd_names = [cmd for cmd, _ in SLASH_COMMANDS_CHAT]
+        assert "/back" in cmd_names
+        assert "/new" in cmd_names
+        assert "/resume" in cmd_names
+        assert "/history" in cmd_names
+        assert "/clear" in cmd_names
+        assert "/export" in cmd_names

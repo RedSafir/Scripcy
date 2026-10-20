@@ -414,15 +414,15 @@ def interactive_action_confirm(action_text: str, console: Console | None = None)
         ("Tidak, lewati aksi ini", False),
     ]
     cursor_idx = 0
+    prev_lines_drawn = 0
 
     c.show_cursor(False)
     try:
         while True:
             lines: list[Text] = []
             header = Text("✦ Aksi Scrpcy Disarankan AI: ", style="bold cyan")
-            header.append(action_text, style="bold green")
+            header.append(action_text, style="bold bright_white")
             lines.append(header)
-            lines.append(Text(""))
 
             for idx, (label, val) in enumerate(options):
                 is_cursor = idx == cursor_idx
@@ -433,11 +433,10 @@ def interactive_action_confirm(action_text: str, console: Console | None = None)
                     item_text.append(label, style="bold bright_white")
                 else:
                     item_text.append("    ", style="dim")
-                    item_text.append(f"[{' ' if val else ' '}] ", style="dim")
+                    item_text.append("[ ] ", style="dim")
                     item_text.append(label, style="dim white")
                 lines.append(item_text)
 
-            lines.append(Text(""))
             footer = Text("  Navigasi: ", style="dim")
             footer.append("↑/↓", style="bold cyan")
             footer.append(" Pilih  ", style="dim")
@@ -447,21 +446,37 @@ def interactive_action_confirm(action_text: str, console: Console | None = None)
             footer.append(" Batal", style="dim")
             lines.append(footer)
 
-            c.clear()
+            # Redraw in place without c.clear() to prevent scrolling and screen displacement
+            if prev_lines_drawn > 0:
+                sys.stdout.write(f"\x1b[{prev_lines_drawn}A\r\x1b[J")
+                sys.stdout.flush()
+
             for line in lines:
                 c.print(line)
+            sys.stdout.flush()
+            prev_lines_drawn = len(lines)
 
             key = _read_key()
             if key in ("ESC", "n", "N", "q", "Q"):
-                c.clear()
+                # Cleanly erase options from screen so they don't clutter the chat
+                if prev_lines_drawn > 0:
+                    sys.stdout.write(f"\x1b[{prev_lines_drawn}A\r\x1b[J")
+                    sys.stdout.flush()
                 return False
             elif key == "ENTER":
-                c.clear()
-                return options[cursor_idx][1]
+                val = options[cursor_idx][1]
+                # Cleanly erase options from screen so they don't clutter the chat
+                if prev_lines_drawn > 0:
+                    sys.stdout.write(f"\x1b[{prev_lines_drawn}A\r\x1b[J")
+                    sys.stdout.flush()
+                return val
             elif key in ("UP", "DOWN", "LEFT", "RIGHT", "TAB"):
                 cursor_idx = 1 - cursor_idx
             elif key in ("y", "Y"):
-                c.clear()
+                # Cleanly erase options from screen so they don't clutter the chat
+                if prev_lines_drawn > 0:
+                    sys.stdout.write(f"\x1b[{prev_lines_drawn}A\r\x1b[J")
+                    sys.stdout.flush()
                 return True
     finally:
         c.show_cursor(True)
@@ -508,6 +523,24 @@ SLASH_COMMANDS_PROJECT: list[tuple[str, str]] = [
     ("/exit", "Exit Scrpcy research studio"),
 ]
 
+SLASH_COMMANDS_CHAT: list[tuple[str, str]] = [
+    ("/back", "Return to project workspace prompt (skripsi>)"),
+    ("/new", "Start a new conversation session (/new [name])"),
+    ("/resume", "Switch active conversation session (/resume <id>)"),
+    ("/history", "View session conversation history"),
+    ("/clear", "Clear messages in this chat session"),
+    ("/export", "Export session conversation to markdown"),
+    ("/search", "Search literature on Semantic Scholar, ArXiv, OpenAlex"),
+    ("/scout", "Intelligent literature scout pipeline & AI curation"),
+    ("/vault", "Manage vault documents and soft-archive"),
+    ("/docx", "Compile synthesized research into Microsoft Word (.docx)"),
+    ("/skill", "Switch active research persona (/skill <name|#>)"),
+    ("/models", "Manage LLM models, API keys, 9Router, and tokens"),
+    ("/processing", "View and track background tasks and downloads"),
+    ("/help", "Open interactive help and keyboard shortcuts"),
+    ("/exit", "Exit Scrpcy research studio"),
+]
+
 SUBCOMMAND_SUGGESTIONS: dict[str, list[tuple[str, str]]] = {
     "/vault": [
         ("/vault list", "List all documents and cached papers in vault"),
@@ -545,6 +578,7 @@ def interactive_help_view(
     current_model: str = "gemini/gemini-2.5-pro",
     current_effort: str = "high",
     is_project_mode: bool = True,
+    is_chat_mode: bool = False,
 ) -> None:
     """Antigravity-style interactive Help & Keyboard Shortcuts screen with tab cycling."""
     c = console or Console(force_terminal=True)
@@ -555,7 +589,12 @@ def interactive_help_view(
     active_tab_idx = 0
     cursor_idx = 0
 
-    commands_list = SLASH_COMMANDS_PROJECT if is_project_mode else SLASH_COMMANDS_DASHBOARD
+    if is_chat_mode:
+        commands_list = SLASH_COMMANDS_CHAT
+    elif is_project_mode:
+        commands_list = SLASH_COMMANDS_PROJECT
+    else:
+        commands_list = SLASH_COMMANDS_DASHBOARD
 
     general_items: list[tuple[str, str]] = [
         ("Project Workspace", "Master project folder containing vault, cache, drafts, and logs"),
@@ -667,6 +706,7 @@ def interactive_input_prompt(
     console: Console | None = None,
     prompt_label: str = "> ",
     is_project_mode: bool = True,
+    is_chat_mode: bool = False,
     current_model: str = "gemini/gemini-2.5-pro",
     current_effort: str = "high",
 ) -> str:
@@ -680,7 +720,12 @@ def interactive_input_prompt(
         res = c.input(f"[bold cyan]{prompt_label}[/bold cyan]").strip()
         return res
 
-    commands_list = SLASH_COMMANDS_PROJECT if is_project_mode else SLASH_COMMANDS_DASHBOARD
+    if is_chat_mode:
+        commands_list = SLASH_COMMANDS_CHAT
+    elif is_project_mode:
+        commands_list = SLASH_COMMANDS_PROJECT
+    else:
+        commands_list = SLASH_COMMANDS_DASHBOARD
     buffer = ""
     suggestion_cursor = 0
     prev_lines_drawn = 0
@@ -716,6 +761,7 @@ def interactive_input_prompt(
                     current_model=current_model,
                     current_effort=current_effort,
                     is_project_mode=is_project_mode,
+                    is_chat_mode=is_chat_mode,
                 )
                 buffer = ""
                 suggestion_cursor = 0

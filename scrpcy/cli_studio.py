@@ -35,13 +35,21 @@ from scrpcy.core.tracker import TokenTracker
 from scrpcy.core.vault import VaultItem, VaultManager
 from scrpcy.core.workspace import WorkspaceManager
 
-# Safe UTF-8 console output for Windows terminal
+# Safe UTF-8 console output for Windows terminal and quiet litellm output
 if sys.platform == "win32":
     try:
         sys.stdout.reconfigure(encoding="utf-8")
         sys.stderr.reconfigure(encoding="utf-8")
     except Exception:
         pass
+
+try:
+    import litellm
+    litellm.suppress_debug_info = True
+    litellm.set_verbose = False
+    litellm.drop_params = True
+except Exception:
+    pass
 
 from scrpcy.ui.interactive import (
     _format_model_display_name,
@@ -220,7 +228,9 @@ class CLIStudio:
                 elif self.sub_mode == "processing":
                     prompt_lbl = f"{self.current_project.name}/processing> " if self.current_project else "processing> "
                 elif self.sub_mode == "chat":
-                    prompt_lbl = "> "
+                    session = self._ensure_active_chat_session()
+                    sess_name = session.name if session else "chat1"
+                    prompt_lbl = f"{self.current_project.name}/{sess_name}> " if self.current_project else f"{sess_name}> "
                 elif self.current_project:
                     prompt_lbl = f"{self.current_project.name}> "
                 else:
@@ -230,6 +240,7 @@ class CLIStudio:
                     console=self.console,
                     prompt_label=prompt_lbl,
                     is_project_mode=(self.current_project is not None),
+                    is_chat_mode=(self.sub_mode == "chat"),
                     current_model=mod,
                     current_effort=eff,
                 ).strip()
@@ -247,6 +258,7 @@ class CLIStudio:
                         current_model=mod,
                         current_effort=eff,
                         is_project_mode=(self.current_project is not None),
+                        is_chat_mode=(self.sub_mode == "chat"),
                     )
                     continue
 
@@ -629,7 +641,10 @@ class CLIStudio:
             if arg:
                 self.handle_chat_root_command(arg)
             else:
-                self.prompt_chat_launcher()
+                session = self._ensure_active_chat_session()
+                self.sub_mode = "chat"
+                self.console.print(f"[bold green][✓] Masuk ke sesi chat:[/bold green] [bold cyan]{session.name}[/bold cyan]")
+                self.console.print("[dim]Ketik pertanyaan riset Anda langsung di bawah ini. Ketik '/back' untuk kembali ke menu project.[/dim]\n")
         elif cmd == "rename":
             self.cmd_rename_project(arg)
         elif cmd in ("findpaper", "scout"):
@@ -645,9 +660,10 @@ class CLIStudio:
         elif cmd in ("delete", "remove", "rm"):
             self.cmd_delete_project(arg)
         else:
-            # Query sent directly to AI with active chat session
-            self._ensure_active_chat_session()
-            self.handle_chat(clean)
+            self.console.print(
+                "[yellow][!] Di mode project root, command harus diawali dengan '/' (contoh: [bold cyan]/search[/bold cyan], [bold cyan]/vault[/bold cyan]).[/yellow]\n"
+                "[dim]Untuk berdiskusi atau bertanya kepada AI, masuk ke mode chat terlebih dahulu dengan mengetik [bold cyan]/chat[/bold cyan].[/dim]\n"
+            )
 
     def print_project_help(self) -> None:
         """Render a clean borderless table of project commands and sub-modes."""
@@ -715,7 +731,10 @@ class CLIStudio:
             if args:
                 self.handle_chat_root_command(args)
             else:
-                self.prompt_chat_launcher()
+                session = self._ensure_active_chat_session()
+                self.sub_mode = "chat"
+                self.console.print(f"[bold green][✓] Masuk ke sesi chat:[/bold green] [bold cyan]{session.name}[/bold cyan]")
+                self.console.print("[dim]Ketik pertanyaan riset Anda langsung di bawah ini. Ketik '/back' untuk kembali ke menu project.[/dim]\n")
         elif cmd in ("/rename",):
             self.cmd_rename_project(args)
         elif cmd in ("/active", "/select"):
@@ -927,13 +946,14 @@ class CLIStudio:
 
     def _background_scout_worker(self, task_id: str, query: str, max_download: int = 3) -> str:
         """Background agent worker that formulates criteria, searches multi-source, ranks, and downloads into vault."""
-        self.task_manager.log(task_id, f"Formulating query strategy for: '{query}'")
+        clean_query = query.strip().strip("'\"")
+        self.task_manager.log(task_id, f"Formulating query strategy for: '{clean_query}'")
         try:
-            query_spec = self.scout.extract_search_criteria(query, engine=self.engine)
+            query_spec = self.scout.extract_search_criteria(clean_query, engine=self.engine)
         except Exception as exc:
             self.task_manager.log(task_id, f"[!] Criteria formulation fallback: {exc}")
             from scrpcy.core.scout import ScoutQuery
-            query_spec = ScoutQuery(keywords=query, summary=query)
+            query_spec = ScoutQuery(keywords=clean_query, summary=clean_query)
 
         self.task_manager.log(task_id, f"Scraping OpenAlex & Semantic Scholar (keywords: '{query_spec.keywords}')...")
 
@@ -1108,7 +1128,7 @@ class CLIStudio:
 
     def cmd_findpaper(self, query: str = "") -> None:
         """Search and scout academic literature on OpenAlex and Semantic Scholar in background."""
-        clean_query = query.strip()
+        clean_query = query.strip().strip("'\"")
         if not clean_query:
             self.cmd_scout()
             return
@@ -1704,100 +1724,57 @@ class CLIStudio:
         if not clean:
             return
 
-        if clean in ("back", "exit", "quit", "cd..", "/back", "/exit", "close") or clean in ("cd ..", ".."):
+        if clean.lower() in ("back", "exit", "quit", "cd..", "/back", "/exit", "close", "cd ..", ".."):
             self.sub_mode = None
             self.console.print(f"[dim]Returned to project root: {self.current_project.name}>[/dim]\n")
             return
 
-        if clean in ("/help", "help", "?"):
-            self.print_chat_submode_help()
-            return
-        elif clean in ("/history", "history"):
-            self.cmd_chat_history()
-            return
-        elif clean in ("/clear", "clear"):
-            if self.active_chat_session and self.chat_manager:
-                self.chat_manager.clear_messages(self.active_chat_session.id)
-            self.console.print("[yellow][✓] Riwayat pesan untuk sesi ini telah dibersihkan.[/yellow]\n")
-            return
-        elif clean.startswith("/skill") or clean.startswith("skill "):
-            sub_arg = clean.split(maxsplit=1)[1] if " " in clean else ""
-            self.cmd_skill(sub_arg)
-            if self.active_chat_session and self.chat_manager:
-                self.chat_manager.update_session_skill(self.active_chat_session.id, self.active_skill_name)
-            return
-        elif clean.startswith("/new"):
-            name_arg = clean.split(maxsplit=1)[1] if " " in clean else ""
-            self.handle_chat_root_command(f"new {name_arg}")
-            return
-        elif clean.startswith("/resume"):
-            name_arg = clean.split(maxsplit=1)[1] if " " in clean else ""
-            self.handle_chat_root_command(f"resume {name_arg}")
-            return
-        elif clean in ("/export", "export"):
-            self.cmd_chat_export()
-            return
-        elif clean.startswith("/"):
-            self.handle_project_command(clean)
-            return
+        if clean.startswith("/"):
+            parts = clean.split(maxsplit=1)
+            cmd = parts[0].lower()
+            arg = parts[1].strip() if len(parts) > 1 else ""
 
-        # Check for direct project commands entered without leading slash
-        parts = clean.split(maxsplit=1)
-        first_word = parts[0].lower().lstrip("/")
-        arg_word = parts[1].strip() if len(parts) > 1 else ""
-
-        if first_word in ("findpaper", "scout", "paper-scout"):
-            self.cmd_findpaper(arg_word)
-            return
-        elif first_word in ("docx",):
-            self.cmd_docx(arg_word)
-            return
-        elif first_word in ("vault", "docs"):
-            if arg_word:
-                self.handle_vault_interaction(arg_word)
+            if cmd in ("/help", "/?"):
+                self.print_chat_submode_help()
+            elif cmd == "/history":
+                self.cmd_chat_history()
+            elif cmd == "/clear":
+                if self.active_chat_session and self.chat_manager:
+                    self.chat_manager.clear_messages(self.active_chat_session.id)
+                self.console.print("[yellow][✓] Riwayat pesan untuk sesi ini telah dibersihkan.[/yellow]\n")
+            elif cmd in ("/skill", "/persona"):
+                self.cmd_skill(arg)
+                if self.active_chat_session and self.chat_manager:
+                    self.chat_manager.update_session_skill(self.active_chat_session.id, self.active_skill_name)
+            elif cmd == "/new":
+                self.handle_chat_root_command(f"new {arg}")
+            elif cmd in ("/resume", "/open", "/switch"):
+                self.handle_chat_root_command(f"resume {arg}")
+            elif cmd in ("/export",):
+                self.cmd_chat_export()
             else:
-                self.sub_mode = "vault"
-                self.render_vault_landing()
-            return
-        elif first_word in ("processing", "proc"):
-            if arg_word:
-                self.handle_processing_interaction(arg_word)
-            else:
-                self.sub_mode = "processing"
-                self.render_processing_view()
-            return
-        elif first_word == "gdrive":
-            self.cmd_vault_gdrive(arg_word)
-            return
-        elif first_word in ("models", "model", "config"):
-            self.cmd_models(arg_word)
-            return
-        elif first_word in ("settings", "setting", "style"):
-            self.cmd_settings(arg_word)
-            return
-        elif first_word in ("status", "info"):
-            self.cmd_project_status()
+                self.handle_project_command(clean)
             return
 
-        # It's a conversation message!
+        # Any input without leading "/" in chat mode is strictly treated as an AI conversation prompt
         self.handle_chat(clean)
 
     def print_chat_submode_help(self) -> None:
         """Render instructions for Chat sub-mode."""
         self.console.print(f"[bold bright_white]Chat Session Commands [{self.active_chat_session.name if self.active_chat_session else 'Chat'}]:[/bold bright_white]")
         table = Table(box=None, padding=(0, 2), show_header=False)
-        table.add_column("Command", style="bold green")
-        table.add_column("Args", style="yellow")
+        table.add_column("Command", style="bold cyan")
+        table.add_column("Args", style="dim")
         table.add_column("Description", style="white")
 
-        table.add_row("<text>", "", "Send question directly to AI with active vault context")
+        table.add_row("<text>", "", "Send research question directly to AI with active vault context")
         table.add_row("/history", "", "View all previous turns in this chat session")
         table.add_row("/clear", "", "Clear messages in this chat session")
         table.add_row("/skill", "[# | name]", "Switch active persona skill for this chat")
         table.add_row("/export", "", "Export conversation to Markdown in drafts/")
         table.add_row("/new", "[name]", "Start a new chat session")
         table.add_row("/resume", "<# | name>", "Switch to another chat session")
-        table.add_row("back", "", "Return to project root prompt")
+        table.add_row("/back", "", "Return to project root prompt")
 
         self.console.print(table)
         self.console.print()
@@ -2033,12 +2010,13 @@ class CLIStudio:
             return
 
         limit = 5
-        query = arg
-        if "--limit" in arg:
-            match = re.search(r"--limit\s+(\d+)", arg)
+        clean_arg = arg.strip()
+        if "--limit" in clean_arg:
+            match = re.search(r"--limit\s+(\d+)", clean_arg)
             if match:
                 limit = int(match.group(1))
-                query = re.sub(r"--limit\s+\d+", "", arg).strip()
+                clean_arg = re.sub(r"--limit\s+\d+", "", clean_arg).strip()
+        query = clean_arg.strip().strip("'\"")
 
         with self.console.status(f"[cyan]Searching literature across Semantic Scholar & ArXiv for '{query}'...[/cyan]"):
             try:
@@ -2046,10 +2024,32 @@ class CLIStudio:
                 self.last_search_results = results
             except Exception as exc:
                 self.console.print(f"[bold red][x] Search failed:[/bold red] {exc}\n")
+                if not getattr(self, "_is_recovering", False) and self.workspace and self.engine:
+                    self._is_recovering = True
+                    try:
+                        self.console.print("[bold cyan]●[/bold cyan] [bold bright_white]Menganalisis kendala:[/bold bright_white] [dim]Melaporkan kendala pencarian ke AI...[/dim]\n")
+                        self.handle_chat(
+                            f"Terjadi kesalahan saat mencari literatur '{query}': {exc}. "
+                            f"Evaluasi kendala ini dan rekomendasikan strategi alternatif atau periksa paper di vault dengan /vault list."
+                        )
+                    finally:
+                        self._is_recovering = False
                 return
 
         if not results:
             self.console.print(f"[yellow]No academic results found for '{query}'.[/yellow]\n")
+            if not getattr(self, "_is_recovering", False) and self.workspace and self.engine:
+                self._is_recovering = True
+                try:
+                    self.console.print("[bold cyan]●[/bold cyan] [bold bright_white]Menganalisis kendala:[/bold bright_white] [dim]Meminta AI mengevaluasi pencarian dan menyusun kata kunci alternatif...[/dim]\n")
+                    self.handle_chat(
+                        f"Pencarian literatur dengan kata kunci '{query}' tidak menemukan hasil paper di repositori akademik terbuka (Semantic Scholar & ArXiv). "
+                        f"Tolong evaluasi penyebabnya (apakah kata kunci terlalu spesifik/panjang), "
+                        f"rekomendasikan kata kunci pencarian alternatif yang lebih efektif menggunakan blok ```scrpcy, "
+                        f"atau sarankan untuk memeriksa koleksi paper yang sudah ada di vault dengan /vault list."
+                    )
+                finally:
+                    self._is_recovering = False
             return
 
         table = Table(

@@ -174,6 +174,9 @@ class LiteratureScout:
     def _extract_criteria_via_llm(self, text: str, engine: LLMEngine) -> ScoutQuery:
         """Prompt LLM to extract formal academic search parameters as JSON."""
         import litellm
+        litellm.suppress_debug_info = True
+        litellm.set_verbose = False
+        litellm.drop_params = True
 
         system_prompt = (
             "You are an expert academic librarian. Analyze the user's natural language request for papers. "
@@ -189,6 +192,12 @@ class LiteratureScout:
 
         model_name = engine.config.default_model
         api_key = engine.config.get_api_key_for_model(model_name)
+        effective_model = model_name
+        api_base = None
+        if model_name.startswith("9router/"):
+            submodel = model_name.split("/", 1)[1]
+            effective_model = f"openai/{submodel}"
+            api_base = "http://localhost:20128/v1"
 
         messages = [
             {"role": "system", "content": system_prompt},
@@ -196,13 +205,15 @@ class LiteratureScout:
         ]
 
         kwargs: dict[str, Any] = {
-            "model": model_name,
+            "model": effective_model,
             "messages": messages,
             "temperature": 0.0,
             "response_format": {"type": "json_object"},
         }
         if api_key:
             kwargs["api_key"] = api_key
+        if api_base:
+            kwargs["api_base"] = api_base
 
         response = litellm.completion(**kwargs)
         raw_json = response.choices[0].message.content or "{}"
@@ -408,8 +419,19 @@ class LiteratureScout:
             "- is_ai_seminal: boolean"
         ).format(user_input=user_input, max_output=max_output)
 
+        import litellm
+        litellm.suppress_debug_info = True
+        litellm.set_verbose = False
+        litellm.drop_params = True
+
         model_name = engine.config.default_model
         api_key = engine.config.get_api_key_for_model(model_name)
+        effective_model = model_name
+        api_base = None
+        if model_name.startswith("9router/"):
+            submodel = model_name.split("/", 1)[1]
+            effective_model = f"openai/{submodel}"
+            api_base = "http://localhost:20128/v1"
 
         messages = [
             {"role": "system", "content": system_prompt},
@@ -417,13 +439,15 @@ class LiteratureScout:
         ]
 
         kwargs: dict[str, Any] = {
-            "model": model_name,
+            "model": effective_model,
             "messages": messages,
             "temperature": 0.1,
             "response_format": {"type": "json_object"},
         }
         if api_key:
             kwargs["api_key"] = api_key
+        if api_base:
+            kwargs["api_base"] = api_base
 
         response = litellm.completion(**kwargs)
         raw_json = response.choices[0].message.content or "{}"
