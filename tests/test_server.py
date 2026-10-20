@@ -113,7 +113,7 @@ class TestServerEndpoints:
         assert response.status_code == 200
         skills = response.json()
         names = [s["name"] for s in skills]
-        assert "academic_writer" in names
+        assert "scrpcy_manual" in names
 
     def test_list_and_toggle_documents(self, test_app_and_deps) -> None:
         client, workspace, _ = test_app_and_deps
@@ -223,7 +223,7 @@ class TestServerEndpoints:
             "/api/chat/stream",
             json={
                 "query": "How do Transformers work?",
-                "skill_name": "academic_writer",
+                "skill_name": "scrpcy_manual",
                 "active_documents": ["paper.md"],
             },
         )

@@ -29,7 +29,7 @@ class ChatSession(BaseModel):
 
     id: str
     name: str
-    active_skill: str = Field(default="academic_writer")
+    active_skill: str = Field(default="scrpcy_manual")
     created_at: str = Field(
         default_factory=lambda: datetime.now(timezone.utc).isoformat(),
     )
@@ -61,7 +61,7 @@ class ChatManager:
                 CREATE TABLE IF NOT EXISTS sessions (
                     id TEXT PRIMARY KEY,
                     name TEXT NOT NULL,
-                    active_skill TEXT NOT NULL DEFAULT 'academic_writer',
+                    active_skill TEXT NOT NULL DEFAULT 'scrpcy_manual',
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 )
@@ -82,7 +82,7 @@ class ChatManager:
     def create_session(
         self,
         name: str | None = None,
-        active_skill: str = "academic_writer",
+        active_skill: str = "scrpcy_manual",
     ) -> ChatSession:
         """Create a new chat session. Auto-generates 'session1', 'session2', etc. if name is omitted."""
         with self._get_connection() as conn:

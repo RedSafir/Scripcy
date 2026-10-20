@@ -728,10 +728,7 @@ SUBCOMMAND_SUGGESTIONS: dict[str, list[tuple[str, str]]] = {
         ("/settings set-citation", "Change citation style preference (apa | ieee)"),
     ],
     "/skill": [
-        ("/skill academic_writer", "Elite scientific writer with citation grounding"),
-        ("/skill literature_synthesizer", "Synthesizes consensus and debates across papers"),
-        ("/skill gap_finder", "Identifies unexplored research gaps and blindspots"),
-        ("/skill methodology_critic", "Critiques experimental rigor and limitations"),
+        ("/skill scrpcy_manual", "Scrpcy AI Workbench Manual & autonomous research tool usage"),
     ],
 }
 

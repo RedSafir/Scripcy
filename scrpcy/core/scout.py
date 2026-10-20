@@ -539,3 +539,108 @@ class LiteratureScout:
             cache_file, f"{meta.to_frontmatter()}\n{clean_body_markdown.strip()}\n"
         )
         return target_pdf
+
+    def ingest_abstract_paper(self, paper: ScoutResult) -> Path:
+        """Create a markdown document from an abstract-only paywalled paper in the vault and cache."""
+        self.workspace.ensure_directories()
+        safe_stem = sanitize_filename(paper.title)
+
+        meta = DocumentMetadata(
+            title=paper.title,
+            authors=paper.authors,
+            year=paper.year,
+            doi=paper.doi,
+            cite_key=paper.cite_key or safe_stem,
+        )
+        meta.ensure_cite_key()
+
+        body = (
+            f"# {paper.title}\n\n"
+            f"**Penulis**: {', '.join(paper.authors)} ({paper.year or 'n.d.'})\n"
+            f"**DOI**: {paper.doi or 'Tidak tersedia'}\n\n"
+            "> **Catatan**: Naskah lengkap (Full-Text PDF) paper ini berada di balik paywall komersial. "
+            "Kutipan dan bukti berikut disintesis berdasarkan abstrak publikasi resmi yang terbuka.\n\n"
+            f"## Abstrak\n{paper.abstract or 'Abstrak tidak tersedia.'}\n"
+        )
+        full_content = f"{meta.to_frontmatter()}\n{body.strip()}\n"
+
+        target_md = self.workspace.vault_dir / f"{safe_stem}.md"
+        target_md.write_text(full_content, encoding="utf-8")
+
+        cache_file = f"{safe_stem}.md"
+        self.workspace.save_to_cache(cache_file, full_content)
+        return target_md
+
+    async def auto_scout_and_ingest(
+        self,
+        query: str,
+        max_papers: int = 2,
+        on_status: Any | None = None,
+    ) -> list[str]:
+        """Automatically discover, filter (preferring OA PDF, fallback to abstract), and ingest papers for a topic."""
+        sq = ScoutQuery(keywords=query, is_oa_only=False)
+        candidates = await self.search_all_repositories(sq, limit=15)
+        if not candidates:
+            return []
+
+        curated = self.curate_and_rank(query, candidates)
+        if not curated:
+            return []
+
+        # Prioritize OA PDF candidates, fallback to abstract if closed-access
+        oa_candidates = [c for c in curated if c.has_pdf and c.pdf_url]
+        closed_candidates = [c for c in curated if not (c.has_pdf and c.pdf_url) and c.abstract]
+
+        selected_candidates: list[ScoutResult] = []
+        for c in oa_candidates:
+            if len(selected_candidates) >= max_papers:
+                break
+            selected_candidates.append(c)
+
+        for c in closed_candidates:
+            if len(selected_candidates) >= max_papers:
+                break
+            if not any(sc.title.lower() == c.title.lower() for sc in selected_candidates):
+                selected_candidates.append(c)
+
+        ingested_stems: list[str] = []
+        tried_titles = {c.title.lower() for c in selected_candidates}
+        oa_pool = [c for c in oa_candidates if c.has_pdf and c.pdf_url]
+
+        for idx, paper in enumerate(selected_candidates, 1):
+            safe_stem = sanitize_filename(paper.title)
+            if paper.has_pdf and paper.pdf_url:
+                if on_status:
+                    on_status("Mengunduh", f"[{idx}/{len(selected_candidates)}] {paper.title[:50]}... (PDF)")
+                try:
+                    await self.download_scout_paper(paper)
+                    ingested_stems.append(safe_stem)
+                except Exception as exc:
+                    # Autonomous error recovery: find open-access alternative candidate from curated pool
+                    alt_found = False
+                    for alt_paper in oa_pool:
+                        if alt_paper.title.lower() in tried_titles:
+                            continue
+                        tried_titles.add(alt_paper.title.lower())
+                        if on_status:
+                            on_status("Mengunduh", f"Mencoba alternatif Open-Access: {alt_paper.title[:45]}...")
+                        try:
+                            await self.download_scout_paper(alt_paper)
+                            ingested_stems.append(sanitize_filename(alt_paper.title))
+                            alt_found = True
+                            break
+                        except Exception:
+                            continue
+
+                    if not alt_found and paper.abstract:
+                        if on_status:
+                            on_status("Membaca", f"Fallback ke ringkasan abstrak: {paper.title[:50]}...")
+                        self.ingest_abstract_paper(paper)
+                        ingested_stems.append(safe_stem)
+            elif paper.abstract:
+                if on_status:
+                    on_status("Membaca", f"[{idx}/{len(selected_candidates)}] Abstrak paper: {paper.title[:50]}...")
+                self.ingest_abstract_paper(paper)
+                ingested_stems.append(safe_stem)
+
+        return ingested_stems

@@ -41,6 +41,7 @@ def cli_studio(
     cfg = ScrpcyConfig(
         default_model="gemini/gemini-2.5-pro",
         workspace_path=str(temp_workspace.root_dir),
+        skills_dir=str(temp_workspace.root_dir / "skills"),
     )
     studio = CLIStudio(
         workspace=temp_workspace,
@@ -204,16 +205,17 @@ class TestProjectCommands:
         assert len(cli_studio.active_documents) == 2
 
     def test_cmd_skills_and_switch(self, cli_studio: CLIStudio) -> None:
+        cli_studio.skills_loader.create_or_update_skill("custom_reviewer", "Custom prompt")
         cli_studio.cmd_skills()
         output = cli_studio.console.file.getvalue()
         assert "Available Research Personas / Skills" in output
-        assert "academic_writer" in output
-        assert "literature_synthesizer" in output
+        assert "scrpcy_manual" in output
+        assert "custom_reviewer" in output
         assert "[Active]" in output
 
         # Switch by name
-        cli_studio.cmd_skill("literature_synthesizer")
-        assert cli_studio.active_skill_name == "literature_synthesizer"
+        cli_studio.cmd_skill("custom_reviewer")
+        assert cli_studio.active_skill_name == "custom_reviewer"
 
     def test_cmd_skill_without_args_renders_catalog(self, cli_studio: CLIStudio) -> None:
         cli_studio.cmd_skill("")
@@ -222,6 +224,7 @@ class TestProjectCommands:
         assert "Add custom persona:" in output
 
     def test_cmd_skill_switch_by_numeric_index(self, cli_studio: CLIStudio) -> None:
+        cli_studio.skills_loader.create_or_update_skill("second_skill", "Second prompt")
         skills = cli_studio.skills_loader.list_skills()
         assert len(skills) >= 2
 
@@ -246,7 +249,7 @@ class TestProjectCommands:
         output = test_console.file.getvalue()
         assert "Installed AI Research Personas / Skills" in output
         assert "[Installed]" in output
-        assert "academic_writer" in output
+        assert "scrpcy_manual" in output
 
     def test_project_slash_skill_routing(self, cli_studio: CLIStudio) -> None:
         # Route /skills
@@ -255,6 +258,7 @@ class TestProjectCommands:
         assert "Available Research Personas / Skills" in output
 
         # Route /skill 2
+        cli_studio.skills_loader.create_or_update_skill("route_target", "Prompt")
         skills = cli_studio.skills_loader.list_skills()
         cli_studio.handle_project_command("/skill 2")
         assert cli_studio.active_skill_name == skills[1].name
@@ -973,16 +977,13 @@ class TestAgenticUXAndFormatting:
         loader = SkillsLoader()
         skills = loader.list_skills()
         skill_names = [s.name for s in skills]
-        assert "academic_writer" in skill_names
-        assert "literature_synthesizer" in skill_names
-        assert "methodology_critic" in skill_names
-        assert "gap_finder" in skill_names
+        assert "scrpcy_manual" in skill_names
 
-        for skill in skills:
-            assert "/search" in skill.system_prompt
-            assert "/vault" in skill.system_prompt
-            assert "/docx" in skill.system_prompt
-            assert "```scrpcy" in skill.system_prompt
+        manual = loader.get_skill("scrpcy_manual")
+        assert "/search" in manual.system_prompt
+        assert "/vault" in manual.system_prompt
+        assert "/docx" in manual.system_prompt
+        assert "```scrpcy" in manual.system_prompt
 
     def test_interactive_input_prompt_clean_history(self, test_console: Console) -> None:
         from scrpcy.ui.interactive import interactive_input_prompt

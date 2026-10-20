@@ -97,7 +97,7 @@ class CLIStudio:
         self._injected_engine = engine
 
         self.skills_loader = SkillsLoader(skills_dir=self.config.skills_dir)
-        self.active_skill_name = "academic_writer"
+        self.active_skill_name = "scrpcy_manual"
         self.active_documents: set[str] = set()
         self.last_search_results: list[SearchResult] = []
         self.last_scout_results: list[ScoutResult] = []
@@ -105,6 +105,7 @@ class CLIStudio:
         self._web_server_thread: threading.Thread | None = None
 
         self.task_manager = TaskManager()
+        self.task_manager.add_completion_callback(self._on_background_task_completed)
         self.gdrive_manager = GoogleDriveManager()
         self.vault_manager: VaultManager | None = None
         self.chat_manager: ChatManager | None = None
@@ -452,7 +453,7 @@ class CLIStudio:
             self.console.print("[dim]Project master folder will organize your research papers, cache, synthesis notes, and drafts.[/dim]\n")
             try:
                 name = self.console.input("[bold cyan]project name > [/bold cyan]").strip()
-            except (KeyboardInterrupt, EOFError):
+            except (KeyboardInterrupt, EOFError, OSError):
                 self.console.print("\n[yellow]Project creation canceled.[/yellow]\n")
                 return
 
@@ -473,7 +474,7 @@ class CLIStudio:
 
             try:
                 choice = self.console.input("[bold cyan]pilih lokasi [1/2, default: 1][/bold cyan] [bold green]❯[/bold green] ").strip()
-            except (KeyboardInterrupt, EOFError):
+            except (KeyboardInterrupt, EOFError, OSError):
                 self.console.print("\n[yellow]Project creation canceled.[/yellow]\n")
                 return
 
@@ -484,7 +485,7 @@ class CLIStudio:
             if choice == "2":
                 try:
                     custom_path = self.console.input("[bold cyan]path folder tujuan[/bold cyan] [bold green]❯[/bold green] ").strip()
-                except (KeyboardInterrupt, EOFError):
+                except (KeyboardInterrupt, EOFError, OSError):
                     self.console.print("\n[yellow]Project creation canceled.[/yellow]\n")
                     return
                 if not custom_path or custom_path.lower() in ("q", "quit", "cancel"):
@@ -541,7 +542,7 @@ class CLIStudio:
             self.dashboard_list_projects()
             try:
                 target_identifier = self.console.input("[bold cyan]delete project (# or name)[/bold cyan] [bold green]❯[/bold green] ").strip()
-            except (KeyboardInterrupt, EOFError):
+            except (KeyboardInterrupt, EOFError, OSError):
                 self.console.print("\n[yellow]Deletion canceled.[/yellow]\n")
                 return
 
@@ -558,7 +559,7 @@ class CLIStudio:
             confirm = self.console.input(
                 f"Are you sure you want to remove project '[bold cyan]{project_info.name}[/bold cyan]' from Scrpcy? (y/N): "
             ).strip().lower()
-        except (KeyboardInterrupt, EOFError):
+        except (KeyboardInterrupt, EOFError, OSError):
             self.console.print("\n[yellow]Deletion canceled.[/yellow]\n")
             return
 
@@ -735,7 +736,7 @@ class CLIStudio:
 
         try:
             user_input = self.console.input("[bold cyan]scout > [/bold cyan]").strip()
-        except (KeyboardInterrupt, EOFError):
+        except (KeyboardInterrupt, EOFError, OSError):
             self.console.print("\n[yellow]Scout canceled.[/yellow]\n")
             return
 
@@ -858,6 +859,50 @@ class CLIStudio:
             " [dim]• Ketik [bold cyan]processing[/bold cyan] atau [bold cyan]proc[/bold cyan] untuk memantau progres unduhan & log real-time.[/dim]\n"
         )
 
+    def _on_background_task_completed(self, task: Any) -> None:
+        """Invoked asynchronously whenever any background task finishes."""
+        session_id = getattr(task, "session_id", None)
+        if not session_id or not self.chat_manager:
+            return
+
+        task_status = getattr(task, "status", "")
+        task_name = getattr(task, "name", "Task")
+        task_id = getattr(task, "id", "")
+        task_type = getattr(task, "task_type", "")
+        summary = getattr(task, "result_summary", "")
+        error_msg = getattr(task, "error", "")
+
+        if task_status == "completed":
+            note = (
+                f"### [PROSES LATAR BELAKANG SELESAI: {task_name}]\n"
+                f"- ID Tugas: `{task_id}` ({task_type})\n"
+                f"- Ringkasan Hasil: {summary or 'Selesai tanpa kendala.'}\n"
+                f"- Status Vault: Dokumen dan metadata telah terindeks ke dalam vault dan siap dianalisis dalam sesi riset ini."
+            )
+        elif task_status == "failed":
+            note = (
+                f"### [PROSES LATAR BELAKANG GAGAL: {task_name}]\n"
+                f"- ID Tugas: `{task_id}`\n"
+                f"- Kendala: {error_msg or 'Terjadi kesalahan eksekusi.'}\n"
+                f"- Rekomendasi: Anda dapat mencoba mencari sumber alternatif atau memeriksa log dengan perintah `/proc`."
+            )
+        elif task_status == "cancelled":
+            note = f"### [PROSES LATAR BELAKANG DIBATALKAN: {task_name} ({task_id})]"
+        else:
+            return
+
+        try:
+            self.chat_manager.add_message(session_id, "system", note)
+        except Exception:
+            pass
+
+        # If user is currently active inside this exact chat session, display visual notification pill
+        if self.sub_mode == "chat" and self.active_chat_session and self.active_chat_session.id == session_id:
+            if task_status == "completed":
+                self.console.print(f"\n[bold cyan]●[/bold cyan] [bold bright_white]Tugas Latar Belakang Selesai:[/bold bright_white] [cyan]{task_name}[/cyan] [dim]({summary or 'Selesai'})[/dim]\n")
+            elif task_status == "failed":
+                self.console.print(f"\n[bold red][x] Tugas Latar Belakang Gagal:[/bold red] [cyan]{task_name}[/cyan] [dim]({error_msg})[/dim]\n")
+
     def _background_download_worker(self, task_id: str, papers: list[ScoutResult]) -> str:
         """Background agent worker downloading and ingesting academic papers into vault."""
         total = len(papers)
@@ -936,6 +981,8 @@ class CLIStudio:
 
         self.task_manager.log(task_id, f"Downloading top {len(oa_papers)} open-access paper(s) into vault...")
         downloaded = 0
+        all_oa_candidates = [p for p in curated if p.has_pdf and p.pdf_url]
+        tried_titles = {p.title.lower() for p in oa_papers}
 
         for idx, paper in enumerate(oa_papers, 1):
             self.task_manager.log(task_id, f"[{idx}/{len(oa_papers)}] Downloading '{paper.title[:45]}...'")
@@ -948,7 +995,33 @@ class CLIStudio:
                 self.task_manager.log(task_id, f"[✓] Added #{idx} to vault & indexed: {paper.title[:50]}")
                 downloaded += 1
             except Exception as exc:
-                self.task_manager.log(task_id, f"[x] Error downloading #{idx} '{paper.title[:35]}': {exc}")
+                self.task_manager.log(task_id, f"[!] Download error on #{idx} '{paper.title[:35]}': {exc}")
+                # Autonomous error recovery: find open-access alternative candidate
+                alt_found = False
+                for alt_paper in all_oa_candidates:
+                    if alt_paper.title.lower() in tried_titles:
+                        continue
+                    tried_titles.add(alt_paper.title.lower())
+                    self.task_manager.log(task_id, f"[→] Trying OA alternative: '{alt_paper.title[:40]}...'")
+                    try:
+                        dl_path = loop.run_until_complete(self.scout.download_scout_paper(alt_paper))
+                        self.active_documents.add(dl_path.stem)
+                        self._sync_vault_cache()
+                        self.task_manager.log(task_id, f"[✓] Ingested alternative to vault: {alt_paper.title[:45]}")
+                        downloaded += 1
+                        alt_found = True
+                        break
+                    except Exception as alt_exc:
+                        self.task_manager.log(task_id, f"[!] Alternative failed: {alt_exc}")
+                        continue
+
+                if not alt_found and paper.abstract:
+                    self.task_manager.log(task_id, f"[→] Fallback: Ingesting abstract for '{paper.title[:35]}...'")
+                    self.scout.ingest_abstract_paper(paper)
+                    safe_stem = sanitize_filename(paper.title)
+                    self.active_documents.add(safe_stem)
+                    self._sync_vault_cache()
+                    downloaded += 1
             finally:
                 loop.close()
 
@@ -987,7 +1060,7 @@ class CLIStudio:
             confirm = self.console.input(
                 f"Are you sure you want to remove {prompt_label} from Scrpcy? (y/N): "
             ).strip().lower()
-        except (KeyboardInterrupt, EOFError):
+        except (KeyboardInterrupt, EOFError, OSError):
             self.console.print("\n[yellow]Deletion canceled.[/yellow]\n")
             return
 
@@ -1085,12 +1158,14 @@ class CLIStudio:
             self.console.print("[red][x] Please open a project first.[/red]\n")
             return
 
+        sess_id = self.active_chat_session.id if (self.sub_mode == "chat" and self.active_chat_session) else None
         task = self.task_manager.submit(
             name=f"Literature Scout & Ingest: {clean_query[:40]}",
             task_type="scout",
             target_fn=self._background_scout_worker,
             query=clean_query,
             max_download=3,
+            session_id=sess_id,
         )
         self.console.print()
         self.console.print(
@@ -1280,6 +1355,7 @@ class CLIStudio:
                 task_type="convert",
                 target_fn=self._background_vault_add_worker,
                 path_str=str(src_path),
+                session_id=self.active_chat_session.id if self.active_chat_session else None,
             )
             self.console.print()
             self.console.print(
@@ -1407,7 +1483,7 @@ class CLIStudio:
             )
             try:
                 clean_arg = self.console.input("[bold cyan]gdrive > [/bold cyan]").strip()
-            except (KeyboardInterrupt, EOFError):
+            except (KeyboardInterrupt, EOFError, OSError):
                 self.console.print("\n")
                 return
 
@@ -1684,7 +1760,7 @@ class CLIStudio:
             if not chat_name:
                 try:
                     chat_name = self.console.input("[bold cyan]Nama chat (tekan Enter untuk default): [/bold cyan]").strip()
-                except (KeyboardInterrupt, EOFError):
+                except (KeyboardInterrupt, EOFError, OSError):
                     self.console.print()
                     return
 
@@ -1715,7 +1791,7 @@ class CLIStudio:
                 self.cmd_chat_list_sessions()
                 try:
                     target = self.console.input("Masukkan nomor atau nama chat yang ingin dibuka: ").strip()
-                except (KeyboardInterrupt, EOFError):
+                except (KeyboardInterrupt, EOFError, OSError):
                     return
             if not target:
                 return
@@ -1725,6 +1801,20 @@ class CLIStudio:
                 self.active_chat_session = session
                 self.sub_mode = "chat"
                 self.console.print(f"[bold green][✓] Masuk ke sesi percakapan:[/bold green] [bold cyan]{session.name}[/bold cyan] ({session.message_count} pesan)")
+
+                # Display any active or recent background tasks bound to this session
+                session_tasks = self.task_manager.list_tasks_for_session(session.id)
+                running = [t for t in session_tasks if t.status == "running"]
+                completed = [t for t in session_tasks if t.status == "completed"]
+                if running:
+                    self.console.print(f"[bold yellow]●[/bold yellow] [bold bright_white]{len(running)} proses latar belakang masih berjalan di sesi ini:[/bold bright_white]")
+                    for t in running:
+                        self.console.print(f"  [dim]•[/dim] [cyan]{t.name}[/cyan] [dim]({t.progress} • Ketik /proc untuk pantau)[/dim]")
+                elif completed:
+                    self.console.print(f"[bold green][✓][/bold green] [bold bright_white]Proses latar belakang terakhir di sesi ini:[/bold bright_white]")
+                    for t in completed[:2]:
+                        self.console.print(f"  [dim]•[/dim] [cyan]{t.name}[/cyan] [dim]({t.result_summary or 'Selesai'})[/dim]")
+
                 self.cmd_chat_history()
                 self.console.print("[dim]Ketik pertanyaan riset Anda langsung di bawah ini. Gunakan '/' untuk perintah (contoh: /back).[/dim]\n")
             else:
@@ -1739,7 +1829,7 @@ class CLIStudio:
                 self.cmd_chat_list_sessions()
                 try:
                     target = self.console.input("Masukkan nomor atau nama chat yang ingin dihapus (contoh: '1, 2' atau 'all'): ").strip()
-                except (KeyboardInterrupt, EOFError):
+                except (KeyboardInterrupt, EOFError, OSError):
                     return
 
             if not target:
@@ -1819,6 +1909,9 @@ class CLIStudio:
 
             if cmd in ("/back", "/exit", "/quit", "/close", "/cd..", "/.."):
                 self.render_mode_divider()
+                running_tasks = [t for t in self.task_manager.list_tasks_for_session(self.active_chat_session.id) if t.status == "running"] if self.active_chat_session else []
+                if running_tasks:
+                    self.console.print(f"[bold yellow]●[/bold yellow] [dim]{len(running_tasks)} proses latar belakang tetap berjalan di background. Anda dapat kembali ke sesi ini kapan saja dengan 'resume {self.active_chat_session.name}'.[/dim]")
                 self.sub_mode = "chat_hub"
                 self.console.print(f"[dim]Kembali ke menu chat: {self.current_project.name}/chat>[/dim]\n")
                 return
@@ -1849,7 +1942,7 @@ class CLIStudio:
                 if not chat_name:
                     try:
                         chat_name = self.console.input("[bold cyan]Nama chat (tekan Enter untuk default): [/bold cyan]").strip()
-                    except (KeyboardInterrupt, EOFError):
+                    except (KeyboardInterrupt, EOFError, OSError):
                         self.console.print()
                         return
 
@@ -1941,6 +2034,8 @@ class CLIStudio:
         for msg in messages:
             if msg.role == "user":
                 self.console.print(f"[bold bright_white]User:[/bold bright_white] {escape(msg.content)}")
+            elif msg.role == "system":
+                self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Sistem:[/bold bright_white] [dim]{escape(msg.content)}[/dim]")
             else:
                 self.console.print(f"[bold cyan]AI ({self.active_chat_session.active_skill}):[/bold cyan]\n")
                 render_academic_markdown(msg.content, console=self.console)
@@ -2795,11 +2890,13 @@ class CLIStudio:
         dest_path = drafts_dir / filename
 
         if in_background or self.sub_mode == "chat":
+            sess_id = self.active_chat_session.id if (self.sub_mode == "chat" and self.active_chat_session) else None
             task = self.task_manager.submit(
                 name=f"WordCraft Export: {filename}",
                 task_type="convert",
                 target_fn=self._background_docx_worker,
                 filename=filename,
+                session_id=sess_id,
             )
             self.console.print()
             self.console.print(
@@ -2850,11 +2947,134 @@ class CLIStudio:
         webbrowser.open(f"http://{host}:{port}")
         self.console.print(f"[bold green][✓] Web Studio launched in background at:[/bold green] [bold cyan]http://{host}:{port}[/bold cyan]\n")
 
+    def _execute_internal_vault_tool(self, cmd_line: str) -> tuple[str, str, str]:
+        """Execute an internal read or list vault tool, returning (action_label, target_label, tool_output)."""
+        clean = cmd_line.strip().lstrip("/")
+        parts = clean.split(maxsplit=2)
+        cmd_root = parts[0].lower() if parts else ""
+        sub = parts[1].lower() if len(parts) > 1 else ""
+        arg = parts[2].strip() if len(parts) > 2 else ""
+
+        if cmd_root in ("read", "view"):
+            arg = sub
+            sub = "read"
+
+        if sub in ("list", "ls", ""):
+            stems = self._get_cached_stems()
+            if not stems:
+                return "Membaca", "Vault Kosong", "Vault saat ini kosong. Belum ada paper yang terindeks."
+
+            lines = ["Daftar dokumen di vault saat ini:"]
+            for idx, stem in enumerate(stems, 1):
+                lines.append(f"{idx}. {stem}")
+            return "Membaca", "Daftar Paper di Vault", "\n".join(lines)
+
+        elif sub in ("read", "view"):
+            if not arg and len(parts) > 1 and parts[1].isdigit():
+                arg = parts[1]
+            stems = self._get_cached_stems()
+            target_stem = None
+            if arg.isdigit():
+                idx = int(arg) - 1
+                if 0 <= idx < len(stems):
+                    target_stem = stems[idx]
+            else:
+                matching = [s for s in stems if s.lower() == arg.lower() or arg.lower() in s.lower()]
+                if matching:
+                    target_stem = matching[0]
+
+            if not target_stem and self.vault_manager:
+                self.vault_manager.reload_vault(force=False)
+                self._sync_vault_cache()
+                stems = self._get_cached_stems()
+                if arg.isdigit():
+                    idx = int(arg) - 1
+                    if 0 <= idx < len(stems):
+                        target_stem = stems[idx]
+                else:
+                    matching = [s for s in stems if s.lower() == arg.lower() or arg.lower() in s.lower()]
+                    if matching:
+                        target_stem = matching[0]
+
+            if not target_stem or not self.workspace:
+                return "Membaca", f"Dokumen '{arg}' Tidak Ditemukan", f"Dokumen '{arg}' tidak ditemukan di vault."
+
+            try:
+                text_content = self.workspace.read_from_cache(f"{target_stem}.md")
+            except Exception:
+                text_content = ""
+
+            max_chars = 12000
+            truncated = text_content[:max_chars]
+            if len(text_content) > max_chars:
+                truncated += "\n\n... (bagian dokumen selanjutnya dipotong untuk efisiensi token) ..."
+
+            return "Membaca", f"cache/{target_stem}.md", truncated
+
+        elif sub in ("remove", "rm", "archive"):
+            if not arg and len(parts) > 1 and parts[1].isdigit():
+                arg = parts[1]
+            stems = self._get_cached_stems()
+            target_stem = None
+            if arg.isdigit():
+                idx = int(arg) - 1
+                if 0 <= idx < len(stems):
+                    target_stem = stems[idx]
+            else:
+                matching = [s for s in stems if s.lower() == arg.lower() or arg.lower() in s.lower()]
+                if matching:
+                    target_stem = matching[0]
+
+            if not target_stem and self.vault_manager:
+                self.vault_manager.reload_vault(force=False)
+                self._sync_vault_cache()
+                stems = self._get_cached_stems()
+                if arg.isdigit():
+                    idx = int(arg) - 1
+                    if 0 <= idx < len(stems):
+                        target_stem = stems[idx]
+                else:
+                    matching = [s for s in stems if s.lower() == arg.lower() or arg.lower() in s.lower()]
+                    if matching:
+                        target_stem = matching[0]
+
+            if not target_stem or not self.vault_manager:
+                return "Mengarsipkan", f"Dokumen '{arg}' Tidak Ditemukan", f"Dokumen '{arg}' tidak ditemukan di vault aktif."
+
+            try:
+                archived = self.vault_manager.archive_resource(target_stem)
+                self.active_documents.discard(archived.path.stem)
+                self._sync_vault_cache()
+                return "Mengarsipkan", f"vault/{archived.filename}", f"Dokumen '{archived.filename}' berhasil dipindahkan ke .archive/ dan dikeluarkan dari konteks AI aktif."
+            except Exception as exc:
+                return "Mengarsipkan", "Gagal", f"Gagal mengarsipkan dokumen '{arg}': {exc}"
+
+        return "Membaca", clean, f"Perintah internal {clean} dijalankan."
+
+    def _extract_scout_query(self, query: str) -> str:
+        """Extract clean salient keywords from user query for academic literature scouting."""
+        stopwords = {
+            "bagaimana", "apa", "apakah", "mengapa", "kenapa", "jelaskan", "jelaskanlah",
+            "tolong", "bisa", "tolonglah", "uraikan", "sebutkan", "bagaimanakah",
+            "how", "what", "why", "explain", "describe", "can", "could", "would",
+            "the", "is", "are", "and", "or", "to", "in", "of", "on", "for", "with",
+            "tentang", "mengenai", "pada", "di", "ke", "dari", "dan", "atau", "yang",
+            "ini", "itu", "tersebut", "secara", "seperti", "yaitu", "adalah", "ialah",
+        }
+        cleaned = re.sub(r"[^\w\s-]", " ", query)
+        words = cleaned.split()
+        salient = [w for w in words if w.lower() not in stopwords and len(w) > 2]
+        if salient:
+            return " ".join(salient[:6])
+        return query.strip()
+
     def handle_chat(self, query: str) -> None:
         """Process research query with evidence synthesis and real-time streaming output."""
         if not self.workspace or not self.engine:
             self.console.print("[red][x] No active project workspace loaded.[/red]\n")
             return
+
+        session = self._ensure_active_chat_session() if self.chat_manager else None
 
         # Check if user query in chat explicitly contains a Google Drive link or download intent
         gdrive_id = extract_drive_file_id(query)
@@ -2909,7 +3129,83 @@ class CLIStudio:
                 evidence = evidence[:5]
                 self.console.print("[dim]● Dibatasi ke 5 chunks teratas untuk penghematan token.[/dim]")
 
-        # 1. Action Indicator: Membaca
+        # Autonomous Deep-Research Literature Discovery Hook (when evidence is insufficient)
+        if not evidence and self.scout:
+            self.console.print("[bold cyan]●[/bold cyan] [bold bright_white]Berpikir[/bold bright_white] [dim]Mengevaluasi kecukupan literatur di vault...[/dim]")
+            self.console.print("[dim]● Bukti di vault belum mencukupi untuk topik ini.[/dim]")
+
+            suggested_topic = self._extract_scout_query(query)
+            self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Rencana:[/bold bright_white] [cyan]Mencari & mengunduh literatur terkait '{suggested_topic}'[/cyan]")
+
+            try:
+                user_choice = self.console.input("[bold cyan][?] Jalankan pencarian & unduh otomatis? [Y/n/ketik kata kunci baru]: [/bold cyan]").strip()
+            except (KeyboardInterrupt, EOFError, OSError):
+                user_choice = "n"
+                self.console.print()
+
+            if user_choice.lower() in ("n", "no", "tidak", "batal", "cancel"):
+                self.console.print("[dim]● Pencarian otomatis dilewati. Melanjutkan sintesis dengan pengetahuan umum...[/dim]\n")
+            else:
+                target_topic = suggested_topic if user_choice.lower() in ("", "y", "yes", "ya", "ok") else user_choice
+                self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Mencari[/bold bright_white] [dim]Menelusuri repositori ilmiah (OpenAlex & Semantic Scholar)...[/dim]")
+
+                def on_scout_status(action: str, label: str) -> None:
+                    self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]{action}[/bold bright_white] [cyan]{label}[/cyan]")
+
+                new_stems: list[str] = []
+                timed_out = False
+                try:
+                    async def _run_scout_with_timeout() -> list[str]:
+                        return await asyncio.wait_for(
+                            self.scout.auto_scout_and_ingest(target_topic, max_papers=2, on_status=on_scout_status),
+                            timeout=20.0,
+                        )
+                    new_stems = asyncio.run(_run_scout_with_timeout())
+                except (asyncio.TimeoutError, TimeoutError):
+                    timed_out = True
+                except Exception as exc:
+                    self.console.print(f"[dim]● Pencarian repositori gagal: {exc}. Melanjutkan...[/dim]\n")
+
+                if timed_out:
+                    task = self.task_manager.submit(
+                        name=f"Deep Research Scout: {target_topic}",
+                        task_type="scout",
+                        target_fn=self._background_scout_worker,
+                        topic_query=target_topic,
+                        session_id=session.id if session else None,
+                    )
+                    self.console.print("[bold yellow][!] Unduhan repositori membutuhkan waktu > 20 detik.[/bold yellow]")
+                    self.console.print(f"[bold green][✓] Proses dialihkan ke background:[/bold green] [bold cyan]{task.id}[/bold cyan] [dim](Ketik /proc untuk pantau)[/dim]\n")
+                    initial_query_override = (
+                        f"{query}\n\n"
+                        f"[CATATAN SISTEM SCRPCY: Proses penelusuran & pengunduhan literatur untuk topik '{target_topic}' "
+                        f"memerlukan waktu lebih dari 20 detik dan dialihkan ke latar belakang (Task ID: {task.id}).\n"
+                        f"Instruksi untuk AI: Beritahu pengguna secara ringkas bahwa unduhan sedang diproses di background. "
+                        f"Berikan sintesis awal atau fondasi konseptual terbaik berdasarkan pengetahuan yang ada saat ini. "
+                        f"Secara proaktif konsultasikan dan sarankan langkah/topik paralel apa yang bisa dikaji sekarang "
+                        f"(misalnya: mencari jurnal komplementer dengan `/scout <topik>`, merumuskan hipotesis, "
+                        f"atau menunggu tugas selesai). Tuliskan saran perintah konkret dalam blok ```scrpcy jika relevan.]"
+                    )
+                elif new_stems:
+                    if self.vault_manager:
+                        self.vault_manager.reload_vault(force=False)
+                    self._sync_vault_cache()
+                    for s in new_stems:
+                        self.active_documents.add(s)
+
+                    active_paths = [self.workspace.get_cache_path(f"{s}.md") for s in self.active_documents]
+                    existing_paths = [p for p in active_paths if p.exists()]
+                    evidence = self.engine.evidence_synthesizer.retrieve_evidence(
+                        query=query,
+                        documents=existing_paths,
+                        max_chunks=self.config.citation.max_evidence_chunks,
+                    )
+                    self.console.print(f"[bold green][✓] Berhasil mengindeks {len(new_stems)} dokumen baru ke vault.[/bold green]")
+                    for s in new_stems:
+                        self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Membaca[/bold bright_white] [cyan]cache/{s}.md[/cyan] [dim](Dokumen siap)[/dim]")
+                    self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Menganalisis[/bold bright_white] [dim]Menyintesis temuan paper baru ke dalam jawaban komprehensif...[/dim]\n")
+
+        # 1. Action Indicator: Membaca (jika sudah ada bukti)
         if evidence:
             sources = sorted(list({c.source for c in evidence}))
             for src in sources:
@@ -2934,40 +3230,90 @@ class CLIStudio:
             self.console.print(f"  [dim]Tips: Jika menggunakan 9Router lokal, periksa http://localhost:20128[/dim]\n")
             return
 
-        session = self._ensure_active_chat_session()
-        if self.chat_manager:
+        if not session and self.chat_manager:
+            session = self._ensure_active_chat_session()
+        if session and self.chat_manager:
             self.chat_manager.add_message(session.id, "user", query)
 
         # 2. Action Indicator: Berpikir
         self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Berpikir[/bold bright_white] [dim]Menganalisis literatur dan menyusun sintesis ilmiah...[/dim]")
         self.console.print(f"\n[bold cyan]✦ {model_label}[/bold cyan] [dim]({self.active_skill_name} • {effort} effort)[/dim]\n")
 
-        accumulated_tokens: list[str] = []
         start_time = time.time()
-        try:
-            async def _stream_chat() -> None:
-                async for token in self.engine.stream_query(
-                    query=query,
-                    documents=existing_paths,
-                    skill_name=self.active_skill_name,
-                    model=model_name,
-                    max_evidence_chunks=self.config.citation.max_evidence_chunks,
-                ):
-                    accumulated_tokens.append(token)
+        max_agent_turns = 3
+        turn = 0
+        current_query = initial_query_override if "initial_query_override" in locals() and initial_query_override else query
+        current_docs = list(existing_paths)
+        final_response = ""
+        last_turn_tokens: list[str] = []
 
-            asyncio.run(_stream_chat())
+        try:
+            while turn < max_agent_turns:
+                turn_tokens: list[str] = []
+
+                # Gather previous session dialogue history
+                history_msgs: list[dict[str, str]] = []
+                if self.chat_manager and session:
+                    raw_history = self.chat_manager.get_messages(session.id)
+                    for m in raw_history[-10:]:
+                        if m.role == "user" and m.content == query:
+                            continue
+                        history_msgs.append({"role": m.role, "content": m.content})
+
+                async def _stream_chat() -> None:
+                    async for token in self.engine.stream_query(
+                        query=current_query,
+                        documents=current_docs,
+                        skill_name=self.active_skill_name,
+                        model=model_name,
+                        max_evidence_chunks=self.config.citation.max_evidence_chunks if turn == 0 else 0,
+                        history=history_msgs,
+                    ):
+                        turn_tokens.append(token)
+
+                asyncio.run(_stream_chat())
+                turn_response = "".join(turn_tokens)
+                last_turn_tokens = turn_tokens
+
+                # Detect if AI called an internal read or list action
+                internal_match = re.search(
+                    r"```scrpcy\r?\n\s*(/(?:vault\s+(?:read|view|list)|read|view|list)[^\n]*)\r?\n```",
+                    turn_response,
+                    re.IGNORECASE,
+                )
+
+                if internal_match and turn < max_agent_turns - 1:
+                    cmd_line = internal_match.group(1).strip()
+                    action_label, target_label, tool_output = self._execute_internal_vault_tool(cmd_line)
+
+                    # Status Indicator: Membaca -> Menganalisis
+                    self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]{action_label}[/bold bright_white] [cyan]{target_label}[/cyan] [dim](Membaca teks dari vault...)[/dim]")
+                    self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Menganalisis[/bold bright_white] [dim]Menyintesis temuan dokumen ke dalam jawaban akhir...[/dim]\n")
+
+                    current_query = (
+                        f"### HASIL PEMBACAAN DOKUMEN VAULT ({cmd_line}):\n"
+                        f"Sumber: {target_label}\n"
+                        f"```markdown\n{tool_output}\n```\n\n"
+                        f"Pertanyaan riset asli pengguna: \"{query}\"\n"
+                        f"Berdasarkan data dokumen di atas, silakan berikan sintesis akademis mendalam dan jawaban akhir yang telah ditailor dengan lengkap."
+                    )
+                    current_docs = []
+                    turn += 1
+                    continue
+                else:
+                    final_response = turn_response
+                    break
+
             elapsed = time.time() - start_time
 
-            full_response = "".join(accumulated_tokens)
-
             # 3. Clean academic Markdown with LaTeX math beautification
-            render_academic_markdown(full_response, console=self.console)
+            render_academic_markdown(final_response, console=self.console)
             self.console.print()
 
             # 4. Accurate token consumption telemetry
             evidence_tokens = sum(c.token_estimate or estimate_tokens(c.text) for c in evidence)
             input_tokens = estimate_tokens(query) + 250 + evidence_tokens
-            output_tokens = estimate_tokens(full_response)
+            output_tokens = estimate_tokens(final_response)
             total_tokens = input_tokens + output_tokens
             style_name = self.config.citation.style.upper()
             self.console.print(
@@ -2975,19 +3321,19 @@ class CLIStudio:
             )
 
             if self.chat_manager:
-                self.chat_manager.add_message(session.id, "assistant", full_response)
+                self.chat_manager.add_message(session.id, "assistant", final_response)
             self.conversation_history.append({
                 "query": query,
-                "response": full_response,
+                "response": final_response,
             })
 
             # 5. Suggested actions & Action Indicator: Mengubah / Menulis
-            self._handle_suggested_actions(full_response)
+            self._handle_suggested_actions(final_response)
 
         except (KeyboardInterrupt, asyncio.CancelledError):
             self.console.print("\n\n[bold yellow]● Pertanyaan dibatalkan oleh pengguna (Ctrl+C).[/bold yellow]\n")
-            if accumulated_tokens and self.chat_manager:
-                partial_resp = "".join(accumulated_tokens).strip()
+            if last_turn_tokens and self.chat_manager:
+                partial_resp = "".join(last_turn_tokens).strip()
                 self.chat_manager.add_message(session.id, "assistant", f"{partial_resp} [Dibatalkan]")
             return
         except Exception as exc:
@@ -3018,11 +3364,19 @@ class CLIStudio:
             elif "vault add " in action:
                 v_arg = action.split("vault add", 1)[1].strip()
                 self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Mengubah[/bold bright_white] [cyan]vault/{v_arg}[/cyan]")
+            elif any(k in action for k in ("vault remove", "vault rm", "vault archive")):
+                v_arg = action.split(maxsplit=2)[-1] if len(action.split()) > 2 else ""
+                self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Mengarsipkan[/bold bright_white] [cyan]vault/{v_arg} -> vault/.archive/[/cyan]")
+            elif action.strip() in ("/clear", "clear"):
+                self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Membersihkan[/bold bright_white] [cyan]Konteks chat aktif[/cyan]")
 
             confirmed = interactive_action_confirm(action, console=self.console)
             if confirmed:
                 self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Menjalankan aksi:[/bold bright_white] [cyan]{action}[/cyan]\n")
-                cmd_to_run = action if action.startswith("/") else f"/{action}"
-                self.handle_project_command(cmd_to_run)
+                if action.strip() in ("/clear", "clear"):
+                    self.clear_screen()
+                else:
+                    cmd_to_run = action if action.startswith("/") else f"/{action}"
+                    self.handle_project_command(cmd_to_run)
             else:
                 self.console.print(f"[dim]Aksi '{action}' dilewati.[/dim]\n")

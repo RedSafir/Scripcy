@@ -17,6 +17,7 @@ class TaskInfo(BaseModel):
     id: str = Field(..., description="Unique task identifier, e.g. task-1.")
     name: str = Field(..., description="Human-readable description of the operation.")
     task_type: str = Field(..., description="Category: scout, download, convert, gdrive, agent.")
+    session_id: str | None = Field(default=None, description="Optional chat session ID bound to this task.")
     status: str = Field(default="running", description="Status: running, completed, failed, cancelled.")
     progress: str = Field(default="In progress...", description="Latest progress message.")
     started_at: str = Field(
@@ -51,6 +52,7 @@ class TaskManager:
         self._tasks: dict[str, TaskInfo] = {}
         self._futures: dict[str, Future[Any]] = {}
         self._cancel_events: dict[str, threading.Event] = {}
+        self._completion_callbacks: list[Callable[[TaskInfo], None]] = []
         self._lock = threading.RLock()
         self._counter = 1
 
@@ -61,6 +63,7 @@ class TaskManager:
         target_fn: Callable[..., Any],
         *args: Any,
         task_id: str | None = None,
+        session_id: str | None = None,
         **kwargs: Any,
     ) -> TaskInfo:
         """Submit a background job to run asynchronously without freezing Scrpcy."""
@@ -76,6 +79,7 @@ class TaskManager:
                 id=task_id,
                 name=name,
                 task_type=task_type,
+                session_id=session_id,
                 status="running",
                 progress="Starting task...",
             )
@@ -111,12 +115,34 @@ class TaskManager:
                     info.progress = f"Failed: {exc}"
                     info.finished_at = datetime.now(timezone.utc).isoformat()
                 self.log(task_id, f"Task encountered error: {exc}")
+            finally:
+                with self._lock:
+                    callbacks = list(self._completion_callbacks)
+                for cb in callbacks:
+                    try:
+                        cb(info)
+                    except Exception:
+                        pass
 
         future = self._executor.submit(_worker_wrapper)
         with self._lock:
             self._futures[task_id] = future
 
         return info
+
+
+    def add_completion_callback(self, callback: Callable[[TaskInfo], None]) -> None:
+        """Register a callback invoked whenever any background task completes, fails, or is cancelled."""
+        with self._lock:
+            if callback not in self._completion_callbacks:
+                self._completion_callbacks.append(callback)
+
+    def list_tasks_for_session(self, session_id: str) -> list[TaskInfo]:
+        """Return all tasks ordered newest first that belong to a specific chat session."""
+        with self._lock:
+            tasks = [t for t in self._tasks.values() if t.session_id == session_id]
+        tasks.sort(key=lambda t: t.started_at, reverse=True)
+        return tasks
 
     def log(self, task_id: str, message: str) -> None:
         """Append a log entry with timestamp to task logs."""

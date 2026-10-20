@@ -329,12 +329,13 @@ class LLMEngine:
         self,
         query: str,
         documents: list[str | Path | ParsedDocument] | None = None,
-        skill_name: str = "academic_writer",
+        skill_name: str = "scrpcy_manual",
         model: str | None = None,
         temperature: float | None = None,
         max_evidence_chunks: int | None = None,
         project_name: str | None = None,
         project_path: str | Path | None = None,
+        history: list[dict[str, str]] | None = None,
     ) -> AsyncGenerator[str, None]:
         """Stream generated response tokens from LiteLLM using synthesized evidence."""
         if not query or not query.strip():
@@ -374,8 +375,10 @@ class LLMEngine:
 
         messages = [
             {"role": "system", "content": sys_prompt},
-            {"role": "user", "content": user_content},
         ]
+        if history:
+            messages.extend(history)
+        messages.append({"role": "user", "content": user_content})
 
         kwargs: dict[str, Any] = {
             "model": effective_model,
@@ -429,12 +432,13 @@ class LLMEngine:
         self,
         query: str,
         documents: list[str | Path | ParsedDocument] | None = None,
-        skill_name: str = "academic_writer",
+        skill_name: str = "scrpcy_manual",
         model: str | None = None,
         temperature: float | None = None,
         max_evidence_chunks: int | None = None,
         project_name: str | None = None,
         project_path: str | Path | None = None,
+        history: list[dict[str, str]] | None = None,
     ) -> SynthesisResult:
         """Execute query, returning complete synthesis result and supporting evidence chunks."""
         evidence_chunks = self.evidence_synthesizer.retrieve_evidence(

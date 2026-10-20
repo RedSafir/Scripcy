@@ -28,7 +28,7 @@ class ChatStreamRequest(BaseModel):
     """Payload for initiating a streaming academic research query."""
 
     query: str
-    skill_name: str = "academic_writer"
+    skill_name: str = "scrpcy_manual"
     active_documents: list[str] = Field(default_factory=list)
     model: str | None = None
     temperature: float | None = None

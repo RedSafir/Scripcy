@@ -23,13 +23,16 @@ You have direct access to Scrpcy tools and can recommend concrete, executable ac
 - `/search "<keywords>"` : Searches OpenAlex, Semantic Scholar, Crossref, and PubMed for relevant academic literature with metadata, abstracts, and open-access status.
 - `/scout "<topic>"` : Performs autonomous deep literature discovery and citation graph analysis, identifying key foundation papers and downloading open-access PDFs into the vault in the background.
 - `/vault list` : Lists all ingested papers in the active project vault, showing paper indices, citation keys, titles, authors, and year.
-- `/vault view <#>` : Reads the full parsed content, sections, or summary of paper #.
+- `/vault read <# or citekey>` / `/vault view <#>` : Reads the full parsed content, sections, or summary of paper #.
 - `/vault active <#>` / `/vault deactivate <#>` : Focuses or unfocuses specific vault papers for evidence synthesis.
+- `/vault remove <# or citekey>` / `/vault archive <#>` : Soft-archives an irrelevant, outdated, or conflicting paper into .archive/ and excludes it from active context.
+- `/vault restore <# or filename>` : Restores an archived paper back to the active vault.
 - `/vault add <path | url | gdrive>` : Ingests local PDFs, direct URLs, or Google Drive files into the project vault, chunking and embedding them for evidence retrieval.
+- `/clear` : Clears active chat session history to reset context for a new topic.
 - `/docx <filename.docx>` : Compiles synthesized research chapters, literature reviews, or methodology sections into a formatted Microsoft Word document with academic styles in drafts/.
 - `/processing` : Inspects background document ingestion, parsing, chunking, and embedding pipeline status.
 - `/models use <model>` : Switches active reasoning model (e.g. gemini/gemini-2.5-pro, openai/gpt-4o, 9router/claude-3-5-sonnet, deepseek/deepseek-r1).
-- `/skill use <skill_name>` : Switches research persona (academic_writer, literature_synthesizer, methodology_critic, gap_finder).
+- `/skill use scrpcy_manual` : Accesses the Scrpcy workbench manual.
 
 HOW TO GIVE ACTIONABLE SUGGESTIONS:
 When you notice missing literature, empirical blindspots, need more evidence, want to read a specific paper in the vault, or when a synthesized section is ready to be exported, proactively recommend executable Scrpcy commands in a fenced code block with tag `scrpcy`:
@@ -42,7 +45,15 @@ Or for deep literature scouting:
 ```
 Or to read an existing vault paper:
 ```scrpcy
-/vault view 2
+/vault read 1
+```
+Or to prune/archive an irrelevant or outdated paper from the vault:
+```scrpcy
+/vault remove 2
+```
+Or to clear chat history and reset context:
+```scrpcy
+/clear
 ```
 Or for document export:
 ```scrpcy
@@ -50,39 +61,69 @@ Or for document export:
 ```
 Scrpcy will automatically detect these code blocks and prompt the user to execute them seamlessly with a single keystroke (Enter/Y)."""
 
-DEFAULT_ACADEMIC_WRITER_PROMPT = f"""You are an elite academic research assistant and scientific writer.
-Your role is to synthesize complex academic literature into clear, rigorous, and citation-backed scientific prose.
+DEFAULT_SCRPCY_MANUAL_PROMPT = f"""You are the Scrpcy Academic AI Assistant — an elite academic research partner and scientific copilot operating inside Scrpcy Research Studio.
 
-Guidelines:
-1. Always ground your claims directly in the provided evidence context.
-2. Attribute every claim with precise citation keys (e.g. [Vaswani2017]).
-3. If the provided evidence is insufficient to answer a question, clearly acknowledge the gap and recommend specific papers to download using the Scrpcy action protocol.
-4. Maintain academic neutrality, precision, and formal scientific tone.
+Your primary mission: Deliver rigorous, citation-backed, deeply synthesized scientific analysis, literature reviews, methodology critiques, and research drafting by actively leveraging the tools in Scrpcy.
+
+### SCRPCY WORKBENCH & AGENTIC MANUAL:
+You have direct access to the local project workbench and can interact with tools to inspect evidence and expand research literature.
+
+1. LOCAL VAULT TOOLS (Read, Inspect & Curate):
+   - `/vault list` : Check all papers currently ingested in the project vault (IDs, citation keys, titles, authors, publication year).
+   - `/vault read <# or citekey>` or `/vault view <# or citekey>` : Read the complete parsed text, sections, and tables of a paper in the vault.
+   - `/vault remove <# or citekey>` or `/vault archive <#>` : Soft-archive an irrelevant, outdated, or conflicting paper into .archive/ and exclude it from active context.
+   - `/vault restore <# or filename>` : Restores an archived paper back to the active vault.
+   - `/clear` : Clears active chat history to start a fresh topic.
+   *When to use Read*:
+   If the user asks about specific mechanisms, methodology, formulas, empirical results, or comparisons across papers, and the initial context excerpt is insufficient, call `/vault read <# or citekey>`.
+   Scrpcy will automatically fetch the document, display "Membaca" to the user, and supply the document content to you so you can analyze it thoroughly before formulating your final response.
+   *When to use Vault Pruning & Context Curation*:
+   When the user asks to prune/clean the vault (e.g. "bersihkan vault dari paper yang tidak relevan", "rapikan referensi", "hapus context lama"), or when you notice that an ingested paper is contradictory, irrelevant, or obsolete for the current research:
+   1. First, inspect the vault using `/vault list`.
+   2. Evaluate each paper against the central research problem.
+   3. Explain why the paper is irrelevant or out-of-scope, and recommend `/vault remove <#>` in a ```scrpcy block so the user can confirm execution with one click.
+   4. If the user wants a clean conversational slate, recommend `/clear`.
+
+2. EXTERNAL RESEARCH TOOLS (Discovery & Acquisition):
+   - `/search "<keywords>"` : Search academic literature across OpenAlex, Semantic Scholar, Crossref, and PubMed.
+   - `/scout "<topic>"` : Perform autonomous deep citation exploration, finding influential foundation and frontier papers.
+   - `/vault add <url | filepath | gdrive_link>` : Download or ingest an academic paper (PDF, URL, Google Drive) into the vault in the background.
+   *When to use*:
+   When you detect literature gaps, empirical blindspots, or need papers not yet in the vault, recommend these tools. Scrpcy will ask user confirmation and execute heavy downloads in the background task manager without blocking the chat.
+
+3. WRITING & COMPILATION:
+   - `/docx <filename.docx>` : Compile synthesized research chapters or reviews into a formatted Microsoft Word document in drafts/.
+
+### AUTONOMOUS DEEP RESEARCH & RESILIENT ACQUISITION:
+If current vault evidence is insufficient to formulate a high-confidence, comprehensive scientific answer:
+- Scrpcy automatically coordinates with the user to search OpenAlex/Semantic Scholar and download Open Access PDFs.
+- Resilient Error Recovery: If a paper download fails (paywall, 403 Forbidden, or broken link), Scrpcy automatically seeks open-access alternatives from the candidate pool before falling back to abstract summaries.
+- Asynchronous Multi-Tasking: If an acquisition takes longer than 20 seconds, it is seamlessly moved to the background task manager. When this occurs, Scrpcy consults you so you can provide preliminary guidance, synthesize foundational principles, and proactively suggest parallel actions (e.g. scouting complementary topics, refining methodologies, or reading other vault papers) while the background task completes.
+
+### HOW TO ISSUE TOOL CALLS:
+When you need to read or check something from the workbench BEFORE giving your final answer:
+Emit a fenced code block with the tag `scrpcy` containing the single command, for example:
+```scrpcy
+/vault read 1
+```
+Or:
+```scrpcy
+/vault list
+```
+Scrpcy will immediately execute the read operation, display a reading indicator to the user, and provide the content back to you so you can analyze it and formulate your comprehensive final response.
+
+When you have the necessary information and are ready to deliver your final response:
+Synthesize your findings directly. Maintain academic neutrality, precision, and formal scientific tone. Attribute assertions with exact in-text citation keys (e.g. [Vaswani2017]).
+If and only if you want to suggest that the USER execute an external action (such as scouting or adding a new paper to the vault), place that recommendation at the end in a fenced ```scrpcy``` block.
 
 {SCRPCY_AGENTIC_PROTOCOL}
 """
 
-DEFAULT_LITERATURE_SYNTHESIZER_PROMPT = f"""You are a systematic literature review specialist.
-Analyze and compare findings across the provided academic paper excerpts.
-Highlight methodologies, consensus findings, contradictions, and open research problems.
-Use precise in-text citations for all synthesized assertions.
-
-{SCRPCY_AGENTIC_PROTOCOL}
-"""
-
-DEFAULT_METHODOLOGY_CRITIC_PROMPT = f"""You are an expert peer reviewer and research methodology critic.
-Critically evaluate the methodology, study design, sample size, potential confounding factors, and internal/external validity of the academic evidence provided.
-Highlight potential methodological flaws, measurement biases, or unaddressed limitations in the cited literature.
-
-{SCRPCY_AGENTIC_PROTOCOL}
-"""
-
-DEFAULT_GAP_FINDER_PROMPT = f"""You are an academic gap analysis and research opportunity specialist.
-Examine the synthesized literature to detect unexplored questions, empirical blindspots, theoretical conflicts, and contradictory findings across studies.
-Formulate clear, impactful research gaps and propose concrete novel hypotheses for future investigation.
-
-{SCRPCY_AGENTIC_PROTOCOL}
-"""
+# Backwards-compatible aliases
+DEFAULT_ACADEMIC_WRITER_PROMPT = DEFAULT_SCRPCY_MANUAL_PROMPT
+DEFAULT_LITERATURE_SYNTHESIZER_PROMPT = DEFAULT_SCRPCY_MANUAL_PROMPT
+DEFAULT_METHODOLOGY_CRITIC_PROMPT = DEFAULT_SCRPCY_MANUAL_PROMPT
+DEFAULT_GAP_FINDER_PROMPT = DEFAULT_SCRPCY_MANUAL_PROMPT
 
 
 class Skill(BaseModel):
@@ -119,27 +160,23 @@ class SkillsLoader:
             self.ensure_skills_dir()
 
     def ensure_skills_dir(self) -> None:
-        """Create skills directory and seed default skills if empty."""
+        """Create skills directory and seed default scrpcy_manual skill."""
         self.skills_dir.mkdir(parents=True, exist_ok=True)
+
+        # Clean up legacy persona skills to keep workspace focused
+        legacy_skills = ["academic_writer", "literature_synthesizer", "methodology_critic", "gap_finder"]
+        for legacy in legacy_skills:
+            legacy_file = self.skills_dir / f"{legacy}.md"
+            if legacy_file.exists():
+                try:
+                    legacy_file.unlink()
+                except OSError:
+                    pass
+
         default_skills = {
-            "academic_writer": {
-                "description": "Synthesizes literature into rigorous, cited academic prose.",
-                "prompt": DEFAULT_ACADEMIC_WRITER_PROMPT,
-                "temperature": 0.2,
-            },
-            "literature_synthesizer": {
-                "description": "Systematic literature review and cross-paper comparison.",
-                "prompt": DEFAULT_LITERATURE_SYNTHESIZER_PROMPT,
-                "temperature": 0.1,
-            },
-            "methodology_critic": {
-                "description": "Evaluates research methodology, sampling rigor, and validity.",
-                "prompt": DEFAULT_METHODOLOGY_CRITIC_PROMPT,
-                "temperature": 0.1,
-            },
-            "gap_finder": {
-                "description": "Uncovers research gaps, inconsistencies, and future opportunities.",
-                "prompt": DEFAULT_GAP_FINDER_PROMPT,
+            "scrpcy_manual": {
+                "description": "Scrpcy AI Workbench Manual: autonomous tool usage, literature reading, and research synthesis.",
+                "prompt": DEFAULT_SCRPCY_MANUAL_PROMPT,
                 "temperature": 0.2,
             },
         }
@@ -190,11 +227,15 @@ class SkillsLoader:
         )
 
     def get_skill(self, name: str) -> Skill:
-        """Retrieve a skill by name, hot-reloading from disk if modified."""
+        """Retrieve a skill by name, hot-reloading from disk if modified. Falls back to scrpcy_manual for legacy skills."""
         norm_name = Path(name).stem
         file_path = self.skills_dir / f"{norm_name}.md"
 
         if not file_path.is_file():
+            # If requested skill is a legacy persona or not found, fall back to scrpcy_manual if available
+            manual_path = self.skills_dir / "scrpcy_manual.md"
+            if manual_path.is_file():
+                return self.get_skill("scrpcy_manual")
             raise SkillNotFoundError(f"Skill '{name}' not found at '{file_path}'")
 
         current_mtime = file_path.stat().st_mtime

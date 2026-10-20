@@ -138,13 +138,11 @@ class TestSkillsLoader:
         skills_dir = tmp_path / "skills"
         loader = SkillsLoader(skills_dir=skills_dir, auto_init=True)
 
-        assert (skills_dir / "academic_writer.md").is_file()
-        assert (skills_dir / "literature_synthesizer.md").is_file()
+        assert (skills_dir / "scrpcy_manual.md").is_file()
 
         skills = loader.list_skills()
         names = [s.name for s in skills]
-        assert "academic_writer" in names
-        assert "literature_synthesizer" in names
+        assert "scrpcy_manual" in names
 
     def test_parse_skill_with_frontmatter(self, tmp_path: Path) -> None:
         skills_dir = tmp_path / "skills"
@@ -415,7 +413,7 @@ class TestLLMEngine:
         messages = recorded_kwargs["messages"]
         assert len(messages) == 2
         assert messages[0]["role"] == "system"
-        assert "academic research assistant" in messages[0]["content"]
+        assert "Academic AI Assistant" in messages[0]["content"]
         assert messages[1]["role"] == "user"
         assert "RETRIEVED RESEARCH EVIDENCE CONTEXT" in messages[1]["content"]
         assert "What mechanism does Transformer use?" in messages[1]["content"]
@@ -439,13 +437,13 @@ class TestLLMEngine:
         result = await engine.query(
             query="Explain attention",
             documents=["Attention mechanisms compute weighted representations."],
-            skill_name="academic_writer",
+            skill_name="scrpcy_manual",
         )
 
         assert isinstance(result, SynthesisResult)
         assert result.answer == "Synthesized academic answer."
         assert result.model == "gemini/gemini-2.5-pro"
-        assert result.skill == "academic_writer"
+        assert result.skill == "scrpcy_manual"
         assert len(result.evidence_chunks) == 1
 
     @pytest.mark.asyncio
