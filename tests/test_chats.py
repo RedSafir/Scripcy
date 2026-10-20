@@ -21,12 +21,12 @@ class TestChatManager:
     def test_create_and_list_sessions(self, chat_manager: ChatManager) -> None:
         # Auto-naming default
         s1 = chat_manager.create_session()
-        assert s1.name == "chat1"
-        assert s1.id == "chat1"
+        assert s1.name == "session1"
+        assert s1.id == "session1"
 
         # Sequential auto-naming
         s2 = chat_manager.create_session()
-        assert s2.name == "chat2"
+        assert s2.name == "session2"
 
         # Custom naming
         s3 = chat_manager.create_session("Bab 2 Teori", active_skill="literature_synthesizer")

@@ -148,7 +148,8 @@ class CLIStudio:
         self.scout = LiteratureScout(workspace=self.workspace, parser=self.parser)
         self.vault_manager = VaultManager(workspace=self.workspace)
         self.chat_manager = ChatManager(self.workspace.root_dir / "chats.db")
-        self._ensure_active_chat_session()
+        existing_sessions = self.chat_manager.list_sessions()
+        self.active_chat_session = existing_sessions[0] if existing_sessions else None
         self.sub_mode = None
         self.active_documents.clear()
         self._sync_vault_cache()
@@ -171,7 +172,7 @@ class CLIStudio:
         return "high"
 
     def _ensure_active_chat_session(self) -> ChatSession:
-        """Ensure there is an active chat session bound, creating chat1 if none exists."""
+        """Ensure there is an active chat session bound, creating session1 if none exists."""
         if not self.chat_manager:
             raise RuntimeError("No chat manager initialized.")
         if self.active_chat_session:
@@ -182,7 +183,7 @@ class CLIStudio:
             self.active_chat_session = sessions[0]
         else:
             self.active_chat_session = self.chat_manager.create_session(
-                name="chat1",
+                name="session1",
                 active_skill=self.active_skill_name,
             )
         return self.active_chat_session
@@ -677,10 +678,10 @@ class CLIStudio:
                 self.render_processing_summary()
         elif cmd in ("/chat", "/c"):
             self.render_mode_divider()
-            if args:
+            self.sub_mode = "chat_hub"
+            if args and args not in ("chat", "c", "hub"):
                 self.handle_chat_hub_interaction(args)
             else:
-                self.sub_mode = "chat_hub"
                 self.cmd_chat_list_sessions()
         elif cmd in ("/rename",):
             self.cmd_rename_project(args)
@@ -1639,13 +1640,13 @@ class CLIStudio:
     # =========================================================================
 
     def cmd_chat(self, arg: str = "") -> None:
-        """Route to chat hub or directly process chat command."""
+        """Route to chat hub."""
         self.render_mode_divider()
+        self.sub_mode = "chat_hub"
         clean = arg.strip()
-        if clean:
+        if clean and clean not in ("chat", "c", "hub"):
             self.handle_chat_hub_interaction(clean)
         else:
-            self.sub_mode = "chat_hub"
             self.cmd_chat_list_sessions()
 
     def handle_chat_root_command(self, arg_str: str) -> None:
@@ -1668,15 +1669,35 @@ class CLIStudio:
             self.console.print(f"[dim]Returned to project root: {self.current_project.name}>[/dim]\n")
             return
 
+        if sub in ("chat", "c", "hub"):
+            self.cmd_chat_list_sessions()
+            return
+
         if sub in ("list", "ls", "sessions"):
             self.cmd_chat_list_sessions()
             return
 
-        if sub == "new":
+        if sub in ("new", "create"):
             if not self.chat_manager:
                 return
+            chat_name = param
+            if not chat_name:
+                try:
+                    chat_name = self.console.input("[bold cyan]Nama chat (tekan Enter untuk default): [/bold cyan]").strip()
+                except (KeyboardInterrupt, EOFError):
+                    self.console.print()
+                    return
+
+            if not chat_name:
+                existing_sessions = self.chat_manager.list_sessions()
+                existing_names = {s.name.lower() for s in existing_sessions}
+                idx = 1
+                while f"session{idx}" in existing_names or f"chat{idx}" in existing_names:
+                    idx += 1
+                chat_name = f"session{idx}"
+
             session = self.chat_manager.create_session(
-                name=param if param else None,
+                name=chat_name,
                 active_skill=self.active_skill_name,
             )
             self.render_mode_divider()
@@ -1696,12 +1717,15 @@ class CLIStudio:
                     target = self.console.input("Masukkan nomor atau nama chat yang ingin dibuka: ").strip()
                 except (KeyboardInterrupt, EOFError):
                     return
+            if not target:
+                return
             session = self.chat_manager.get_session(target)
             if session:
                 self.render_mode_divider()
                 self.active_chat_session = session
                 self.sub_mode = "chat"
                 self.console.print(f"[bold green][✓] Masuk ke sesi percakapan:[/bold green] [bold cyan]{session.name}[/bold cyan] ({session.message_count} pesan)")
+                self.cmd_chat_history()
                 self.console.print("[dim]Ketik pertanyaan riset Anda langsung di bawah ini. Gunakan '/' untuk perintah (contoh: /back).[/dim]\n")
             else:
                 self.console.print(f"[red][x] Sesi chat '{target}' tidak ditemukan.[/red]\n")
@@ -1714,19 +1738,43 @@ class CLIStudio:
             if not target:
                 self.cmd_chat_list_sessions()
                 try:
-                    target = self.console.input("Masukkan nomor atau nama chat yang ingin dihapus: ").strip()
+                    target = self.console.input("Masukkan nomor atau nama chat yang ingin dihapus (contoh: '1, 2' atau 'all'): ").strip()
                 except (KeyboardInterrupt, EOFError):
                     return
-            session = self.chat_manager.get_session(target)
-            if session:
-                deleted_name = session.name
-                self.chat_manager.delete_session(session.id)
-                if self.active_chat_session and self.active_chat_session.id == session.id:
-                    self.active_chat_session = None
-                self.console.print(f"[bold green][✓] Sesi chat '{deleted_name}' berhasil dihapus.[/bold green]\n")
+
+            if not target:
+                return
+
+            if target.lower() == "all":
+                all_sessions = self.chat_manager.list_sessions()
+                total = len(all_sessions)
+                for s in all_sessions:
+                    self.chat_manager.delete_session(s.id)
+                self.active_chat_session = None
+                self.console.print(f"[bold green][✓] Berhasil menghapus semua ({total}) sesi chat.[/bold green]\n")
                 self.cmd_chat_list_sessions()
-            else:
-                self.console.print(f"[red][x] Sesi chat '{target}' tidak ditemukan.[/red]\n")
+                return
+
+            targets = [t.strip() for t in target.replace(",", " ").split() if t.strip()]
+            deleted_names = []
+            not_found = []
+
+            for t in targets:
+                session = self.chat_manager.get_session(t)
+                if session:
+                    self.chat_manager.delete_session(session.id)
+                    deleted_names.append(session.name)
+                    if self.active_chat_session and self.active_chat_session.id == session.id:
+                        self.active_chat_session = None
+                else:
+                    not_found.append(t)
+
+            if deleted_names:
+                self.console.print(f"[bold green][✓] Berhasil menghapus {len(deleted_names)} sesi chat:[/bold green] {', '.join(deleted_names)}")
+            if not_found:
+                self.console.print(f"[yellow][!] Sesi tidak ditemukan:[/yellow] {', '.join(not_found)}")
+            self.console.print()
+            self.cmd_chat_list_sessions()
             return
 
         if sub == "clear":
@@ -1743,14 +1791,15 @@ class CLIStudio:
             )
             return
 
-        # Direct number or session name shorthand (e.g. typing "1" or "chat1" directly)
-        if self.chat_manager:
+        # Direct number or session name shorthand (e.g. typing "1" or "session1" directly)
+        if self.chat_manager and sub not in ("chat", "c", "hub"):
             session = self.chat_manager.get_session(sub)
             if session:
                 self.render_mode_divider()
                 self.active_chat_session = session
                 self.sub_mode = "chat"
                 self.console.print(f"[bold green][✓] Masuk ke sesi percakapan:[/bold green] [bold cyan]{session.name}[/bold cyan] ({session.message_count} pesan)")
+                self.cmd_chat_history()
                 self.console.print("[dim]Ketik pertanyaan riset Anda langsung di bawah ini. Gunakan '/' untuk perintah (contoh: /back).[/dim]\n")
                 return
 
@@ -1793,11 +1842,27 @@ class CLIStudio:
                 self.cmd_skill(arg)
                 if self.active_chat_session and self.chat_manager:
                     self.chat_manager.update_session_skill(self.active_chat_session.id, self.active_skill_name)
-            elif cmd == "/new":
+            elif cmd in ("/new", "/create"):
                 if not self.chat_manager:
                     return
+                chat_name = arg.strip()
+                if not chat_name:
+                    try:
+                        chat_name = self.console.input("[bold cyan]Nama chat (tekan Enter untuk default): [/bold cyan]").strip()
+                    except (KeyboardInterrupt, EOFError):
+                        self.console.print()
+                        return
+
+                if not chat_name:
+                    existing_sessions = self.chat_manager.list_sessions()
+                    existing_names = {s.name.lower() for s in existing_sessions}
+                    idx = 1
+                    while f"session{idx}" in existing_names or f"chat{idx}" in existing_names:
+                        idx += 1
+                    chat_name = f"session{idx}"
+
                 session = self.chat_manager.create_session(
-                    name=arg if arg else None,
+                    name=chat_name,
                     active_skill=self.active_skill_name,
                 )
                 self.render_mode_divider()
@@ -1812,6 +1877,8 @@ class CLIStudio:
                     self.render_mode_divider()
                     self.active_chat_session = session
                     self.console.print(f"[bold green][✓] Berpindah ke sesi percakapan:[/bold green] [bold cyan]{session.name}[/bold cyan] ({session.message_count} pesan)\n")
+                    self.cmd_chat_history()
+                    self.console.print("[dim]Ketik pertanyaan riset Anda langsung di bawah ini. Gunakan '/' untuk perintah (contoh: /back).[/dim]\n")
                 else:
                     self.console.print(f"[red][x] Sesi chat '{arg}' tidak ditemukan.[/red]\n")
             elif cmd in ("/export",):
@@ -1828,12 +1895,11 @@ class CLIStudio:
         if not self.chat_manager:
             return
 
+        self.console.print(f"\n[bold bright_white]Saved Chat Sessions [{self.current_project.name if self.current_project else 'Active'}][/bold bright_white]")
         sessions = self.chat_manager.list_sessions()
         if not sessions:
-            self.console.print("[dim]No saved chat sessions found in this project. Type 'chat new' to start one.[/dim]\n")
+            self.console.print("[dim]Belum ada sesi percakapan tersimpan. Ketik 'new' untuk membuat sesi baru.[/dim]\n")
             return
-
-        self.console.print(f"\n[bold bright_white]Saved Chat Sessions [{self.current_project.name if self.current_project else 'Active'}][/bold bright_white]")
         table = Table(
             box=None,
             padding=(0, 2),
@@ -1874,9 +1940,10 @@ class CLIStudio:
         self.console.print(f"\n[bold cyan]History for '{self.active_chat_session.name}' ({len(messages)} messages):[/bold cyan]\n")
         for msg in messages:
             if msg.role == "user":
-                self.console.print(f"[bold bright_white]User:[/bold bright_white] {msg.content}")
+                self.console.print(f"[bold bright_white]User:[/bold bright_white] {escape(msg.content)}")
             else:
-                self.console.print(f"[bold cyan]AI ({self.active_chat_session.active_skill}):[/bold cyan]\n{msg.content}")
+                self.console.print(f"[bold cyan]AI ({self.active_chat_session.active_skill}):[/bold cyan]\n")
+                render_academic_markdown(msg.content, console=self.console)
                 if msg.citations:
                     self.console.print(f"[dim]Citations: {', '.join(msg.citations)}[/dim]")
             self.console.print()

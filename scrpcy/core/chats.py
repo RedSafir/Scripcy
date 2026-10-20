@@ -84,16 +84,16 @@ class ChatManager:
         name: str | None = None,
         active_skill: str = "academic_writer",
     ) -> ChatSession:
-        """Create a new chat session. Auto-generates 'chat1', 'chat2', etc. if name is omitted."""
+        """Create a new chat session. Auto-generates 'session1', 'session2', etc. if name is omitted."""
         with self._get_connection() as conn:
             if not name or not name.strip():
-                # Find next sequential chat number
-                cur = conn.execute("SELECT name FROM sessions WHERE name LIKE 'chat%'")
+                # Find next sequential session number
+                cur = conn.execute("SELECT name FROM sessions WHERE name LIKE 'session%' OR name LIKE 'chat%'")
                 existing_names = [row["name"] for row in cur.fetchall()]
                 idx = 1
-                while f"chat{idx}" in existing_names:
+                while f"session{idx}" in existing_names or f"chat{idx}" in existing_names:
                     idx += 1
-                clean_name = f"chat{idx}"
+                clean_name = f"session{idx}"
             else:
                 clean_name = name.strip()
 

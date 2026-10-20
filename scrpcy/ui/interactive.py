@@ -669,8 +669,8 @@ SLASH_COMMANDS_CHAT: list[tuple[str, str]] = [
 SLASH_COMMANDS_CHAT_HUB: list[tuple[str, str]] = [
     ("/list", "Tampilkan daftar sesi percakapan yang ada (alias: /ls)"),
     ("/new", "Buat sesi chat baru (/new [nama])"),
-    ("/open", "Buka atau lanjutkan sesi percakapan (/open <#|nama>)"),
-    ("/delete", "Hapus sesi percakapan lama (/delete <#|nama>)"),
+    ("/open", "Buka atau lanjutkan sesi percakapan (/open <#|nama>, alias: /resume)"),
+    ("/delete", "Hapus satu atau banyak sesi (/delete <1, 2|all>, alias: /rm)"),
     ("/clear", "Bersihkan tampilan layar terminal"),
     ("/help", "Tampilkan panduan perintah chat hub (alias: ?)"),
     ("/back", "Kembali ke prompt project utama"),
@@ -717,9 +717,11 @@ SUBCOMMAND_SUGGESTIONS: dict[str, list[tuple[str, str]]] = {
         ("/models set-key", "Store API key per-provider (/models set-key <provider> <key>)"),
     ],
     "/chat": [
-        ("/chat new", "Create and start a new conversation session (/chat new [name])"),
-        ("/chat list", "List all conversation sessions for this project"),
-        ("/chat switch", "Switch active conversation session (/chat switch <id>)"),
+        ("/chat", "Buka menu hub sesi chat riset (skripsi/chat>)"),
+        ("/chat list", "Lihat seluruh sesi percakapan yang tersimpan"),
+        ("/chat new", "Buat sesi percakapan baru"),
+        ("/chat resume", "Buka/lanjutkan sesi percakapan yang sudah ada"),
+        ("/chat delete", "Hapus satu atau banyak sesi percakapan (contoh: 1, 2 atau all)"),
     ],
     "/settings": [
         ("/settings show", "Show current workspace and citation settings"),
