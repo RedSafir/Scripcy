@@ -2717,7 +2717,11 @@ class CLIStudio:
             f"4. Berikan tanggapan dan feedback yang terstruktur, ringkas, dan jelas kepada pengguna:\n"
             f"   - Rangkum apa yang telah dilakukan sistem di latar belakang.\n"
             f"   - Berikan hasil evaluasi terhadap dokumen.\n"
-            f"   - Rekomendasikan langkah konkret berikutnya (sertakan perintah ```scrpcy jika ada tindakan lanjutan seperti `/vault remove` atau `/scout`)."
+            f"   - Jelaskan rekomendasi riset berikutnya secara akademis dalam bahasa alami.\n"
+            f"   - ATURAN KRUSIAL ANTARMUKA:\n"
+            f"     * Pengguna berinteraksi melalui chat percakapan dan TIDAK BISA menjalankan perintah CLI slash.\n"
+            f"     * DILARANG KERAS menyuruh pengguna menjalankan perintah (misal JANGAN PERNAH tulis 'Silakan jalankan perintah berikut: /vault remove...', 'Ketik /scout...').\n"
+            f"     * Jika ada tindakan lanjutan (seperti membuang dokumen irelevan atau mencari literatur), CUKUP letakkan perintah tersebut di dalam blok kode ```scrpcy di akhir respons. Sistem Scrpcy yang akan mengeksekusinya secara interaktif melalui konfirmasi 1-klik bagi pengguna.\n"
         )
 
         model_name = self.get_active_project_model()
