@@ -1426,12 +1426,16 @@ class CLIStudio:
             elif action == "detail" and selected_task:
                 def _get_live_task_logs() -> list[str]:
                     cur_t = self.task_manager.get_task(selected_task.id) or selected_task
-                    logs = list(cur_t.logs) or [f"Task: {cur_t.name}", f"Status: {cur_t.status}"]
+                    raw_logs = list(cur_t.logs) or [f"Task: {cur_t.name}", f"Status: {cur_t.status}"]
+                    flat_logs: list[str] = []
+                    for entry in raw_logs:
+                        for l in str(entry).splitlines():
+                            flat_logs.append(l)
                     if cur_t.error:
-                        logs.append(f"Error: {cur_t.error}")
-                    if cur_t.result_summary:
-                        logs.append(f"Summary: {cur_t.result_summary}")
-                    return logs
+                        flat_logs.append(f"Error: {cur_t.error}")
+                    if cur_t.result_summary and cur_t.result_summary not in "\n".join(raw_logs):
+                        flat_logs.append(f"Summary: {cur_t.result_summary}")
+                    return flat_logs
 
                 def _get_live_task_title() -> str:
                     cur_t = self.task_manager.get_task(selected_task.id) or selected_task
@@ -2621,13 +2625,16 @@ class CLIStudio:
             return
 
         def _chat_worker(task_id: str) -> str:
-            self.task_manager.log(task_id, f"Starting background chat query: '{query[:45]}...'")
+            start_t = time.time()
+            self.task_manager.log(task_id, f"Pertanyaan: {query}")
+            model_name = self.get_active_project_model()
+            self.task_manager.log(task_id, f"Model: {model_name}")
+            self.task_manager.log(task_id, f"Memulai sintesis latar belakang...")
             if self.chat_manager:
                 self.chat_manager.add_message(session.id, "user", query)
 
             active_paths = [self.workspace.get_cache_path(f"{s}.md") for s in self.active_documents]
             existing_paths = [p for p in active_paths if p.exists()]
-            model_name = self.get_active_project_model()
 
             history_msgs = []
             if self.chat_manager:
@@ -2656,9 +2663,18 @@ class CLIStudio:
                 loop.close()
 
             resp = "".join(tokens).strip()
+            elapsed_c = time.time() - start_t
+            in_tok = estimate_tokens(query) + 250
+            out_tok = estimate_tokens(resp)
+            tot_tok = in_tok + out_tok
+
             if self.chat_manager and resp:
                 self.chat_manager.add_message(session.id, "assistant", resp)
-            return resp[:200] if resp else "Selesai"
+
+            self.task_manager.log(task_id, f"Token: {in_tok:,} in · {out_tok:,} out · {tot_tok:,} total ({model_name}) • {elapsed_c:.1f}s")
+            self.task_manager.log(task_id, f"Selesai! {len(resp)} karakter disimpan ke riwayat sesi.")
+            self.task_manager.log(task_id, f"Respons AI:\n{resp}")
+            return resp[:300] if resp else "Selesai"
 
         task = self.task_manager.submit(
             name=f"Chat: {query[:35]}...",
@@ -5294,9 +5310,7 @@ class CLIStudio:
                         f"memerlukan waktu lebih dari 20 detik dan dialihkan ke latar belakang (Task ID: {task.id}).\n"
                         f"Instruksi untuk AI: Beritahu pengguna secara ringkas bahwa unduhan sedang diproses di background. "
                         f"Berikan sintesis awal atau fondasi konseptual terbaik berdasarkan pengetahuan yang ada saat ini. "
-                        f"Secara proaktif konsultasikan dan sarankan langkah/topik paralel apa yang bisa dikaji sekarang "
-                        f"(misalnya: mencari jurnal komplementer dengan `/scout <topik>`, merumuskan hipotesis, "
-                        f"atau menunggu tugas selesai). Tuliskan saran perintah konkret dalam blok ```scrpcy jika relevan.]"
+                        f"Secara proaktif sarankan fokus konseptual atau hipotesis apa yang bisa dikaji sekarang sementara tugas unduhan selesai di background (JANGAN menyuruh pengguna mengetikkan perintah slash).]"
                     )
                 elif new_stems:
                     if self.vault_manager:
@@ -5396,31 +5410,35 @@ class CLIStudio:
                 turn_response = "".join(turn_tokens)
                 last_turn_tokens = turn_tokens
 
-                # Detect if AI called an internal read or list action
+                # Detect if AI called an internal read, list, or remove action
                 internal_match = re.search(
-                    r"```scrpcy\r?\n\s*(/(?:vault\s+(?:read|view|list)|read|view|list)[^\n]*)\r?\n```",
+                    r"```scrpcy\r?\n\s*(/(?:vault\s+(?:read|view|list|remove|rm|archive)|read|view|list|remove|archive)[^\n]*)\r?\n```",
                     turn_response,
                     re.IGNORECASE,
                 )
 
                 if internal_match and turn < max_agent_turns - 1:
                     cmd_line = internal_match.group(1).strip()
+                    is_archive = any(k in cmd_line.lower() for k in ("remove", "rm", "archive"))
+                    spin_desc = "Mengarsipkan dokumen..." if is_archive else "Membaca dokumen dari vault..."
                     with self.console.status(
-                        f"[bold cyan]●[/bold cyan] [bold bright_white]Membaca dokumen dari vault...[/bold bright_white]",
+                        f"[bold cyan]●[/bold cyan] [bold bright_white]{spin_desc}[/bold bright_white]",
                         spinner="dots",
                     ):
                         action_label, target_label, tool_output = self._execute_internal_vault_tool(cmd_line)
 
-                    # Status Indicator: Membaca -> Menganalisis
-                    self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]{action_label}[/bold bright_white] [cyan]{target_label}[/cyan] [dim](Membaca teks dari vault...)[/dim]")
+                    # Status Indicator: Membaca/Mengarsipkan -> Menganalisis
+                    sub_label = "(Mengarsipkan paper yang tidak relevan...)" if is_archive else "(Membaca teks dari vault...)"
+                    self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]{action_label}[/bold bright_white] [cyan]{target_label}[/cyan] [dim]{sub_label}[/dim]")
                     self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Menganalisis[/bold bright_white] [dim]Menyintesis temuan dokumen ke dalam jawaban akhir...[/dim]\n")
 
                     current_query = (
-                        f"### HASIL PEMBACAAN DOKUMEN VAULT ({cmd_line}):\n"
-                        f"Sumber: {target_label}\n"
+                        f"### HASIL EKSEKUSI ALAT VAULT ({cmd_line}):\n"
+                        f"Aksi: {action_label}\n"
+                        f"Target: {target_label}\n"
                         f"```markdown\n{tool_output}\n```\n\n"
                         f"Pertanyaan riset asli pengguna: \"{query}\"\n"
-                        f"Berdasarkan data dokumen di atas, silakan berikan sintesis akademis mendalam dan jawaban akhir yang telah ditailor dengan lengkap."
+                        f"Berdasarkan informasi di atas, silakan lanjutkan sintesis akademis mendalam dan berikan jawaban akhir tanpa menyuruh pengguna menjalankan perintah slash."
                     )
                     current_docs = []
                     turn += 1
@@ -5461,6 +5479,8 @@ class CLIStudio:
 
             # Handoff query to background TaskManager so AI continues running
             def _bg_worker(task_id: str) -> str:
+                self.task_manager.log(task_id, f"Pertanyaan: {query}")
+                self.task_manager.log(task_id, f"Model: {model_label} (effort: {effort})")
                 self.task_manager.log(task_id, f"Melanjutkan sintesis di background untuk sesi '{session.name if session else ''}'...")
                 bg_tokens = list(last_turn_tokens) if last_turn_tokens else []
                 async def _bg_stream() -> None:
@@ -5485,8 +5505,17 @@ class CLIStudio:
                 if self.chat_manager and session and final_text:
                     self.chat_manager.add_message(session.id, "assistant", final_text)
                     self.chat_manager.update_session_status(session.id, "detached")
+
+                ev_tokens = sum(c.token_estimate or estimate_tokens(c.text) for c in evidence) if evidence else 0
+                in_tok = estimate_tokens(query) + 250 + ev_tokens
+                out_tok = estimate_tokens(final_text)
+                tot_tok = in_tok + out_tok
+                elapsed_bg = time.time() - start_time
+
+                self.task_manager.log(task_id, f"Token: {in_tok:,} in · {out_tok:,} out · {tot_tok:,} total ({model_label}) • {elapsed_bg:.1f}s")
                 self.task_manager.log(task_id, f"Selesai! {len(final_text)} karakter disimpan ke riwayat sesi.")
-                return final_text[:200] if final_text else "Selesai"
+                self.task_manager.log(task_id, f"Respons AI:\n{final_text}")
+                return final_text[:300] if final_text else "Selesai"
 
             task = self.task_manager.submit(
                 name=f"Chat ({session.name if session else 'session'}): {query[:30]}...",

@@ -417,3 +417,97 @@ def test_auto_scout_timeout_consults_ai_with_background_notice(
     all_received_text = " ".join(received_prompts)
     assert "CATATAN SISTEM SCRPCY: Proses penelusuran & pengunduhan literatur" in all_received_text
     assert "Task ID:" in all_received_text
+
+
+def test_agentic_loop_internal_vault_remove(
+    temp_workspace: WorkspaceManager,
+    tmp_path: Path,
+) -> None:
+    """When AI requests an internal remove tool (/vault remove 1), Scrpcy archives it, shows 'Mengarsipkan' & 'Menganalisis', and completes."""
+    (temp_workspace.vault_dir / "ocean_paper.pdf").write_bytes(b"%PDF-1.4 dummy")
+    temp_workspace.save_to_cache(
+        "ocean_paper.md",
+        "# Ocean Iron Cycle\nIrrelevant paper to wildfire research.",
+    )
+
+    console = Console(file=io.StringIO(), force_terminal=True, color_system=None)
+    pm = ProjectManager(registry_file=tmp_path / "reg.json")
+    proj = pm.create_project("thesis", temp_workspace.root_dir)
+    cfg = ScrpcyConfig(workspace_path=str(temp_workspace.root_dir))
+
+    call_count = 0
+
+    async def mock_acompletion(**kwargs: Any):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            yield MockStreamChunk("```scrpcy\n/vault remove 1\n```")
+        else:
+            yield MockStreamChunk("Dokumen ocean iron cycle telah disingkirkan dari analisis utama.")
+
+    engine = LLMEngine(
+        config=cfg,
+        acompletion_fn=mock_acompletion,
+    )
+
+    studio = CLIStudio(
+        workspace=temp_workspace,
+        config=cfg,
+        console=console,
+        project_manager=pm,
+        engine=engine,
+    )
+    studio.open_project(proj)
+    studio.vault_manager.reload_vault(force=False)
+    studio._sync_vault_cache()
+    studio.config.api_keys["gemini"] = "mock_key"
+
+    studio.handle_chat("Tolong bersihkan paper ocean dari vault.")
+
+    output = studio.console.file.getvalue()
+    assert "Mengarsipkan" in output
+    assert "Menganalisis" in output
+    assert "telah disingkirkan" in output
+    assert call_count == 2
+    assert (temp_workspace.vault_dir / ".archive" / "ocean_paper.pdf").exists()
+
+
+def test_detailed_background_chat_task_logs(
+    temp_workspace: WorkspaceManager,
+    tmp_path: Path,
+) -> None:
+    """Background chat worker logs user query, model, tokens, and full AI response."""
+    console = Console(file=io.StringIO(), force_terminal=True, color_system=None)
+    pm = ProjectManager(registry_file=tmp_path / "reg.json")
+    proj = pm.create_project("thesis", temp_workspace.root_dir)
+    cfg = ScrpcyConfig(workspace_path=str(temp_workspace.root_dir))
+
+    async def mock_acompletion(**kwargs: Any):
+        yield MockStreamChunk("Ini adalah sintesis lengkap dari respons AI latar belakang.")
+
+    engine = LLMEngine(config=cfg, acompletion_fn=mock_acompletion)
+    studio = CLIStudio(
+        workspace=temp_workspace,
+        config=cfg,
+        console=console,
+        project_manager=pm,
+        engine=engine,
+    )
+    studio.open_project(proj)
+    studio.config.api_keys["gemini"] = "mock_key"
+
+    query = "Apa implikasi kebakaran hutan gambut tropis?"
+    studio.submit_chat_background(query)
+
+    import time
+    time.sleep(0.4)
+
+    tasks = studio.task_manager.list_tasks()
+    assert len(tasks) > 0
+    t = tasks[0]
+    log_dump = "\n".join(t.logs)
+    assert "Pertanyaan: Apa implikasi kebakaran hutan gambut tropis?" in log_dump
+    assert "Model:" in log_dump
+    assert "Token:" in log_dump
+    assert "Respons AI:" in log_dump
+    assert "Ini adalah sintesis lengkap dari respons AI" in log_dump
