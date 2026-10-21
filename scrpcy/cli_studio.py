@@ -82,6 +82,20 @@ class SessionCloseSignal(Exception):
     """User requested to close/terminate the active chat session."""
     pass
 
+class _AgentProgressTracker:
+    def __init__(self, init_msg: str) -> None:
+        self.text = init_msg
+
+    def set(self, msg: str) -> None:
+        self.text = msg
+
+    def __str__(self) -> str:
+        return self.text
+
+    def __call__(self) -> str:
+        return self.text
+
+
 
 SCRPCY_LOGO = r"""
   ███████╗ ██████╗██████╗ ██████╗  ██████╗██╗   ██╗
@@ -2817,20 +2831,15 @@ class CLIStudio:
             f"Daftar Dokumen di Vault Saat Ini:\n"
             f"{vault_str}\n\n"
             f"Instruksi Evaluasi Mandiri Akademis (Agent Loop):\n"
-            f"1. Evaluasi kualitas dan relevansi dokumen yang diperoleh terhadap fokus riset pengguna (periksa apakah ada paper yang salah topik, paywalled/hanya abstrak, atau korup).\n"
-            f"2. Analisis kecukupan literatur: Apakah literatur di vault saat ini sudah cukup untuk menjawab fokus riset pengguna atau masih memiliki celah (research gap).\n"
-            f"3. Berikan sinyal evaluasi internal:\n"
-            f"   - [STATUS: OK] jika seluruh literatur relevan dan memadai.\n"
-            f"   - [STATUS: PERLU TINDAKAN] jika ada dokumen yang perlu diarsipkan atau literatur tambahan yang perlu dicari.\n"
-            f"4. Format Tanggapan untuk Pengguna:\n"
-            f"   - DILARANG KERAS membuat bagian 'Ringkasan Progres Sistem' atau menyebutkan nomor tugas teknis internal (seperti task-1, task-2, background process).\n"
-            f"   - DILARANG menulis meta-laporan operasional sistem (seperti 'Sistem telah menyelesaikan rangkaian penelusuran...'). Pengguna adalah akademisi/peneliti, bukan administrator sistem.\n"
-            f"   - Langsung sampaikan substansi ilmiah: ulas relevansi literatur yang baru didapat, sintesis temuan pentingnya, dan bagaimana paper tersebut berkontribusi terhadap topik riset pengguna.\n"
-            f"   - Jelaskan rekomendasi riset dan fokus analisis berikutnya secara alami dan berbobot ilmiah.\n"
-            f"   - ATURAN KRUSIAL ANTARMUKA:\n"
-            f"     * Pengguna berinteraksi melalui chat percakapan dan TIDAK BISA menjalankan perintah CLI slash.\n"
-            f"     * DILARANG KERAS menyuruh pengguna menjalankan perintah (misal JANGAN PERNAH tulis 'Silakan jalankan perintah: /vault remove...', 'Ketik /scout...').\n"
-            f"     * Jika ada tindakan pembersihan dokumen atau penelusuran lebih lanjut, CUKUP cantumkan perintah aksi di dalam blok kode ```scrpcy di akhir respons. Sistem Scrpcy yang akan mengeksekusinya secara otomatis melalui konfirmasi 1-klik bagi pengguna.\n"
+            f"1. Evaluasi kualitas dan relevansi dokumen yang diperoleh terhadap fokus riset pengguna.\n"
+            f"2. Analisis kecukupan literatur: Apakah literatur di vault saat ini sudah cukup untuk menjawab fokus riset pengguna.\n"
+            f"3. Berikan sintesis ilmiah komprehensif dari paper yang baru diunduh dengan sitasi in-text APA.\n"
+            f"4. ATURAN KRUSIAL ANTARMUKA:\n"
+            f"   - Pengguna berinteraksi melalui antarmuka chat murni dan TIDAK BISA menjalankan perintah CLI slash.\n"
+            f"   - DILARANG KERAS menyuruh pengguna mengetikkan perintah slash (misal JANGAN PERNAH tulis '/scout...', '/vault read...', 'Ketik /scout...').\n"
+            f"   - Jika literatur sudah memadai ([STATUS: OK]), berikan sintesis yang mantap (100% yakin) tanpa meminta penelusuran lebih lanjut.\n"
+            f"   - Saran riset masa depan harus ditulis murni sebagai narasi/konsep ilmiah akademis, BUKAN sebagai sintaks perintah.\n"
+            f"   - DILARANG mencantumkan perintah /scout atau /vault read di akhir respons.\n"
         )
 
         model_name = self.get_active_project_model()
@@ -2867,12 +2876,26 @@ class CLIStudio:
 
             ai_briefing = "".join(tokens).strip()
             if ai_briefing:
+                ai_briefing = self._sanitize_final_response(ai_briefing)
+                if self.vault_manager:
+                    ai_briefing = append_vault_bibliography(
+                        text=ai_briefing,
+                        evidence=[],
+                        vault_manager=self.vault_manager,
+                        style=self.config.citation.style,
+                        active_documents=self.active_documents,
+                    )
                 self.chat_manager.add_message(session_id, "assistant", ai_briefing)
                 # Queue any suggested actions to be handled cleanly on the main thread
                 pattern = re.compile(r"```scrpcy\r?\n(.*?)\r?\n```", re.DOTALL | re.IGNORECASE)
                 matches = pattern.findall(ai_briefing)
                 if matches:
-                    raw_actions = [cmd.strip() for m in matches for cmd in m.splitlines() if cmd.strip() and not cmd.strip().startswith("#")]
+                    banned_roots = ("/vault read", "vault read", "/vault view", "vault view", "/vault list", "vault list", "/read", "read", "/scout", "scout", "/findpaper", "findpaper", "/search", "search")
+                    raw_actions = [
+                        cmd.strip() for m in matches for cmd in m.splitlines()
+                        if cmd.strip() and not cmd.strip().startswith("#")
+                        and not any(cmd.strip().lower().startswith(b) for b in banned_roots)
+                    ]
                     if raw_actions:
                         if not hasattr(self, "_pending_session_actions"):
                             self._pending_session_actions = {}
@@ -5273,6 +5296,129 @@ class CLIStudio:
         webbrowser.open(f"http://{host}:{port}")
         self.console.print(f"[bold green][✓] Web Studio launched in background at:[/bold green] [bold cyan]http://{host}:{port}[/bold cyan]\n")
 
+    def _detect_internal_tool_call(self, raw_resp: str) -> str | None:
+        """Detect internal tool commands emitted during an agent turn."""
+        if not raw_resp:
+            return None
+
+        # 1. Fenced blocks: ```scrpcy ... ``` or ``` ... ```
+        fenced_match = re.search(
+            r"```(?:scrpcy)?\r?\n\s*(/(?:vault\s+(?:read|view|list|remove|rm|archive)|read|view|list|remove|archive|scout|search|findpaper)[^\n`]*)\r?\n```",
+            raw_resp,
+            re.IGNORECASE,
+        )
+        if fenced_match:
+            return fenced_match.group(1).strip()
+
+        # 2. Bare command line
+        for line in raw_resp.splitlines():
+            clean_line = line.strip()
+            if re.match(
+                r"^/(?:vault\s+(?:read|view|list|remove|rm|archive)|read|view|list|remove|archive|scout|search|findpaper)\b",
+                clean_line,
+                re.IGNORECASE,
+            ):
+                return clean_line
+
+        # 3. Inline backticks: `/vault read 1`
+        inline_match = re.search(
+            r"`(/(?:vault\s+(?:read|view|list|remove|rm|archive)|read|view|list|remove|archive|scout|search|findpaper)[^`]+)`",
+            raw_resp,
+            re.IGNORECASE,
+        )
+        if inline_match:
+            return inline_match.group(1).strip()
+
+        return None
+
+    def _sanitize_final_response(self, text: str) -> str:
+        """Strip leaked internal tools and ambiguous slash commands after final response."""
+        if not text:
+            return ""
+
+        has_ok_signal = "[status: ok]" in text.lower()
+
+        # 1. Clean code blocks containing internal tools
+        def _clean_block(m: re.Match) -> str:
+            content = m.group(1)
+            lines = [l.strip() for l in content.splitlines() if l.strip()]
+            filtered = []
+            for l in lines:
+                is_internal = re.match(r"^/(?:vault\s+(?:read|view|list)|read|view|list)\b", l, re.IGNORECASE)
+                is_scout = re.match(r"^/(?:scout|findpaper|search)\b", l, re.IGNORECASE) or re.match(r"^(?:scout|findpaper)\b", l, re.IGNORECASE)
+                if is_internal or (has_ok_signal and is_scout):
+                    continue
+                filtered.append(l)
+            if not filtered:
+                return ""
+            return "```scrpcy\n" + "\n".join(filtered) + "\n```"
+
+        cleaned = re.sub(r"```(?:scrpcy)?\r?\n(.*?)\r?\n```", _clean_block, text, flags=re.DOTALL | re.IGNORECASE)
+
+        # 2. Strip bare lines containing internal reading/listing slash commands
+        cleaned = re.sub(
+            r"(?m)^\s*/(?:vault\s+(?:read|view|list)|read|view|list)\b[^\n]*\r?\n?",
+            "",
+            cleaned,
+            flags=re.IGNORECASE,
+        )
+        if has_ok_signal:
+            cleaned = re.sub(
+                r"(?m)^\s*/(?:scout|findpaper|search)\b[^\n]*\r?\n?",
+                "",
+                cleaned,
+                flags=re.IGNORECASE,
+            )
+
+        # 3. Strip lines instructing user to type slash commands
+        cleaned = re.sub(
+            r"(?m)^.*?(?:ketik|jalankan|gunakan|perintah|command)\s*[:\-]?\s*`?/(?:vault\s+(?:read|view|list)|read|view|list)\b[^\n]*\r?\n?",
+            "",
+            cleaned,
+            flags=re.IGNORECASE,
+        )
+        if has_ok_signal:
+            cleaned = re.sub(
+                r"(?m)^.*?(?:ketik|jalankan|gunakan|perintah|command)\s*[:\-]?\s*`?/(?:scout|findpaper|search)\b[^\n]*\r?\n?",
+                "",
+                cleaned,
+                flags=re.IGNORECASE,
+            )
+
+        # 4. Clean up multiple blank lines
+        cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+        return cleaned
+
+    def _format_vault_citation_guide(self) -> str:
+        """Generate formatted citation guidelines and list of active vault papers for the prompt."""
+        if not self.vault_manager or not self.workspace:
+            return ""
+        active_items = self.vault_manager.list_active_files()
+        if not active_items:
+            return ""
+        lines = [
+            "### PANDUAN SITASI DAN REFERENSI VAULT (GAYA APA):",
+            "Dokumen ilmiah yang terverifikasi ada di vault proyek saat ini:",
+        ]
+        for idx, item in enumerate(active_items, 1):
+            cache_path = self.workspace.get_cache_path(f"{item.stem}.md")
+            meta = self.vault_manager._read_frontmatter_metadata(cache_path) if cache_path.exists() else None
+            authors_str = ", ".join(meta.authors[:3]) if (meta and meta.authors) else item.stem.replace("_", " ").title()
+            first_auth = meta.authors[0].split(",")[0].strip().split()[-1] if (meta and meta.authors) else item.stem.split("_")[0].capitalize()
+            year_str = str(meta.year) if (meta and meta.year) else "n.d."
+            cite_apa = f"({first_auth} et al., {year_str})" if (meta and meta.authors and len(meta.authors) > 2) else f"({first_auth}, {year_str})"
+            cite_key = meta.cite_key if (meta and meta.cite_key) else (item.cite_key or item.stem)
+            lines.append(f"- [{idx}] {authors_str} ({year_str}). \"{item.title or item.stem}\". File: {item.filename} | Sitasi in-text APA: {cite_apa} atau [{cite_key}]")
+        lines.extend([
+            "",
+            "ATURAN SITASI & INTEGRITAS REFERENSI:",
+            "1. Anda WAJIB menyertakan sitasi in-text APA pada SETIAP klaim faktual, metodologi, dan data angka.",
+            "2. HANYA gunakan referensi dari dokumen vault di atas. Dilarang mengutip referensi fiktif.",
+            "3. Jawaban harus lengkap, komprehensif, dan mantap (100% yakin). JANGAN menyuruh pengguna melakukan pencarian atau menjalankan perintah.",
+            "4. Setelah jawaban akhir disajikan, DILARANG KERAS mencantumkan perintah slash (/scout, /vault read, dll).",
+        ])
+        return "\n".join(lines)
+
     def _execute_internal_vault_tool(self, cmd_line: str) -> tuple[str, str, str]:
         """Execute an internal read or list vault tool, returning (action_label, target_label, tool_output)."""
         clean = cmd_line.strip().lstrip("/")
@@ -5336,6 +5482,28 @@ class CLIStudio:
                 truncated += "\n\n... (bagian dokumen selanjutnya dipotong untuk efisiensi token) ..."
 
             return "Membaca", f"cache/{target_stem}.md", truncated
+
+        elif cmd_root in ("scout", "search", "findpaper") or sub in ("scout", "search", "findpaper"):
+            q_raw = f"{sub} {arg}".strip() if cmd_root in ("scout", "search", "findpaper") else arg.strip()
+            query_str = q_raw.strip('"\'')
+            if not query_str:
+                return "Mencari", "Query Kosong", "Tidak ada kata kunci pencarian yang diberikan."
+            if not self.scout:
+                return "Mencari", "Scout Tidak Aktif", "Fitur scout literatur tidak tersedia."
+            try:
+                from scrpcy.core.scout import ScoutQuery
+                q_spec = ScoutQuery(keywords=query_str, summary=query_str)
+                results = asyncio.run(self.scout.search_multi_source(q_spec, limit=3))
+                if not results:
+                    return "Mencari", f"'{query_str}' (0 hasil)", f"Tidak ditemukan paper untuk '{query_str}'."
+                lines = [f"Hasil pencarian literatur untuk '{query_str}':"]
+                for i, r in enumerate(results[:3], 1):
+                    lines.append(f"{i}. {r.title} ({r.year or 'n.d.'}) - Authors: {', '.join(r.authors[:3])}")
+                    if r.abstract:
+                        lines.append(f"   Abstrak: {r.abstract[:300]}...")
+                return "Mencari", f"'{query_str[:25]}'", "\n".join(lines)
+            except Exception as e:
+                return "Mencari", "Gagal", f"Pencarian literatur gagal: {e}"
 
         elif sub in ("remove", "rm", "archive"):
             if not arg and len(parts) > 1 and parts[1].isdigit():
@@ -5543,6 +5711,9 @@ class CLIStudio:
             return
 
         session = self._ensure_active_chat_session() if self.chat_manager else None
+        model_name = self.get_active_project_model()
+        effort = self.get_active_project_effort()
+        model_label = _format_model_display_name(model_name)
 
         # Check if user query in chat explicitly contains a Google Drive link or download intent
         gdrive_id = extract_drive_file_id(query)
@@ -5617,8 +5788,12 @@ class CLIStudio:
                 target_topic = suggested_topic if user_choice.lower() in ("", "y", "yes", "ya", "ok") else user_choice
                 self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Mencari[/bold bright_white] [dim]Menelusuri repositori ilmiah (OpenAlex & Semantic Scholar)...[/dim]")
 
+                scout_progress = _AgentProgressTracker("Menelusuri repositori ilmiah (OpenAlex & Semantic Scholar)...")
+
                 def on_scout_status(action: str, label: str) -> None:
-                    self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]{action}[/bold bright_white] [cyan]{label}[/cyan]")
+                    scout_progress.set(f"{action}: {label}")
+                    if not sys.stdin.isatty():
+                        self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]{action}[/bold bright_white] [cyan]{label}[/cyan]")
 
                 new_stems: list[str] = []
                 timed_out = False
@@ -5640,7 +5815,15 @@ class CLIStudio:
                             ),
                             timeout=20.0,
                         )
-                    new_stems = asyncio.run(_run_scout_with_timeout())
+
+                    prompt_str = f"{self.current_project.name}/chat/{session.name}> " if (self.sub_mode == "chat" and session and self.current_project) else (f"{self.current_project.name}> " if self.current_project else "> ")
+                    new_stems = self._run_agent_turn_interactive(
+                        coro=_run_scout_with_timeout(),
+                        step_desc=scout_progress,
+                        prompt_lbl=prompt_str,
+                        model_label=model_label,
+                        effort=effort,
+                    )
                 except (asyncio.TimeoutError, TimeoutError):
                     timed_out = True
                 except Exception as exc:
@@ -5730,6 +5913,9 @@ class CLIStudio:
         max_agent_turns = 3
         turn = 0
         current_query = initial_query_override if "initial_query_override" in locals() and initial_query_override else query
+        citation_guide = self._format_vault_citation_guide()
+        if citation_guide:
+            current_query = f"{citation_guide}\n\n{current_query}"
         current_docs = list(existing_paths)
         final_response = ""
         last_turn_tokens: list[str] = []
@@ -5748,16 +5934,6 @@ class CLIStudio:
                         if m.role == "user" and m.content == query:
                             continue
                         history_msgs.append({"role": m.role, "content": m.content})
-
-                class _AgentProgressTracker:
-                    def __init__(self, init_msg: str) -> None:
-                        self.text = init_msg
-                    def set(self, msg: str) -> None:
-                        self.text = msg
-                    def __str__(self) -> str:
-                        return self.text
-                    def __call__(self) -> str:
-                        return self.text
 
                 progress = _AgentProgressTracker(
                     "Menghubungi AI & Menganalisis..." if turn == 0 else "Menyintesis temuan dokumen ke dalam jawaban akhir..."
@@ -5786,13 +5962,9 @@ class CLIStudio:
                         self.logger.log_llm_stream_finish(session_id, turn, model_name, out_tok, t_stream_dur, len(raw_resp))
 
                     # 1. Internal vault tool call check
-                    internal_match = re.search(
-                        r"```scrpcy\r?\n\s*(/(?:vault\s+(?:read|view|list|remove|rm|archive)|read|view|list|remove|archive)[^\n]*)\r?\n```",
-                        raw_resp,
-                        re.IGNORECASE,
-                    )
-                    if internal_match and turn < max_agent_turns - 1:
-                        return {"type": "internal_tool", "match": internal_match, "response": raw_resp}
+                    tool_cmd = self._detect_internal_tool_call(raw_resp)
+                    if tool_cmd and turn < max_agent_turns - 1:
+                        return {"type": "internal_tool", "command": tool_cmd, "response": raw_resp}
 
                     # 2. Academic Polisher
                     progress.set("Menyelaraskan ritme & gaya bahasa akademis...")
@@ -5866,6 +6038,7 @@ class CLIStudio:
                             evidence=evidence,
                             vault_manager=self.vault_manager,
                             style=self.config.citation.style,
+                            active_documents=self.active_documents,
                         )
                         if hasattr(self, "logger") and self.logger:
                             self.logger.log_bibliography_appended(
@@ -5901,9 +6074,15 @@ class CLIStudio:
                 last_turn_tokens = turn_tokens
 
                 if turn_result["type"] == "internal_tool":
-                    cmd_line = turn_result["match"].group(1).strip()
+                    cmd_line = turn_result["command"].strip()
                     is_archive = any(k in cmd_line.lower() for k in ("remove", "rm", "archive"))
-                    spin_desc = "Mengarsipkan dokumen..." if is_archive else "Membaca dokumen dari vault..."
+                    is_scout = any(k in cmd_line.lower() for k in ("scout", "search", "findpaper"))
+                    if is_archive:
+                        spin_desc = "Mengarsipkan dokumen..."
+                    elif is_scout:
+                        spin_desc = "Mencari literatur ilmiah..."
+                    else:
+                        spin_desc = "Membaca dokumen dari vault..."
                     with self.console.status(
                         f"[bold cyan]●[/bold cyan] [bold bright_white]{spin_desc}[/bold bright_white]",
                         spinner="dots",
@@ -5911,17 +6090,22 @@ class CLIStudio:
                         action_label, target_label, tool_output = self._execute_internal_vault_tool(cmd_line)
 
                     # Status Indicator: Membaca/Mengarsipkan -> Menganalisis
-                    sub_label = "(Mengarsipkan paper yang tidak relevan...)" if is_archive else "(Membaca teks dari vault...)"
+                    if is_archive:
+                        sub_label = "(Mengarsipkan paper yang tidak relevan...)"
+                    elif is_scout:
+                        sub_label = "(Menelusuri repositori akademik...)"
+                    else:
+                        sub_label = "(Membaca teks dari vault...)"
                     self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]{action_label}[/bold bright_white] [cyan]{target_label}[/cyan] [dim]{sub_label}[/dim]")
                     self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Menganalisis[/bold bright_white] [dim]Menyintesis temuan dokumen ke dalam jawaban akhir...[/dim]\n")
 
                     current_query = (
-                        f"### HASIL EKSEKUSI ALAT VAULT ({cmd_line}):\n"
+                        f"### HASIL EKSEKUSI ALAT ({cmd_line}):\n"
                         f"Aksi: {action_label}\n"
                         f"Target: {target_label}\n"
                         f"```markdown\n{tool_output}\n```\n\n"
                         f"Pertanyaan riset asli pengguna: \"{query}\"\n"
-                        f"Berdasarkan informasi di atas, silakan lanjutkan sintesis akademis mendalam dan berikan jawaban akhir tanpa menyuruh pengguna menjalankan perintah slash."
+                        f"Berdasarkan informasi di atas, silakan lanjutkan sintesis akademis mendalam 100% yakin dan berikan jawaban akhir tanpa menyuruh pengguna menjalankan perintah slash."
                     )
                     current_docs = []
                     turn += 1
@@ -5981,7 +6165,8 @@ class CLIStudio:
                     continue
 
                 else:
-                    final_response = turn_result.get("response", "")
+                    raw_final = turn_result.get("response", "")
+                    final_response = self._sanitize_final_response(raw_final)
                     last_v_report = turn_result.get("v_report")
                     last_c_report = turn_result.get("c_report")
                     break
@@ -6207,7 +6392,22 @@ class CLIStudio:
         if not matches:
             return
 
-        actions = [cmd.strip() for m in matches for cmd in m.splitlines() if cmd.strip() and not cmd.strip().startswith("#")]
+        has_ok_signal = "[status: ok]" in response_text.lower()
+        banned_internal_roots = [
+            "/vault read", "vault read", "/vault view", "vault view",
+            "/vault list", "vault list", "/read", "read", "/view", "view",
+            "/list", "list",
+        ]
+        if has_ok_signal:
+            banned_internal_roots.extend([
+                "/scout", "scout", "/findpaper", "findpaper", "/search", "search",
+            ])
+
+        actions = [
+            cmd.strip() for m in matches for cmd in m.splitlines()
+            if cmd.strip() and not cmd.strip().startswith("#")
+            and not any(cmd.strip().lower().startswith(b) for b in banned_internal_roots)
+        ]
         if not actions:
             return
         self._execute_action_list(actions)

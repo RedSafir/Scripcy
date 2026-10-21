@@ -512,3 +512,103 @@ def test_detailed_background_chat_task_logs(
     assert "Selesai!" in log_dump
     assert "Respons AI:" not in log_dump
     assert t.tokens_burned > 0
+
+
+def test_bare_line_internal_tool_call_is_hidden_and_executed(
+    temp_workspace: WorkspaceManager,
+    tmp_path: Path,
+) -> None:
+    """Bare line tool commands (e.g. /vault read 1) without fences are intercepted and hidden from the user."""
+    temp_workspace.save_to_cache(
+        "vaswani_2024.md",
+        "# Modern Attention Networks\nVaswani et al. 2024\n\nTransformer architecture uses multi-head attention.",
+    )
+
+    console = Console(file=io.StringIO(), force_terminal=True, color_system=None)
+    pm = ProjectManager(registry_file=tmp_path / "reg.json")
+    proj = pm.create_project("thesis", temp_workspace.root_dir)
+    cfg = ScrpcyConfig(workspace_path=str(temp_workspace.root_dir))
+
+    call_count = 0
+
+    async def mock_acompletion(**kwargs: Any):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            yield MockStreamChunk("/vault read 1\n")
+        else:
+            yield MockStreamChunk("Berdasarkan (Vaswani et al., 2024), transformer mengandalkan mekanisme self-attention namun memiliki limitasi memori.")
+
+    engine = LLMEngine(config=cfg, acompletion_fn=mock_acompletion)
+    studio = CLIStudio(
+        workspace=temp_workspace,
+        config=cfg,
+        console=console,
+        project_manager=pm,
+        engine=engine,
+    )
+    studio.open_project(proj)
+    studio.config.api_keys["gemini"] = "mock_key"
+
+    studio.handle_chat("Jelaskan self-attention di paper Vaswani.")
+
+    output = studio.console.file.getvalue()
+    assert "/vault read 1" not in output
+    assert "Membaca" in output
+    assert "Menganalisis" in output
+    assert "Vaswani et al., 2024" in output
+    assert call_count == 2
+
+
+def test_sanitize_final_response_strips_slash_commands_and_prompts(
+    temp_workspace: WorkspaceManager,
+    tmp_path: Path,
+) -> None:
+    """Ensure _sanitize_final_response removes ambiguous slash commands, prompts, and code blocks from output."""
+    console = Console(file=io.StringIO(), force_terminal=True, color_system=None)
+    cfg = ScrpcyConfig(workspace_path=str(temp_workspace.root_dir))
+    studio = CLIStudio(workspace=temp_workspace, config=cfg, console=console)
+
+    raw_response = (
+        "[STATUS: OK]\n"
+        "Model transformer menunjukkan performa superior (Vaswani et al., 2017).\n\n"
+        "Ketik /scout transformer efficiency untuk mencari literatur pendukung.\n\n"
+        "```scrpcy\n"
+        "/scout deep learning\n"
+        "/vault read 2\n"
+        "```\n\n"
+        "Rekomendasi riset mendatang adalah memperluas arsitektur ke domain multimodal."
+    )
+
+    cleaned = studio._sanitize_final_response(raw_response)
+    assert "[STATUS: OK]" in cleaned
+    assert "Vaswani et al., 2017" in cleaned
+    assert "multimodal" in cleaned
+    assert "/scout" not in cleaned
+    assert "/vault read" not in cleaned
+    assert "Ketik /scout" not in cleaned
+    assert "```scrpcy" not in cleaned
+
+
+def test_format_vault_citation_guide_injects_metadata(
+    temp_workspace: WorkspaceManager,
+    tmp_path: Path,
+) -> None:
+    """Ensure _format_vault_citation_guide produces structured metadata and APA in-text instructions."""
+    (temp_workspace.vault_dir / "brown_2020.pdf").write_bytes(b"%PDF-1.4 mock")
+    temp_workspace.save_to_cache(
+        "brown_2020.md",
+        "---\ntitle: Language Models are Few-Shot Learners\nauthors:\n  - Tom Brown\n  - Benjamin Mann\n  - Nick Ryder\nyear: 2020\ncite_key: Brown2020\n---\n# GPT-3\nContent.",
+    )
+    console = Console(file=io.StringIO(), force_terminal=True, color_system=None)
+    pm = ProjectManager(registry_file=tmp_path / "reg.json")
+    proj = pm.create_project("thesis", temp_workspace.root_dir)
+    cfg = ScrpcyConfig(workspace_path=str(temp_workspace.root_dir))
+    studio = CLIStudio(workspace=temp_workspace, config=cfg, console=console, project_manager=pm)
+    studio.open_project(proj)
+
+    guide = studio._format_vault_citation_guide()
+    assert "PANDUAN SITASI DAN REFERENSI VAULT (GAYA APA):" in guide
+    assert "brown_2020" in guide or "Brown" in guide
+    assert "Sitasi in-text APA:" in guide
+

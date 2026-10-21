@@ -91,9 +91,12 @@ def test_background_task_completion_injects_system_note(
     )
 
     # Wait for worker completion and callback execution
-    time.sleep(0.2)
-
-    messages = studio.chat_manager.get_messages(session.id)
+    messages = []
+    for _ in range(30):
+        messages = studio.chat_manager.get_messages(session.id)
+        if len(messages) >= 1:
+            break
+        time.sleep(0.05)
     assert len(messages) >= 1
     sys_msg = messages[-1]
     assert sys_msg.role == "system"

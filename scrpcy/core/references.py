@@ -22,16 +22,70 @@ from scrpcy.core.polisher import AcademicPolisher
 from scrpcy.core.vault import VaultItem, VaultManager
 
 
+def extract_academic_citations(text: str) -> list[tuple[str, str]]:
+    """Extract both bracketed [Key] and APA parenthetical/narrative citations.
+
+    Returns a list of tuples: (normalized_lookup_key, presentation_label).
+    Example:
+    - '[Page2002]' -> ('Page2002', '[Page2002]')
+    - '(Artès et al., 2019)' -> ('Artès et al., 2019', '(Artès et al., 2019)')
+    - 'Page (2002)' -> ('Page, 2002', '(Page, 2002)')
+    """
+    results: list[tuple[str, str]] = []
+    seen_labels: set[str] = set()
+
+    # 1. Bracketed: [Page2002], [1], [Vaswani et al., 2017] (excluding markdown links [text](url))
+    bracket_matches = re.finditer(
+        r"\[([A-Za-z0-9_,\s-]+(?:\s+et\s+al\.)?(?:,\s*\d{4})?)\](?!\()",
+        text,
+    )
+    for m in bracket_matches:
+        raw = m.group(1).strip()
+        lbl = f"[{raw}]"
+        if lbl not in seen_labels and raw:
+            results.append((raw, lbl))
+            seen_labels.add(lbl)
+
+    # 2. Parenthetical APA: (Page et al., 2002), (Artès, 2019), (Smith & Jones, 2021)
+    paren_matches = re.finditer(
+        r"\(([A-Z][A-Za-z\u00C0-\u024F\s\.\-]+?(?:,\s*|\s+et\s+al\.,?\s*|\s*&\s*[A-Z][A-Za-z\u00C0-\u024F\s\.\-]+,\s*)\d{4}[a-z]?)\)",
+        text,
+    )
+    for m in paren_matches:
+        raw = m.group(1).strip()
+        lbl = f"({raw})"
+        if lbl not in seen_labels and raw:
+            results.append((raw, lbl))
+            seen_labels.add(lbl)
+
+    # 3. Narrative APA: Artès et al. (2019) or Page (2002)
+    narr_matches = re.finditer(
+        r"\b([A-Z][A-Za-z\u00C0-\u024F\-]+(?:\s+et\s+al\.)?)\s+\((\d{4}[a-z]?)\)",
+        text,
+    )
+    for m in narr_matches:
+        author = m.group(1).strip()
+        year = m.group(2).strip()
+        raw = f"{author}, {year}"
+        lbl = f"({raw})"
+        if lbl not in seen_labels and raw:
+            results.append((raw, lbl))
+            seen_labels.add(lbl)
+
+    return results
+
+
 def resolve_vault_reference_entries(
     text: str,
     evidence: list[EvidenceChunk] | None = None,
     vault_manager: VaultManager | None = None,
     style: str = "apa",
+    active_documents: set[str] | list[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Resolve cited papers and evidence chunks into formatted bibliography entries.
 
     Returns a list of dictionaries with:
-    - key: In-text citation key or index (e.g. '[Page2002]' or '[1]')
+    - key: In-text citation key or index (e.g. '[Page2002]', '(Artès et al., 2019)', or '[1]')
     - citation_item: Normalized CitationItem
     - formatted_entry: Formatted APA or IEEE reference string
     - filename: Physical vault filename (e.g. 'peatland_fire_2002.pdf')
@@ -63,16 +117,14 @@ def resolve_vault_reference_entries(
         if meta.cite_key:
             item_by_citekey[meta.cite_key.lower().strip("[]")] = item
 
-    # 1. Extract in-text citation keys from response text
-    raw_cites = AcademicPolisher.extract_citations(text)
-    clean_keys = [c.strip("[]").strip() for c in raw_cites]
+    # 1. Extract all in-text citations (both bracketed and parenthetical/narrative APA)
+    extracted_citations = extract_academic_citations(text)
 
     # 2. Extract evidence source stems
     evidence_stems: list[str] = []
     if evidence:
         for c in evidence:
             s = c.source.lower().strip()
-            # source might be 'peatland.md', 'peatland_c1', or stem
             stem = Path(s).stem
             stem = re.sub(r"_c\d+$", "", stem)
             if stem and stem not in evidence_stems:
@@ -81,33 +133,61 @@ def resolve_vault_reference_entries(
     matched_stems: list[tuple[str, str]] = []  # (stem, label)
     seen_stems: set[str] = set()
 
+    def _get_default_label(target_stem: str, default_idx: int) -> str:
+        v_item = item_by_stem.get(target_stem)
+        if not v_item:
+            return f"[{default_idx}]"
+        meta = meta_by_stem.get(target_stem)
+        if style.lower() == "ieee":
+            return f"[{default_idx}]"
+        if meta and meta.authors and meta.year:
+            first_auth = meta.authors[0].split(",")[0].strip().split()[-1]
+            if len(meta.authors) > 2:
+                return f"({first_auth} et al., {meta.year})"
+            elif len(meta.authors) == 2:
+                second_auth = meta.authors[1].split(",")[0].strip().split()[-1]
+                return f"({first_auth} & {second_auth}, {meta.year})"
+            return f"({first_auth}, {meta.year})"
+        return f"[{v_item.cite_key or target_stem}]"
+
     # Match in-text citations to vault items
-    for k in clean_keys:
-        k_lower = k.lower()
+    for raw_k, disp_label in extracted_citations:
+        k_lower = raw_k.lower().strip()
+
         # Direct cite_key match
         if k_lower in item_by_citekey:
             stem = item_by_citekey[k_lower].stem.lower()
             if stem not in seen_stems:
-                matched_stems.append((stem, f"[{k}]"))
+                matched_stems.append((stem, disp_label))
                 seen_stems.add(stem)
             continue
+
         # Direct stem match
         if k_lower in item_by_stem:
             if k_lower not in seen_stems:
-                matched_stems.append((k_lower, f"[{k}]"))
+                matched_stems.append((k_lower, disp_label))
                 seen_stems.add(k_lower)
             continue
-        # Partial match on author/year
+
+        # Match author surname and/or year against metadata
         found = False
         for stem_key, v_item in item_by_stem.items():
             meta = meta_by_stem.get(stem_key)
             if meta:
-                # Check author name or year in key
-                author_match = any(a.lower() in k_lower for a in meta.authors)
+                # Check author surnames
+                author_match = False
+                if meta.authors:
+                    for a in meta.authors:
+                        clean_a = a.lower().replace(",", " ")
+                        parts_a = [p for p in clean_a.split() if len(p) > 2]
+                        if any(p in k_lower for p in parts_a):
+                            author_match = True
+                            break
+
                 year_match = str(meta.year) in k_lower if meta.year else False
-                if author_match and year_match:
+                if (author_match and year_match) or (author_match and len(item_by_stem) == 1):
                     if stem_key not in seen_stems:
-                        matched_stems.append((stem_key, f"[{k}]"))
+                        matched_stems.append((stem_key, disp_label))
                         seen_stems.add(stem_key)
                     found = True
                     break
@@ -115,21 +195,30 @@ def resolve_vault_reference_entries(
             continue
 
         # Handle numeric citation like [1], [2] matching evidence order
-        if k.isdigit():
-            idx = int(k) - 1
+        if raw_k.isdigit():
+            idx = int(raw_k) - 1
             if 0 <= idx < len(evidence_stems):
                 ev_stem = evidence_stems[idx]
                 if ev_stem in item_by_stem and ev_stem not in seen_stems:
-                    matched_stems.append((ev_stem, f"[{k}]"))
+                    matched_stems.append((ev_stem, disp_label))
                     seen_stems.add(ev_stem)
 
-    # If no in-text citations matched, but evidence was provided, include evidence documents
-    if not matched_stems and evidence_stems:
+    # 3. Fallback: if evidence chunks were provided, ensure evidence papers are included
+    if evidence_stems:
         for idx, ev_stem in enumerate(evidence_stems, 1):
             if ev_stem in item_by_stem and ev_stem not in seen_stems:
-                label = f"[{idx}]" if style.lower() == "ieee" else f"[{item_by_stem[ev_stem].cite_key or ev_stem}]"
+                label = _get_default_label(ev_stem, len(matched_stems) + 1)
                 matched_stems.append((ev_stem, label))
                 seen_stems.add(ev_stem)
+
+    # 4. Fallback: if active_documents were specified and still no match, include active documents
+    if not matched_stems and active_documents:
+        for doc_stem in active_documents:
+            stem_norm = doc_stem.lower().strip()
+            if stem_norm in item_by_stem and stem_norm not in seen_stems:
+                label = _get_default_label(stem_norm, len(matched_stems) + 1)
+                matched_stems.append((stem_norm, label))
+                seen_stems.add(stem_norm)
 
     # Format bibliographic entries
     entries: list[dict[str, Any]] = []
@@ -163,6 +252,7 @@ def append_vault_bibliography(
     evidence: list[EvidenceChunk] | None = None,
     vault_manager: VaultManager | None = None,
     style: str = "apa",
+    active_documents: set[str] | list[str] | None = None,
 ) -> str:
     """Append formatted bibliography with vault file mappings to AI response text.
 
@@ -175,7 +265,8 @@ def append_vault_bibliography(
     # Avoid duplicate bibliography if already present in text
     lower_text = text.lower()
     if (
-        "### referensi" in lower_text
+        "### 📚 referensi vault" in lower_text
+        or "### referensi" in lower_text
         or "### references" in lower_text
         or "### daftar pustaka" in lower_text
         or "## referensi" in lower_text
@@ -188,6 +279,7 @@ def append_vault_bibliography(
         evidence=evidence,
         vault_manager=vault_manager,
         style=style,
+        active_documents=active_documents,
     )
     if not entries:
         return text

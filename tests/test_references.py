@@ -119,6 +119,42 @@ class TestVaultBibliographyAppender:
         assert "Smith, J. (2021)." in enriched
         assert "[File: smith2021.pdf]" in enriched
 
+    def test_resolve_vault_reference_entries_parenthetical_and_narrative_apa(
+        self,
+        temp_workspace: WorkspaceManager,
+    ) -> None:
+        doc_content = (
+            "---\n"
+            "title: A global wildfire dataset for the analysis of fire regimes\n"
+            "authors:\n"
+            "  - Thomas Artès\n"
+            "  - Duarte Oom\n"
+            "  - Daniele De Rigo\n"
+            "year: 2019\n"
+            "doi: 10.1038/s41597-019-0312-2\n"
+            "cite_key: Artes2019\n"
+            "---\n"
+            "# Content\nGlobal wildfire dataset.\n"
+        )
+        pdf = temp_workspace.vault_dir / "artes_2019.pdf"
+        pdf.write_bytes(b"%PDF-mock")
+        os.utime(pdf, (time.time() - 100, time.time() - 100))
+        temp_workspace.save_to_cache("artes_2019.md", doc_content)
+
+        vm = VaultManager(workspace=temp_workspace)
+        # Test parenthetical format: (Artès et al., 2019)
+        text_paren = "Dataset kebakaran global telah dianalisis oleh peneliti (Artès et al., 2019)."
+        entries_paren = resolve_vault_reference_entries(text_paren, vault_manager=vm, style="apa")
+        assert len(entries_paren) == 1
+        assert entries_paren[0]["filename"] == "artes_2019.pdf"
+        assert "(Artès et al., 2019)" in entries_paren[0]["key"]
+
+        # Test narrative format: Artès et al. (2019)
+        text_narr = "Menurut Artès et al. (2019), dataset kebakaran global mencakup data multi-dekade."
+        entries_narr = resolve_vault_reference_entries(text_narr, vault_manager=vm, style="apa")
+        assert len(entries_narr) == 1
+        assert entries_narr[0]["filename"] == "artes_2019.pdf"
+
     def test_append_vault_bibliography_avoids_duplicate_section(
         self,
         temp_workspace: WorkspaceManager,
