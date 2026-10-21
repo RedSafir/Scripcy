@@ -35,6 +35,8 @@ from scrpcy.core.vault import VaultItem, VaultManager
 from scrpcy.core.verifier import FactChecker, VerificationReport
 from scrpcy.core.critic import DevilsAdvocate, CritiqueReport
 from scrpcy.core.polisher import AcademicPolisher, PolishResult
+from scrpcy.core.logger import StudioLogger, get_studio_logger
+from scrpcy.core.references import append_vault_bibliography
 from scrpcy.core.workspace import WorkspaceManager
 
 # Safe UTF-8 console output for Windows terminal and quiet litellm output
@@ -125,6 +127,7 @@ class CLIStudio:
         self.task_manager = TaskManager()
         self.task_manager.add_completion_callback(self._on_background_task_completed)
         self.gdrive_manager = GoogleDriveManager()
+        self.logger: StudioLogger = get_studio_logger(workspace.root_dir if workspace else None)
         self.vault_manager: VaultManager | None = None
         self.fact_checker: FactChecker | None = None
         self.devils_advocate: DevilsAdvocate | None = None
@@ -158,6 +161,7 @@ class CLIStudio:
         """Bind workspace and initialize dependent components."""
         self.workspace = ws
         self.workspace.ensure_directories()
+        self.logger = get_studio_logger(self.workspace.root_dir if self.workspace else None)
         self.parser = self._injected_parser or DocumentParser(workspace=self.workspace)
         self.wordcraft = self._injected_wordcraft or WordCraftClient(workspace=self.workspace)
         proj_name = self.current_project.name if self.current_project else None
@@ -2946,6 +2950,13 @@ class CLIStudio:
                 except Exception:
                     pass
 
+                if self.vault_manager and resp:
+                    resp = append_vault_bibliography(
+                        text=resp,
+                        vault_manager=self.vault_manager,
+                        style=self.config.citation.style,
+                    )
+
             elapsed_c = time.time() - start_t
             in_tok = estimate_tokens(query) + 250
             out_tok = estimate_tokens(resp)
@@ -5371,7 +5382,7 @@ class CLIStudio:
     def _run_agent_turn_interactive(
         self,
         coro: Any,
-        step_desc: str,
+        step_desc: str | Any,
         prompt_lbl: str,
         model_label: str,
         effort: str,
@@ -5389,9 +5400,10 @@ class CLIStudio:
         import shutil
 
         # Non-interactive fallback for CI, pipes, or tests
+        desc_str = step_desc() if callable(step_desc) else str(step_desc)
         if not sys.stdin.isatty():
             with self.console.status(
-                f"[bold cyan]●[/bold cyan] [bold bright_white]{step_desc}[/bold bright_white] [dim]({model_label})[/dim]",
+                f"[bold cyan]●[/bold cyan] [bold bright_white]{desc_str}[/bold bright_white] [dim]({model_label})[/dim]",
                 spinner="dots",
             ):
                 return asyncio.run(coro)
@@ -5413,6 +5425,7 @@ class CLIStudio:
             frame_idx = 0
             last_spin = time.time()
             prev_lines_drawn = 0
+            last_desc_str = ""
 
             def _get_layout() -> tuple[str, str]:
                 cur_width = self.console.width or shutil.get_terminal_size((80, 24)).columns
@@ -5473,12 +5486,17 @@ class CLIStudio:
                                     t.cancel()
                                     raise asyncio.CancelledError("cancel")
 
+                    cur_desc_val = step_desc() if callable(step_desc) else str(step_desc)
+                    if cur_desc_val != last_desc_str:
+                        last_desc_str = cur_desc_val
+                        need_redraw = True
+
                     if need_redraw:
                         divider, footer = _get_layout()
                         buf_str = "".join(typed_buffer)
                         frame = SPINNER_FRAMES[frame_idx]
                         lines = [
-                            f"\033[36m{frame}\033[0m {step_desc}",
+                            f"\033[36m{frame}\033[0m {cur_desc_val}",
                             "",
                             f"\033[90m{divider}\033[0m",
                             f"\033[1;36m{prompt_lbl}\033[0m\033[1;37m{buf_str}\033[0m\033[1;37m█\033[0m",
@@ -5681,6 +5699,12 @@ class CLIStudio:
         self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Berpikir[/bold bright_white] [dim]Menganalisis literatur dan menyusun sintesis ilmiah...[/dim]")
         self.console.print(f"\n[bold cyan]✦ {model_label}[/bold cyan] [dim]({self.active_skill_name} • {effort} effort)[/dim]")
 
+        session_id = session.id if session else "default"
+        if hasattr(self, "logger") and self.logger:
+            self.logger.log_user_query(session_id, query, self.active_documents)
+            if evidence:
+                self.logger.log_evidence_retrieved(session_id, query, evidence)
+
         start_time = time.time()
         max_agent_turns = 3
         turn = 0
@@ -5688,6 +5712,8 @@ class CLIStudio:
         current_docs = list(existing_paths)
         final_response = ""
         last_turn_tokens: list[str] = []
+        last_v_report: VerificationReport | None = None
+        last_c_report: CritiqueReport | None = None
 
         try:
             while turn < max_agent_turns:
@@ -5702,7 +5728,26 @@ class CLIStudio:
                             continue
                         history_msgs.append({"role": m.role, "content": m.content})
 
-                async def _stream_chat() -> None:
+                class _AgentProgressTracker:
+                    def __init__(self, init_msg: str) -> None:
+                        self.text = init_msg
+                    def set(self, msg: str) -> None:
+                        self.text = msg
+                    def __str__(self) -> str:
+                        return self.text
+                    def __call__(self) -> str:
+                        return self.text
+
+                progress = _AgentProgressTracker(
+                    "Menghubungi AI & Menganalisis..." if turn == 0 else "Menyintesis temuan dokumen ke dalam jawaban akhir..."
+                )
+
+                async def _run_full_turn_async() -> dict[str, Any]:
+                    progress.set("Menghubungi AI & Menganalisis..." if turn == 0 else "Menyintesis temuan dokumen...")
+                    t_stream_s = time.time()
+                    if hasattr(self, "logger") and self.logger:
+                        self.logger.log_llm_stream_start(session_id, turn, model_name, str(progress))
+
                     async for token in self.engine.stream_query(
                         query=current_query,
                         documents=current_docs,
@@ -5713,28 +5758,129 @@ class CLIStudio:
                     ):
                         turn_tokens.append(token)
 
-                prompt_str = f"{self.current_project.name}/chat/{session.name}> " if (self.sub_mode == "chat" and session and self.current_project) else (f"{self.current_project.name}> " if self.current_project else "> ")
-                step_title = "Menghubungi AI & Menganalisis..." if turn == 0 else "Menyintesis temuan dokumen ke dalam jawaban akhir..."
+                    t_stream_dur = time.time() - t_stream_s
+                    raw_resp = "".join(turn_tokens)
+                    out_tok = estimate_tokens(raw_resp)
+                    if hasattr(self, "logger") and self.logger:
+                        self.logger.log_llm_stream_finish(session_id, turn, model_name, out_tok, t_stream_dur, len(raw_resp))
 
-                self._run_agent_turn_interactive(
-                    coro=_stream_chat(),
-                    step_desc=step_title,
-                    prompt_lbl=prompt_str,
-                    model_label=model_label,
-                    effort=effort,
-                )
-                turn_response = "".join(turn_tokens)
+                    # 1. Internal vault tool call check
+                    internal_match = re.search(
+                        r"```scrpcy\r?\n\s*(/(?:vault\s+(?:read|view|list|remove|rm|archive)|read|view|list|remove|archive)[^\n]*)\r?\n```",
+                        raw_resp,
+                        re.IGNORECASE,
+                    )
+                    if internal_match and turn < max_agent_turns - 1:
+                        return {"type": "internal_tool", "match": internal_match, "response": raw_resp}
+
+                    # 2. Academic Polisher
+                    progress.set("Menyelaraskan ritme & gaya bahasa akademis...")
+                    p_resp = raw_resp
+                    t_pol_s = time.time()
+                    try:
+                        polisher = self.polisher or AcademicPolisher(engine=self.engine)
+                        p_res = await asyncio.to_thread(polisher.polish, raw_resp, query)
+                        if p_res.applied:
+                            p_resp = p_res.polished_text
+                        if hasattr(self, "logger") and self.logger:
+                            self.logger.log_polisher_result(
+                                session_id=session_id,
+                                applied=p_res.applied,
+                                duration_s=time.time() - t_pol_s,
+                                reason=p_res.reason,
+                                burst_before=p_res.burstiness_score_before,
+                                burst_after=p_res.burstiness_score_after,
+                                citations_preserved=p_res.citations_preserved,
+                            )
+                    except Exception as p_err:
+                        if hasattr(self, "logger") and self.logger:
+                            self.logger.log_error(session_id, "POLISHER", p_err)
+
+                    # 3. FactChecker
+                    progress.set("Mengaudit keabsahan fakta terhadap dokumen vault...")
+                    t_fc_s = time.time()
+                    verifier = self.fact_checker or FactChecker(engine=self.engine)
+                    v_rep = await asyncio.to_thread(verifier.verify_synthesis, p_resp, evidence)
+                    if hasattr(self, "logger") and self.logger:
+                        self.logger.log_fact_check_result(
+                            session_id=session_id,
+                            grounding_score=v_rep.grounding_score,
+                            total_claims=v_rep.total_claims,
+                            supported_claims=v_rep.supported_claims,
+                            unsupported_claims=v_rep.unsupported_claims,
+                            duration_s=time.time() - t_fc_s,
+                            hallucination_warning=v_rep.hallucination_warning,
+                        )
+
+                    # 4. Devil's Advocate
+                    progress.set("Menjalankan evaluasi kritis (Devil's Advocate)...")
+                    t_cr_s = time.time()
+                    critic = self.devils_advocate or DevilsAdvocate(engine=self.engine)
+                    c_rep = await asyncio.to_thread(critic.critique, query, p_resp)
+                    if hasattr(self, "logger") and self.logger:
+                        self.logger.log_critic_result(
+                            session_id=session_id,
+                            score=c_rep.score,
+                            passed=c_rep.passed,
+                            duration_s=time.time() - t_cr_s,
+                            recency_alert=c_rep.recency_alert,
+                            needs_citation_mapping=c_rep.needs_citation_mapping,
+                            weaknesses=c_rep.weaknesses,
+                            summary=c_rep.critique_summary,
+                        )
+
+                    # Check if ungrounded claims or citation mapping triggers another turn
+                    if v_rep.hallucination_warning and turn < max_agent_turns - 1:
+                        return {"type": "ungrounded", "report": v_rep, "response": p_resp}
+                    if c_rep.needs_citation_mapping and turn < max_agent_turns - 1:
+                        return {"type": "needs_citation_mapping", "report": c_rep, "response": p_resp}
+
+                    # 5. Automatic Bibliography
+                    final_text = p_resp
+                    if self.vault_manager and final_text:
+                        progress.set("Menyusun daftar pustaka vault terverifikasi...")
+                        final_text = await asyncio.to_thread(
+                            append_vault_bibliography,
+                            text=final_text,
+                            evidence=evidence,
+                            vault_manager=self.vault_manager,
+                            style=self.config.citation.style,
+                        )
+                        if hasattr(self, "logger") and self.logger:
+                            self.logger.log_bibliography_appended(
+                                session_id=session_id,
+                                style=self.config.citation.style,
+                                entries_count=len(evidence),
+                                filenames=[c.source for c in evidence],
+                            )
+
+                    return {
+                        "type": "final",
+                        "response": final_text,
+                        "v_report": v_rep,
+                        "c_report": c_rep,
+                    }
+
+                prompt_str = f"{self.current_project.name}/chat/{session.name}> " if (self.sub_mode == "chat" and session and self.current_project) else (f"{self.current_project.name}> " if self.current_project else "> ")
+                turn_coro = _run_full_turn_async()
+                try:
+                    turn_result = self._run_agent_turn_interactive(
+                        coro=turn_coro,
+                        step_desc=progress,
+                        prompt_lbl=prompt_str,
+                        model_label=model_label,
+                        effort=effort,
+                    )
+                except BaseException:
+                    try:
+                        turn_coro.close()
+                    except Exception:
+                        pass
+                    raise
                 last_turn_tokens = turn_tokens
 
-                # Detect if AI called an internal read, list, or remove action
-                internal_match = re.search(
-                    r"```scrpcy\r?\n\s*(/(?:vault\s+(?:read|view|list|remove|rm|archive)|read|view|list|remove|archive)[^\n]*)\r?\n```",
-                    turn_response,
-                    re.IGNORECASE,
-                )
-
-                if internal_match and turn < max_agent_turns - 1:
-                    cmd_line = internal_match.group(1).strip()
+                if turn_result["type"] == "internal_tool":
+                    cmd_line = turn_result["match"].group(1).strip()
                     is_archive = any(k in cmd_line.lower() for k in ("remove", "rm", "archive"))
                     spin_desc = "Mengarsipkan dokumen..." if is_archive else "Membaca dokumen dari vault..."
                     with self.console.status(
@@ -5759,70 +5905,64 @@ class CLIStudio:
                     current_docs = []
                     turn += 1
                     continue
-                else:
-                    # Run FactChecker & Devil's Advocate verification
-                    if not internal_match:
-                        # 1. Context-Preserving Stylistic Polish (prior to FactChecker & Devil's Advocate)
+
+                elif turn_result["type"] == "ungrounded":
+                    v_rep = turn_result["report"]
+                    self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Memverifikasi Fakta[/bold bright_white] [yellow]{v_rep.hallucination_warning}[/yellow]")
+                    unsupported_claims = [c.claim for c in v_rep.claims if c.status == "unsupported"]
+                    if unsupported_claims:
+                        current_query = (
+                            f"### VERIFIKASI FAKTA (CLAIM GROUNDING AUDIT):\n"
+                            f"Beberapa klaim berikut tidak ditemukan dasarnya pada literatur vault:\n"
+                            + "\n".join(f"- {c}" for c in unsupported_claims) +
+                            f"\n\nPertanyaan riset asli: \"{query}\"\n"
+                            f"Instruksi: Pangkas atau sesuaikan klaim di atas agar 100% didukung oleh bukti teks dokumen vault."
+                        )
+                        turn += 1
+                        continue
+
+                elif turn_result["type"] == "needs_citation_mapping":
+                    c_rep = turn_result["report"]
+                    self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Devil's Advocate[/bold bright_white] [yellow]Skor {c_rep.score}/10: {c_rep.critique_summary}[/yellow]")
+                    stems = self._get_cached_stems()
+                    mapped_papers = []
+                    if stems and self.scout:
+                        self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Reference Mapping[/bold bright_white] [cyan]Menelusuri jaringan sitasi dokumen vault...[/cyan]")
                         try:
-                            polisher = self.polisher or AcademicPolisher(engine=self.engine)
-                            p_res = polisher.polish(turn_response, query)
-                            if p_res.applied:
-                                turn_response = p_res.polished_text
+                            t_map_s = time.time()
+                            mapped_papers = asyncio.run(self.scout.map_vault_citation_network(stems, limit=2))
+                            if hasattr(self, "logger") and self.logger:
+                                self.logger.log_citation_mapping(
+                                    session_id=session_id,
+                                    stems=stems,
+                                    found_papers=[p.title for p in mapped_papers],
+                                    duration_s=time.time() - t_map_s,
+                                )
                         except Exception:
                             pass
 
-                        verifier = self.fact_checker or FactChecker(engine=self.engine)
-                        v_report = verifier.verify_synthesis(turn_response, evidence)
+                    lines_map = [f"- {p.title} ({p.year or 'n.d.'}) [{p.relevance_reason}]" for p in mapped_papers]
+                    extra_ref = ""
+                    if lines_map:
+                        extra_ref = "### HASIL REFERENCE MAPPING (JARINGAN SITASI VAULT):\nPaper terhubung yang ditemukan:\n" + "\n".join(lines_map) + "\n\n"
 
-                        critic = self.devils_advocate or DevilsAdvocate(engine=self.engine)
-                        c_report = critic.critique(query, turn_response)
+                    weaknesses_str = ", ".join(c_rep.weaknesses) if c_rep.weaknesses else "Perkuat landasan argumen dan sertakan batasan metodologis."
+                    counter_str = ("\nPotensi sanggahan: " + ", ".join(c_rep.counter_arguments)) if c_rep.counter_arguments else ""
+                    recency_str = f"\nCatatan kebaruan: {c_rep.recency_alert}" if c_rep.recency_alert else ""
 
-                        # If ungrounded claims detected, prompt model to ground or prune
-                        if v_report.hallucination_warning and turn < max_agent_turns - 1:
-                            self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Memverifikasi Fakta[/bold bright_white] [yellow]{v_report.hallucination_warning}[/yellow]")
-                            unsupported_claims = [c.claim for c in v_report.claims if c.status == "unsupported"]
-                            if unsupported_claims:
-                                current_query = (
-                                    f"### VERIFIKASI FAKTA (CLAIM GROUNDING AUDIT):\n"
-                                    f"Beberapa klaim berikut tidak ditemukan dasarnya pada literatur vault:\n"
-                                    + "\n".join(f"- {c}" for c in unsupported_claims) +
-                                    f"\n\nPertanyaan riset asli: \"{query}\"\n"
-                                    f"Instruksi: Pangkas atau sesuaikan klaim di atas agar 100% didukung oleh bukti teks dokumen vault."
-                                )
-                                turn += 1
-                                continue
+                    current_query = (
+                        f"{extra_ref}### EVALUASI DEVIL'S ADVOCATE (SKOR {c_rep.score}/10):\n"
+                        f"Catatan kelemahan: {weaknesses_str}{counter_str}{recency_str}\n\n"
+                        f"Pertanyaan riset asli: \"{query}\"\n"
+                        f"Instruksi: Mentailor ulang sintesis untuk mengatasi catatan kelemahan di atas, mengantisipasi potensi sanggahan, dan memperkokoh argumen."
+                    )
+                    turn += 1
+                    continue
 
-                        # If Devil's Advocate spots outdated references or weak arguments, trigger reference mapping and refinement
-                        if c_report.needs_citation_mapping and turn < max_agent_turns - 1:
-                            self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Devil's Advocate[/bold bright_white] [yellow]Skor {c_report.score}/10: {c_report.critique_summary}[/yellow]")
-                            stems = self._get_cached_stems()
-                            mapped_papers = []
-                            if stems and self.scout:
-                                self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Reference Mapping[/bold bright_white] [cyan]Menelusuri jaringan sitasi dokumen vault...[/cyan]")
-                                try:
-                                    mapped_papers = asyncio.run(self.scout.map_vault_citation_network(stems, limit=2))
-                                except Exception:
-                                    pass
-
-                            lines_map = [f"- {p.title} ({p.year or 'n.d.'}) [{p.relevance_reason}]" for p in mapped_papers]
-                            extra_ref = ""
-                            if lines_map:
-                                extra_ref = "### HASIL REFERENCE MAPPING (JARINGAN SITASI VAULT):\nPaper terhubung yang ditemukan:\n" + "\n".join(lines_map) + "\n\n"
-
-                            weaknesses_str = ", ".join(c_report.weaknesses) if c_report.weaknesses else "Perkuat landasan argumen dan sertakan batasan metodologis."
-                            counter_str = ("\nPotensi sanggahan: " + ", ".join(c_report.counter_arguments)) if c_report.counter_arguments else ""
-                            recency_str = f"\nCatatan kebaruan: {c_report.recency_alert}" if c_report.recency_alert else ""
-
-                            current_query = (
-                                f"{extra_ref}### EVALUASI DEVIL'S ADVOCATE (SKOR {c_report.score}/10):\n"
-                                f"Catatan kelemahan: {weaknesses_str}{counter_str}{recency_str}\n\n"
-                                f"Pertanyaan riset asli: \"{query}\"\n"
-                                f"Instruksi: Mentailor ulang sintesis untuk mengatasi catatan kelemahan di atas, mengantisipasi potensi sanggahan, dan memperkokoh argumen."
-                            )
-                            turn += 1
-                            continue
-
-                    final_response = turn_response
+                else:
+                    final_response = turn_result.get("response", "")
+                    last_v_report = turn_result.get("v_report")
+                    last_c_report = turn_result.get("c_report")
                     break
 
             elapsed = time.time() - start_time
@@ -5837,14 +5977,27 @@ class CLIStudio:
             output_tokens = estimate_tokens(final_response)
             total_tokens = input_tokens + output_tokens
             style_name = self.config.citation.style.upper()
-            v_check = (self.fact_checker or FactChecker(engine=self.engine)).verify_synthesis(final_response, evidence)
-            c_check = (self.devils_advocate or DevilsAdvocate(engine=self.engine)).critique(query, final_response)
-            grounding_badge = f"Grounding: {int(v_check.grounding_score * 100)}%"
-            critic_badge = f"Critic: {c_check.score}/10"
+
+            # Reuse already evaluated reports from the turn pipeline (Zero duplicate LLM calls)
+            v_score = last_v_report.grounding_score if last_v_report else 1.0
+            c_score = last_c_report.score if last_c_report else 8
+            grounding_badge = f"Grounding: {int(v_score * 100)}%"
+            critic_badge = f"Critic: {c_score}/10"
 
             self.console.print(
                 f"[dim]── Tokens: {input_tokens:,} in · {output_tokens:,} out · {total_tokens:,} total ({model_label}) • {grounding_badge} • {critic_badge} • {elapsed:.1f}s • {style_name} style ──[/dim]\n"
             )
+
+            if hasattr(self, "logger") and self.logger:
+                self.logger.log_response_rendered(
+                    session_id=session_id,
+                    total_input_tokens=input_tokens,
+                    total_output_tokens=output_tokens,
+                    elapsed_total_s=elapsed,
+                    model_label=model_label,
+                    grounding_score=v_score,
+                    critic_score=c_score,
+                )
 
             if self.chat_manager:
                 self.chat_manager.add_message(session.id, "assistant", final_response)
@@ -5893,6 +6046,14 @@ class CLIStudio:
                             final_text = p_res.polished_text
                     except Exception:
                         pass
+
+                    if self.vault_manager:
+                        final_text = append_vault_bibliography(
+                            text=final_text,
+                            evidence=evidence,
+                            vault_manager=self.vault_manager,
+                            style=self.config.citation.style,
+                        )
 
                 if self.chat_manager and session and final_text:
                     self.chat_manager.add_message(session.id, "assistant", final_text)

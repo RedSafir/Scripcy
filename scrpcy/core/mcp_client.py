@@ -124,13 +124,18 @@ def format_reference_entry_apa(item: CitationItem) -> str:
     if not item.authors:
         author_str = "Anonymous."
     elif len(item.authors) == 1:
-        author_str = f"{format_author_name_apa(item.authors[0])}."
+        single = format_author_name_apa(item.authors[0])
+        author_str = single if single.endswith(".") else f"{single}."
     elif len(item.authors) == 2:
-        author_str = f"{format_author_name_apa(item.authors[0])}, & {format_author_name_apa(item.authors[1])}."
+        a1 = format_author_name_apa(item.authors[0])
+        a2 = format_author_name_apa(item.authors[1])
+        a2_dot = a2 if a2.endswith(".") else f"{a2}."
+        author_str = f"{a1}, & {a2_dot}"
     else:
         formatted_names = [format_author_name_apa(a) for a in item.authors[:-1]]
         last_name = format_author_name_apa(item.authors[-1])
-        author_str = f"{', '.join(formatted_names)}, & {last_name}."
+        last_dot = last_name if last_name.endswith(".") else f"{last_name}."
+        author_str = f"{', '.join(formatted_names)}, & {last_dot}"
 
     year_str = f"({item.year})." if item.year else "(n.d.)."
     title_str = f"{item.title.rstrip('.')}." if item.title else "Untitled Document."

@@ -123,7 +123,7 @@ class DevilsAdvocate:
         try:
             model_name = self.engine.config.default_model
             api_key = self.engine.config.get_api_key_for_model(model_name)
-            if not api_key:
+            if not api_key or api_key.startswith("mock") or getattr(self.engine, "_acompletion_fn", None) is not None:
                 return heuristic
 
             system_prompt = (
@@ -162,6 +162,7 @@ class DevilsAdvocate:
                 "api_key": api_key,
                 "temperature": 0.2,
                 "response_format": {"type": "json_object"},
+                "timeout": 15,
             }
             if api_base:
                 kwargs["api_base"] = api_base

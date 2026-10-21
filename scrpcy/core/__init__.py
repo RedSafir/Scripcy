@@ -12,6 +12,7 @@ from scrpcy.core.extractor import (
     MetadataExtractor,
     MockMetadataExtractor,
 )
+from scrpcy.core.logger import StudioLogger, get_studio_logger
 from scrpcy.core.mcp_client import (
     BaseMCPTransport,
     CitationItem,
@@ -27,6 +28,10 @@ from scrpcy.core.models import DocumentMetadata, ParsedDocument
 from scrpcy.core.parser import DocumentParser, parse_pdf
 from scrpcy.core.polisher import AcademicPolisher, PolishResult
 from scrpcy.core.project import ProjectInfo, ProjectManager
+from scrpcy.core.references import (
+    append_vault_bibliography,
+    resolve_vault_reference_entries,
+)
 from scrpcy.core.scout import LiteratureScout, ScoutQuery, ScoutResult
 from scrpcy.core.search import PaperSearcher, SearchResult, sanitize_filename
 from scrpcy.core.skills import Skill, SkillsLoader
@@ -51,6 +56,8 @@ __all__ = [
     "ParsedDocument",
     "PolishResult",
     "AcademicPolisher",
+    "append_vault_bibliography",
+    "resolve_vault_reference_entries",
     "ProjectInfo",
     "ProjectManager",
     "ScoutQuery",
@@ -67,6 +74,8 @@ __all__ = [
     "format_inline_citation_ieee",
     "format_reference_entry_apa",
     "format_reference_entry_ieee",
+    "StudioLogger",
+    "get_studio_logger",
     "parse_pdf",
     "sanitize_filename",
 ]

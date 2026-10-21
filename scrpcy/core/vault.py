@@ -111,10 +111,10 @@ class VaultManager:
     def _read_frontmatter_metadata(self, cache_path: Path) -> DocumentMetadata | None:
         """Extract metadata frontmatter from cached markdown if available."""
         try:
-            from scrpcy.core.models import FRONTMATTER_PATTERN
+            from scrpcy.core.models import FRONTMATTER_REGEX
             import yaml
             text = cache_path.read_text(encoding="utf-8")
-            match = FRONTMATTER_PATTERN.match(text)
+            match = FRONTMATTER_REGEX.match(text)
             if match:
                 data = yaml.safe_load(match.group(1)) or {}
                 return DocumentMetadata.model_validate(data)

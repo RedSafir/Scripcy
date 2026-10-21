@@ -13,6 +13,7 @@ FRONTMATTER_REGEX = re.compile(
     r"^\s*---\r?\n(.*?)\r?\n---\r?\n?(.*)$",
     re.DOTALL,
 )
+FRONTMATTER_PATTERN = FRONTMATTER_REGEX
 
 
 class DocumentMetadata(BaseModel):
