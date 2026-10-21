@@ -303,13 +303,18 @@ def interactive_model_selector(
             lines.append(Text(""))
 
             # Redraw in place without scrolling
+            with c.capture() as capture:
+                for line in lines:
+                    c.print(line)
+            rendered_lines = len(capture.get().splitlines())
+
             if prev_lines_drawn > 0:
                 _clear_lines(prev_lines_drawn, c)
 
             for line in lines:
                 c.print(line)
             sys.stdout.flush()
-            prev_lines_drawn = len(lines)
+            prev_lines_drawn = rendered_lines
 
             # Wait for key
             key = _read_key()
@@ -437,13 +442,18 @@ def interactive_skill_selector(
             lines.append(Text(""))
 
             # Redraw in place without scrolling
+            with c.capture() as capture:
+                for line in lines:
+                    c.print(line)
+            rendered_lines = len(capture.get().splitlines())
+
             if prev_lines_drawn > 0:
                 _clear_lines(prev_lines_drawn, c)
 
             for line in lines:
                 c.print(line)
             sys.stdout.flush()
-            prev_lines_drawn = len(lines)
+            prev_lines_drawn = rendered_lines
 
             key = _read_key()
 
@@ -538,13 +548,18 @@ def interactive_action_confirm(action_text: str, console: Console | None = None)
             lines_out.append(footer)
 
             # Clean redraw: erase previous lines completely
+            with c.capture() as capture:
+                for line in lines_out:
+                    c.print(line)
+            rendered_lines = len(capture.get().splitlines())
+
             if prev_lines_drawn > 0:
                 _clear_lines(prev_lines_drawn, c)
 
             for line in lines_out:
                 c.print(line)
             sys.stdout.flush()
-            prev_lines_drawn = len(lines_out)
+            prev_lines_drawn = rendered_lines
 
             key = _read_key()
             if key in ("ESC", "n", "N", "q", "Q"):
@@ -653,13 +668,18 @@ def interactive_token_warning_confirm(
             lines.append(footer)
 
             # Redraw in place without c.clear()
+            with c.capture() as capture:
+                for line in lines:
+                    c.print(line)
+            rendered_lines = len(capture.get().splitlines())
+
             if prev_lines_drawn > 0:
                 _clear_lines(prev_lines_drawn, c)
 
             for line in lines:
                 c.print(line)
             sys.stdout.flush()
-            prev_lines_drawn = len(lines)
+            prev_lines_drawn = rendered_lines
 
             key = _read_key()
             if key in ("ESC", "q", "Q"):
@@ -880,13 +900,18 @@ def interactive_help_view(
             lines.append(footer)
 
             # Redraw in place without scrolling
+            with c.capture() as capture:
+                for line in lines:
+                    c.print(line)
+            rendered_lines = len(capture.get().splitlines())
+
             if prev_lines_drawn > 0:
                 _clear_lines(prev_lines_drawn, c)
 
             for line in lines:
                 c.print(line)
             sys.stdout.flush()
-            prev_lines_drawn = len(lines)
+            prev_lines_drawn = rendered_lines
 
             key = _read_key()
             if key in ("ESC", "q", "Q", "ENTER"):
@@ -1044,13 +1069,18 @@ def interactive_input_prompt(
             lines_to_render.append(s_footer)
 
             # Redraw in place
+            with c.capture() as capture:
+                for line in lines_to_render:
+                    c.print(line)
+            rendered_lines = len(capture.get().splitlines())
+
             if prev_lines_drawn > 0:
                 _clear_lines(prev_lines_drawn, c)
 
             for line in lines_to_render:
                 c.print(line)
             sys.stdout.flush()
-            prev_lines_drawn = len(lines_to_render)
+            prev_lines_drawn = rendered_lines
 
             # Read keystroke
             key = _read_key()
@@ -1403,13 +1433,10 @@ def interactive_item_browser(
             cursor_idx = max(0, min(cursor_idx, len(slice_items) - 1))
             absolute_cursor = start_idx + cursor_idx
 
-            cap_console = Console(record=True, width=c.width or 80)
+            lines: list[Any] = []
             if title:
-                if isinstance(title, str):
-                    cap_console.print(title)
-                else:
-                    cap_console.print(title)
-                cap_console.print()
+                lines.append(title if not isinstance(title, str) else Text(title))
+                lines.append(Text(""))
 
             table = Table(box=None, padding=(0, 2), show_header=True, header_style="bold cyan")
             for col in columns:
@@ -1426,8 +1453,8 @@ def interactive_item_browser(
                 row_vals = row_builder(start_idx + i, it, is_selected)
                 table.add_row(*row_vals)
 
-            cap_console.print(table)
-            cap_console.print()
+            lines.append(table)
+            lines.append(Text(""))
 
             # Actions / Navigation bar
             action_bar = Text()
@@ -1440,18 +1467,20 @@ def interactive_item_browser(
                 action_bar.append(f"[{a_key_hint}] ", style="bold cyan")
                 action_bar.append(f"{a_label}   ", style="dim")
 
-            
-            cap_console.print(action_bar)
+            lines.append(action_bar)
 
-            rendered = cap_console.export_text()
-            lines_count = rendered.count("\n")
+            with c.capture() as capture:
+                for item in lines:
+                    c.print(item)
+            rendered_lines = len(capture.get().splitlines())
 
             if prev_lines_drawn > 0:
                 _clear_lines(prev_lines_drawn, c)
 
-            sys.stdout.write(rendered)
+            for item in lines:
+                c.print(item)
             sys.stdout.flush()
-            prev_lines_drawn = lines_count
+            prev_lines_drawn = rendered_lines
 
             key = _read_key()
             if key == "UP":
@@ -1513,22 +1542,20 @@ def interactive_detail_viewer(
     c.show_cursor(False)
     try:
         while True:
-            cap_console = Console(record=True, width=c.width or 80)
-            cap_console.print(f"[bold bright_white]{title}[/bold bright_white] [dim]({total_lines} lines)[/dim]")
-            cap_console.print()
+            lines: list[Any] = []
+            lines.append(Text.from_markup(f"[bold bright_white]{title}[/bold bright_white] [dim]({total_lines} lines)[/dim]"))
+            lines.append(Text(""))
 
             visible = content_lines[scroll_top : scroll_top + view_height]
             if not visible:
-                cap_console.print("[dim](No log output)[/dim]")
+                lines.append(Text("(No log output)", style="dim"))
             else:
                 for line in visible:
-                    cap_console.print(Text(line[:(c.width or 80) - 2], style="white"))
+                    lines.append(Text(line[:(c.width or 80) - 2], style="white"))
 
             # Fill remaining space
             for _ in range(view_height - len(visible)):
-                cap_console.print()
-
-            
+                lines.append(Text(""))
 
             action_bar = Text()
             if total_lines > view_height:
@@ -1538,16 +1565,20 @@ def interactive_detail_viewer(
                 action_bar.append(f"[{a_key_hint}] ", style="bold cyan")
                 action_bar.append(f"{a_label}   ", style="dim")
 
-            cap_console.print(action_bar)
-            rendered = cap_console.export_text()
-            lines_count = rendered.count("\n")
+            lines.append(action_bar)
+
+            with c.capture() as capture:
+                for item in lines:
+                    c.print(item)
+            rendered_lines = len(capture.get().splitlines())
 
             if prev_lines_drawn > 0:
                 _clear_lines(prev_lines_drawn, c)
 
-            sys.stdout.write(rendered)
+            for item in lines:
+                c.print(item)
             sys.stdout.flush()
-            prev_lines_drawn = lines_count
+            prev_lines_drawn = rendered_lines
 
             key = _read_key()
             if key == "UP":
