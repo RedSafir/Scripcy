@@ -3010,9 +3010,16 @@ class CLIStudio:
         self.task_manager.log(task_id, f"Finished: {summary}")
         return summary
 
-    def _background_scout_worker(self, task_id: str, query: str, max_download: int = 3) -> str:
+    def _background_scout_worker(
+        self,
+        task_id: str,
+        query: str = "",
+        topic_query: str = "",
+        max_download: int = 3,
+        **kwargs: Any,
+    ) -> str:
         """Background agent worker that formulates criteria, searches multi-source, ranks, and downloads into vault."""
-        clean_query = query.strip().strip("'\"")
+        clean_query = (query or topic_query).strip().strip("'\"")
         self.task_manager.log(task_id, f"Formulating query strategy for: '{clean_query}'")
         try:
             query_spec = self.scout.extract_search_criteria(clean_query, engine=self.engine)
@@ -5367,6 +5374,9 @@ class CLIStudio:
             "the", "is", "are", "and", "or", "to", "in", "of", "on", "for", "with",
             "tentang", "mengenai", "pada", "di", "ke", "dari", "dan", "atau", "yang",
             "ini", "itu", "tersebut", "secara", "seperti", "yaitu", "adalah", "ialah",
+            "carikan", "cari", "aku", "saya", "kami", "kita", "berikan", "kasih", "butuh",
+            "argument", "argumen", "alasan", "dampak", "buruk", "baik", "bagus",
+            "mau", "ingin", "paper", "jurnal", "artikel", "literature", "literatur",
         }
         cleaned = re.sub(r"[^\w\s-]", " ", query)
         words = cleaned.split()
@@ -5614,14 +5624,28 @@ class CLIStudio:
                 timed_out = False
                 try:
                     async def _run_scout_with_timeout() -> list[str]:
+                        import inspect
+                        sig = inspect.signature(self.scout.auto_scout_and_ingest)
+                        scout_kwargs: dict[str, Any] = {
+                            "max_papers": 2,
+                            "on_status": on_scout_status,
+                        }
+                        if "engine" in sig.parameters or any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()):
+                            scout_kwargs["engine"] = self.engine
+
                         return await asyncio.wait_for(
-                            self.scout.auto_scout_and_ingest(target_topic, max_papers=2, on_status=on_scout_status),
+                            self.scout.auto_scout_and_ingest(
+                                target_topic,
+                                **scout_kwargs,
+                            ),
                             timeout=20.0,
                         )
                     new_stems = asyncio.run(_run_scout_with_timeout())
                 except (asyncio.TimeoutError, TimeoutError):
                     timed_out = True
                 except Exception as exc:
+                    if hasattr(self, "logger") and self.logger:
+                        self.logger.log_error(session.id if session else None, "AUTO_SCOUT", exc)
                     self.console.print(f"[dim]● Pencarian repositori gagal: {exc}. Melanjutkan...[/dim]\n")
 
                 if timed_out:
@@ -5629,6 +5653,7 @@ class CLIStudio:
                         name=f"Deep Research Scout: {target_topic}",
                         task_type="scout",
                         target_fn=self._background_scout_worker,
+                        query=target_topic,
                         topic_query=target_topic,
                         session_id=session.id if session else None,
                     )

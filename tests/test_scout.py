@@ -469,3 +469,28 @@ class TestCLIStudioScoutCommand:
             assert len(tasks) > 0
             assert tasks[0].status == "completed"
             assert "Added #1 to vault & indexed" in "\n".join(tasks[0].logs)
+
+    @pytest.mark.asyncio
+    async def test_auto_scout_and_ingest_has_search_all_repositories_alias(
+        self,
+        temp_workspace: WorkspaceManager,
+    ) -> None:
+        """Verify LiteratureScout has search_all_repositories alias and auto_scout_and_ingest executes without AttributeError."""
+        scout = LiteratureScout(workspace=temp_workspace)
+        assert hasattr(scout, "search_all_repositories")
+        assert scout.search_all_repositories == scout.search_multi_source
+
+        candidate = ScoutResult(
+            title="Peatland Fire Carbon Study",
+            authors=["Susan Page"],
+            year=2023,
+            has_pdf=True,
+            pdf_url="https://example.com/peat.pdf",
+            abstract="Carbon emissions study",
+        )
+
+        with patch.object(scout, "search_multi_source", new_callable=AsyncMock, return_value=[candidate]):
+            with patch.object(scout, "download_scout_paper", new_callable=AsyncMock, return_value=Path("vault/peat.pdf")):
+                stems = await scout.auto_scout_and_ingest("karhutla", max_papers=1)
+                assert len(stems) == 1
+                assert "Peatland_Fire_Carbon_Study" == stems[0]

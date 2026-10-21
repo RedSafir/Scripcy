@@ -354,6 +354,9 @@ class LiteratureScout:
 
         return deduped[:limit]
 
+    # Alias for backwards compatibility with test harnesses and external callers
+    search_all_repositories = search_multi_source
+
     def curate_and_rank(
         self,
         user_input: str,
@@ -656,14 +659,19 @@ class LiteratureScout:
         query: str,
         max_papers: int = 2,
         on_status: Any | None = None,
+        engine: LLMEngine | None = None,
     ) -> list[str]:
         """Automatically discover, filter (preferring OA PDF, fallback to abstract), and ingest papers for a topic."""
-        sq = ScoutQuery(keywords=query, is_oa_only=False)
-        candidates = await self.search_all_repositories(sq, limit=15)
+        try:
+            sq = self.extract_search_criteria(query, engine=engine)
+        except Exception:
+            sq = ScoutQuery(keywords=query, is_oa_only=False)
+
+        candidates = await self.search_multi_source(sq, limit=15)
         if not candidates:
             return []
 
-        curated = self.curate_and_rank(query, candidates)
+        curated = self.curate_and_rank(query, candidates, engine=engine)
         if not curated:
             return []
 
