@@ -1159,3 +1159,84 @@ class TestAgenticUXAndFormatting:
         assert cli_studio.sub_mode == "chat"
         out = cli_studio.console.file.getvalue()
         assert "Pertanyaan dibatalkan oleh pengguna (Ctrl+C)" in out
+
+    def test_handle_chat_detach_signal_hands_off_to_background(self, cli_studio: CLIStudio) -> None:
+        """Verify typing /detach while agent is streaming hands off task to background TaskManager."""
+        from scrpcy.core.engine import EvidenceChunk
+        from scrpcy.cli_studio import SessionDetachSignal
+
+        cli_studio.config.api_keys["gemini"] = "dummy-key"
+        cli_studio.sub_mode = "chat"
+        session = cli_studio._ensure_active_chat_session()
+        assert session is not None
+
+        mock_evidence = [EvidenceChunk(chunk_id="c0", source="paper1", text="Sample", score=1.0)]
+
+        with patch.object(cli_studio.engine.evidence_synthesizer, "retrieve_evidence", return_value=mock_evidence):
+            with patch.object(cli_studio, "_run_agent_turn_interactive", side_effect=SessionDetachSignal("detach")):
+                import pytest
+                with pytest.raises(SessionDetachSignal):
+                    cli_studio.handle_chat("analisa setiap journal yang ada di vault")
+
+        # Session must be marked detached
+        updated_s = cli_studio.chat_manager.get_session(session.id)
+        assert updated_s is not None
+        assert updated_s.status == "detached"
+
+        # Background task must be submitted to TaskManager
+        tasks = cli_studio.task_manager.list_tasks_for_session(session.id)
+        assert len(tasks) > 0
+        assert tasks[0].task_type == "agent"
+
+        out = cli_studio.console.file.getvalue()
+        assert "di-detach ke latar belakang" in out
+
+    def test_handle_chat_close_signal_terminates_session(self, cli_studio: CLIStudio) -> None:
+        """Verify typing /close terminates session and cancels background task."""
+        from scrpcy.core.engine import EvidenceChunk
+        from scrpcy.cli_studio import SessionCloseSignal
+
+        cli_studio.config.api_keys["gemini"] = "dummy-key"
+        cli_studio.sub_mode = "chat"
+        session = cli_studio._ensure_active_chat_session()
+        assert session is not None
+
+        mock_evidence = [EvidenceChunk(chunk_id="c0", source="paper1", text="Sample", score=1.0)]
+
+        with patch.object(cli_studio.engine.evidence_synthesizer, "retrieve_evidence", return_value=mock_evidence):
+            with patch.object(cli_studio, "_run_agent_turn_interactive", side_effect=SessionCloseSignal("close")):
+                import pytest
+                with pytest.raises(SessionCloseSignal):
+                    cli_studio.handle_chat("analisa setiap journal yang ada di vault")
+
+        updated_s = cli_studio.chat_manager.get_session(session.id)
+        assert updated_s is not None
+        assert updated_s.status == "closed"
+
+        out = cli_studio.console.file.getvalue()
+        assert "ditutup (terminated)" in out
+
+    def test_interactive_input_prompt_esc_returns_detach_in_chat(self) -> None:
+        """Verify ESC on empty input returns /detach in chat mode."""
+        from scrpcy.ui.interactive import interactive_input_prompt
+
+        with patch("sys.stdin.isatty", return_value=True):
+            with patch("scrpcy.ui.interactive._read_key", side_effect=["ESC"]):
+                res = interactive_input_prompt(
+                    mode="chat",
+                    is_chat_mode=True,
+                )
+                assert res == "/detach"
+
+    def test_interactive_input_prompt_ctrl_c_raises_keyboard_interrupt(self) -> None:
+        """Verify Ctrl+C raises KeyboardInterrupt."""
+        from scrpcy.ui.interactive import interactive_input_prompt
+        import pytest
+
+        with patch("sys.stdin.isatty", return_value=True):
+            with patch("scrpcy.ui.interactive._read_key", side_effect=["\x03"]):
+                with pytest.raises(KeyboardInterrupt):
+                    interactive_input_prompt(
+                        mode="chat",
+                        is_chat_mode=True,
+                    )

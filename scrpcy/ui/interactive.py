@@ -1131,7 +1131,18 @@ def interactive_input_prompt(
                 if suggestions:
                     suggestion_cursor = 0
                     buffer = ""
+                elif not buffer:
+                    if prev_lines_drawn > 0:
+                        _clear_lines(prev_lines_drawn, c)
+                    return "/detach" if (mode == "chat" or is_chat_mode) else ""
+                else:
+                    buffer = ""
                 continue
+
+            elif key == "":
+                if prev_lines_drawn > 0:
+                    _clear_lines(prev_lines_drawn, c)
+                raise KeyboardInterrupt()
 
             elif key == "BACKSPACE":
                 if buffer:

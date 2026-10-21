@@ -67,6 +67,16 @@ from scrpcy.ui.interactive import (
 )
 from scrpcy.ui.formatters import render_academic_markdown
 
+class SessionDetachSignal(Exception):
+    """User requested to detach the active chat session to background."""
+    pass
+
+
+class SessionCloseSignal(Exception):
+    """User requested to close/terminate the active chat session."""
+    pass
+
+
 SCRPCY_LOGO = r"""
   ███████╗ ██████╗██████╗ ██████╗  ██████╗██╗   ██╗
   ██╔════╝██╔════╝██╔══██╗██╔══██╗██╔════╝╚██╗ ██╔╝
@@ -1918,8 +1928,12 @@ class CLIStudio:
 
 
             # Process prompt through chat logic
-
-            self.handle_chat_submode_interaction(raw_input)
+            try:
+                self.handle_chat_submode_interaction(raw_input)
+            except SessionDetachSignal:
+                break
+            except SessionCloseSignal:
+                break
 
 
 
@@ -3826,13 +3840,22 @@ class CLIStudio:
             cmd = parts[0].lower()
             arg = parts[1].strip() if len(parts) > 1 else ""
 
-            if cmd in ("/back", "/exit", "/quit", "/close", "/cd..", "/.."):
+            if cmd in ("/detach", "detach", "/back", "back"):
                 self.render_mode_divider()
                 running_tasks = [t for t in self.task_manager.list_tasks_for_session(self.active_chat_session.id) if t.status == "running"] if self.active_chat_session else []
                 if running_tasks:
                     self.console.print(f"[bold yellow]●[/bold yellow] [dim]{len(running_tasks)} proses latar belakang tetap berjalan di background. Anda dapat kembali ke sesi ini kapan saja dengan 'resume {self.active_chat_session.name}'.[/dim]")
+                if self.active_chat_session and self.chat_manager:
+                    self.chat_manager.update_session_status(self.active_chat_session.id, "detached")
                 self.sub_mode = "chat_hub"
                 self.console.print(f"[dim]Kembali ke menu chat: {self.current_project.name}/chat>[/dim]\n")
+                return
+            elif cmd in ("/close", "close", "/exit", "exit", "/quit", "quit"):
+                self.render_mode_divider()
+                if self.active_chat_session and self.chat_manager:
+                    self.chat_manager.update_session_status(self.active_chat_session.id, "closed")
+                self.sub_mode = "chat_hub"
+                self.console.print(f"[dim]Sesi '{self.active_chat_session.name if self.active_chat_session else ''}' ditutup (terminated).[/dim]\n")
                 return
             elif cmd in ("/bg", "/async"):
                 if not arg:
@@ -5080,7 +5103,7 @@ class CLIStudio:
             def _get_layout() -> tuple[str, str]:
                 cur_width = self.console.width or shutil.get_terminal_size((80, 24)).columns
                 cur_div = "─" * cur_width
-                left_st = "? for shortcuts"
+                left_st = "? for shortcuts · /detach to background · /close to terminate"
                 right_st = f"{self.active_skill_name} • {model_label} • {effort}" if self.active_skill_name else f"{model_label} • {effort}"
                 pad = max(2, cur_width - len(left_st) - len(right_st) - 2)
                 cur_foot = f"{left_st}{' ' * pad}{right_st}"
@@ -5102,22 +5125,37 @@ class CLIStudio:
                         while msvcrt.kbhit():
                             ch = msvcrt.getwch()
                             need_redraw = True
-                            if ch in ("\x03", "\x1b"):  # Ctrl+C or Esc
+                            if ch == "\x03":  # Ctrl+C
                                 t.cancel()
                                 raise asyncio.CancelledError("cancel")
+                            elif ch == "\x1b":  # Esc
+                                if typed_buffer:
+                                    typed_buffer.clear()
+                                else:
+                                    raise SessionDetachSignal("detach")
                             elif ch in ("\r", "\n"):
                                 cmd = "".join(typed_buffer).strip().lower()
-                                if cmd in ("/cancel", "cancel", "/batal", "batal", "/stop", "stop", "/back", "back", "/exit"):
+                                typed_buffer.clear()
+                                if cmd in ("/detach", "detach", "/back", "back"):
+                                    raise SessionDetachSignal("detach")
+                                elif cmd in ("/close", "close", "/terminate", "terminate", "/exit", "exit"):
+                                    t.cancel()
+                                    raise SessionCloseSignal("close")
+                                elif cmd in ("/cancel", "cancel", "/batal", "batal", "/stop", "stop"):
                                     t.cancel()
                                     raise asyncio.CancelledError("cancel")
-                                typed_buffer.clear()
                             elif ch in ("\b", "\x7f"):
                                 if typed_buffer:
                                     typed_buffer.pop()
                             elif ch.isprintable():
                                 typed_buffer.append(ch)
                                 curr = "".join(typed_buffer).strip().lower()
-                                if curr in ("/cancel", "cancel", "/batal", "/stop", "/back", "back"):
+                                if curr in ("/detach", "detach"):
+                                    raise SessionDetachSignal("detach")
+                                elif curr in ("/close", "close"):
+                                    t.cancel()
+                                    raise SessionCloseSignal("close")
+                                elif curr in ("/cancel", "cancel", "/batal", "/stop"):
                                     t.cancel()
                                     raise asyncio.CancelledError("cancel")
 
@@ -5145,9 +5183,11 @@ class CLIStudio:
                     _clear_lines(prev_lines_drawn, self.console)
                 return await t
 
-            except BaseException:
+            except BaseException as exc:
                 if prev_lines_drawn > 0:
                     _clear_lines(prev_lines_drawn, self.console)
+                if isinstance(exc, SessionDetachSignal):
+                    raise
                 if not t.done():
                     t.cancel()
                 try:
@@ -5432,6 +5472,56 @@ class CLIStudio:
 
             # 5. Suggested actions & Action Indicator: Mengubah / Menulis
             self._handle_suggested_actions(final_response)
+
+        except SessionDetachSignal:
+            if session and self.chat_manager:
+                self.chat_manager.update_session_status(session.id, "detached")
+
+            # Handoff query to background TaskManager so AI continues running
+            def _bg_worker(task_id: str) -> str:
+                self.task_manager.log(task_id, f"Melanjutkan sintesis di background untuk sesi '{session.name if session else ''}'...")
+                bg_tokens = list(last_turn_tokens) if last_turn_tokens else []
+                async def _bg_stream() -> None:
+                    async for tok in self.engine.stream_query(
+                        query=current_query,
+                        documents=current_docs,
+                        skill_name=self.active_skill_name,
+                        model=model_name,
+                        max_evidence_chunks=0,
+                        history=history_msgs,
+                    ):
+                        bg_tokens.append(tok)
+
+                b_loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(b_loop)
+                try:
+                    b_loop.run_until_complete(_bg_stream())
+                finally:
+                    b_loop.close()
+
+                final_text = "".join(bg_tokens).strip()
+                if self.chat_manager and session and final_text:
+                    self.chat_manager.add_message(session.id, "assistant", final_text)
+                    self.chat_manager.update_session_status(session.id, "detached")
+                self.task_manager.log(task_id, f"Selesai! {len(final_text)} karakter disimpan ke riwayat sesi.")
+                return final_text[:200] if final_text else "Selesai"
+
+            task = self.task_manager.submit(
+                name=f"Chat ({session.name if session else 'session'}): {query[:30]}...",
+                task_type="agent",
+                target_fn=_bg_worker,
+                session_id=session.id if session else None,
+            )
+
+            self.console.print(f"\n[bold cyan]● Sesi '{session.name if session else ''}' di-detach ke latar belakang.[/bold cyan]")
+            self.console.print(f"[dim]● Proses analisis dialihkan ke background (Task: {task.id}). Pantau di menu Processing atau buka kembali sesi kapan saja.[/dim]\n")
+            raise
+
+        except SessionCloseSignal:
+            if session and self.chat_manager:
+                self.chat_manager.update_session_status(session.id, "closed")
+            self.console.print(f"\n[dim]● Sesi '{session.name if session else ''}' ditutup (terminated).\n[/dim]")
+            raise
 
         except (KeyboardInterrupt, asyncio.CancelledError):
             self.console.print("\n\n[bold yellow]● Pertanyaan dibatalkan oleh pengguna (Ctrl+C).[/bold yellow]\n")
