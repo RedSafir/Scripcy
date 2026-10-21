@@ -2471,6 +2471,76 @@ class CLIStudio:
             " [dim]• Ketik [bold cyan]processing[/bold cyan] atau [bold cyan]proc[/bold cyan] untuk memantau progres unduhan & log real-time.[/dim]\n"
         )
 
+    def _ask_ai_orchestrator_barrier(
+        self,
+        finished_task: Any,
+        running_siblings: list[Any],
+        session: Any,
+    ) -> dict[str, Any]:
+        """Query LLM to decide whether to wait for concurrent tasks or synthesize immediately (ensuring 1 final response)."""
+        model_name = self.get_active_project_model()
+        api_key = self.config.get_api_key_for_model(model_name)
+        if not api_key:
+            return {"decision": "WAIT", "max_wait_seconds": 20, "reason": "Menunggu proses paralel selesai"}
+
+        sibling_lines = []
+        for s in running_siblings:
+            dur = getattr(s, "duration_seconds", 0.0)
+            if callable(dur):
+                dur = dur()
+            sibling_lines.append(f"- ID: {s.id} | Nama: {s.name} | Tipe: {s.task_type} | Durasi: {dur:.1f} detik")
+        siblings_str = "\n".join(sibling_lines)
+
+        gate_prompt = (
+            f"[ORCHESTRATOR THREAD COORDINATION]\n"
+            f"Tugas yang baru selesai: {finished_task.name} (ID: {finished_task.id})\n"
+            f"Hasil: {getattr(finished_task, 'result_summary', '') or 'Selesai'}\n\n"
+            f"Masih terdapat {len(running_siblings)} tugas lain yang sedang berjalan dalam sesi '{session.name}':\n"
+            f"{siblings_str}\n\n"
+            f"Sebagai AI Orchestrator, Anda wajib memastikan HANYA ADA 1 RESPONS AKHIR ke pengguna.\n"
+            f"Tentukan salah satu keputusan koordinasi:\n"
+            f"1. 'WAIT': Tunggu proses yang sedang berjalan di atas (maks 15-30 detik lagi) agar seluruh hasil digabung ke 1 respons sintesis utuh.\n"
+            f"2. 'CANCEL_AND_PROCEED': Batalkan tugas yang tersisa karena hasil yang ada sudah cukup, lalu berikan 1 respons final sekarang.\n"
+            f"3. 'PROCEED': Langsung berikan 1 respons final sekarang dengan data saat ini (tugas lain tetap berjalan tanpa memicu evaluasi kedua).\n\n"
+            f"Format jawaban HANYA JSON murni:\n"
+            f'{{\n  "decision": "WAIT" | "CANCEL_AND_PROCEED" | "PROCEED",\n  "max_wait_seconds": 20,\n  "reason": "Alasan singkat"\n}}'
+        )
+
+        try:
+            tokens: list[str] = []
+            async def _run_gate() -> None:
+                async for tok in self.engine.stream_query(
+                    query=gate_prompt,
+                    documents=[],
+                    skill_name="general",
+                    model=model_name,
+                    max_evidence_chunks=0,
+                ):
+                    tokens.append(tok)
+
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                loop.run_until_complete(_run_gate())
+            finally:
+                loop.close()
+
+            raw_resp = "".join(tokens).strip()
+            clean_str = raw_resp
+            if "```json" in clean_str:
+                clean_str = clean_str.split("```json", 1)[1].split("```", 1)[0].strip()
+            elif "```" in clean_str:
+                clean_str = clean_str.split("```", 1)[1].split("```", 1)[0].strip()
+            import json
+            data = json.loads(clean_str)
+            return {
+                "decision": data.get("decision", "WAIT"),
+                "max_wait_seconds": int(data.get("max_wait_seconds", 20)),
+                "reason": data.get("reason", "Koordinasi thread"),
+            }
+        except Exception:
+            return {"decision": "WAIT", "max_wait_seconds": 20, "reason": "Menunggu proses paralel"}
+
     def _on_background_task_completed(self, task: Any) -> None:
         """Invoked asynchronously whenever any background task finishes."""
         session_id = getattr(task, "session_id", None)
@@ -2515,8 +2585,71 @@ class CLIStudio:
             elif task_status == "failed":
                 self.console.print(f"\n[bold red][x] Tugas Latar Belakang Gagal:[/bold red] [cyan]{task_name}[/cyan] [dim]({error_msg})[/dim]")
 
-        # Autonomous AI Agent Loop: Evaluate task results and formulate user briefing
+        # Multi-Thread Orchestrator Barrier: ensure exactly 1 consolidated response
         if task_type != "evaluation":
+            if not hasattr(self, "_evaluated_task_ids"):
+                self._evaluated_task_ids = set()
+
+            if task_id in self._evaluated_task_ids:
+                return
+
+            running_siblings = [
+                t for t in self.task_manager.list_tasks_for_session(session_id)
+                if t.id != task_id and t.status == "running" and t.task_type != "evaluation" and t.id not in self._evaluated_task_ids
+            ]
+
+            if running_siblings:
+                session = self.chat_manager.get_session(session_id)
+                decision_info = self._ask_ai_orchestrator_barrier(task, running_siblings, session)
+                decision = decision_info.get("decision", "WAIT")
+                wait_sec = decision_info.get("max_wait_seconds", 20)
+                reason = decision_info.get("reason", "")
+
+                if self.sub_mode == "chat" and self.active_chat_session and self.active_chat_session.id == session_id:
+                    if decision == "WAIT":
+                        sib_names = ", ".join(f"{s.id}" for s in running_siblings)
+                        self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Orchestrator Thread:[/bold bright_white] [yellow]Menunggu hasil {sib_names}[/yellow] [dim]({reason})[/dim]")
+                    elif decision == "CANCEL_AND_PROCEED":
+                        self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Orchestrator Thread:[/bold bright_white] [yellow]Membatalkan proses lain & langsung merumuskan 1 respons terpadu[/yellow] [dim]({reason})[/dim]")
+                    else:
+                        self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Orchestrator Thread:[/bold bright_white] [cyan]Merumuskan respons final sekarang[/cyan] [dim]({reason})[/dim]")
+
+                if decision == "WAIT":
+                    start_w = time.time()
+                    while time.time() - start_w < wait_sec:
+                        still_running = [
+                            t for t in self.task_manager.list_tasks_for_session(session_id)
+                            if t.id != task_id and t.status == "running" and t.task_type != "evaluation" and t.id not in self._evaluated_task_ids
+                        ]
+                        if not still_running:
+                            break
+                        time.sleep(1)
+
+                    still_running = [
+                        t for t in self.task_manager.list_tasks_for_session(session_id)
+                        if t.id != task_id and t.status == "running" and t.task_type != "evaluation" and t.id not in self._evaluated_task_ids
+                    ]
+                    if still_running:
+                        for s in still_running:
+                            self.task_manager.cancel_task(s.id)
+                            self._evaluated_task_ids.add(s.id)
+                        if self.sub_mode == "chat" and self.active_chat_session and self.active_chat_session.id == session_id:
+                            self.console.print(f"[bold cyan]●[/bold cyan] [bold yellow]Waktu tunggu tercapai ({wait_sec}s).[/bold yellow] [dim]Membatalkan proses yang terlambat dan merumuskan respons.[/dim]")
+
+                elif decision == "CANCEL_AND_PROCEED":
+                    for s in running_siblings:
+                        self.task_manager.cancel_task(s.id)
+                        self._evaluated_task_ids.add(s.id)
+
+                elif decision == "PROCEED":
+                    for s in running_siblings:
+                        self._evaluated_task_ids.add(s.id)
+
+            # Mark all current tasks as evaluated for this batch
+            for t in self.task_manager.list_tasks_for_session(session_id):
+                if t.status in ("completed", "cancelled"):
+                    self._evaluated_task_ids.add(t.id)
+
             try:
                 self._run_task_ai_evaluation(task, session_id)
             except Exception:
@@ -2556,12 +2689,21 @@ class CLIStudio:
                 last_user_query = m.content
                 break
 
+        # Collect all completed tasks in this session batch for 1 unified response
+        all_completed = [
+            t for t in self.task_manager.list_tasks_for_session(session_id)
+            if t.status == "completed" and t.task_type != "evaluation"
+        ]
+        tasks_batch_lines = []
+        for t in all_completed[:6]:
+            tasks_batch_lines.append(f"- {t.id} ({t.name}): {t.result_summary or 'Selesai'}")
+        tasks_batch_str = "\n".join(tasks_batch_lines) if tasks_batch_lines else f"- {task_id} ({task_name}): {summary}"
+
         eval_prompt = (
-            f"[EVALUASI HASIL TUGAS LATAR BELAKANG]\n"
-            f"Nama Tugas: {task_name}\n"
-            f"ID Tugas: {task_id} ({task_type})\n"
-            f"Status: {task_status}\n"
-            f"Ringkasan/Kendala: {summary if task_status == 'completed' else error_msg}\n\n"
+            f"[EVALUASI HASIL TUGAS LATAR BELAKANG TERPADU (1 RESPONS FINAL)]\n"
+            f"Tugas Latar Belakang yang Telah Selesai:\n"
+            f"{tasks_batch_str}\n\n"
+            f"Status Pembaruan: {task_name} ({task_id}) selesai.\n\n"
             f"Konteks Riset Sesi ({session.name}):\n"
             f"Pertanyaan/Fokus Riset: \"{last_user_query or session.name}\"\n\n"
             f"Dokumen di Vault Saat Ini:\n"

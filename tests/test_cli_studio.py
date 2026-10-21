@@ -1260,3 +1260,30 @@ class TestAgenticUXAndFormatting:
                     is_live=lambda: True,
                 )
                 assert choice == "back"
+
+
+    def test_orchestrator_barrier_single_response_on_concurrent_tasks(self, cli_studio: CLIStudio) -> None:
+        sess = cli_studio.chat_manager.create_session("Riset Karhutla")
+        t1_id = cli_studio.task_manager.add_task(name="Scout Karhutla Ekonomi", task_type="scout", session_id=sess.id)
+        t2_id = cli_studio.task_manager.add_task(name="Scout Karhutla Kesehatan", task_type="scout", session_id=sess.id)
+
+        t1 = cli_studio.task_manager.get_task(t1_id)
+        t2 = cli_studio.task_manager.get_task(t2_id)
+        t1.status = "completed"
+        t1.result_summary = "Added 3 papers"
+
+        eval_calls: list[str] = []
+        with patch.object(cli_studio, "_ask_ai_orchestrator_barrier", return_value={"decision": "PROCEED", "reason": "Hasil cukup"}):
+            with patch.object(cli_studio, "_run_task_ai_evaluation", side_effect=lambda task, s_id: eval_calls.append(task.id)):
+                # Task 1 completes while Task 2 is running
+                cli_studio._on_background_task_completed(t1)
+                assert len(eval_calls) == 1
+                assert eval_calls[0] == t1.id
+
+                # Task 2 completes later
+                t2.status = "completed"
+                t2.result_summary = "Added 2 papers"
+                cli_studio._on_background_task_completed(t2)
+
+                # Total evaluations must STILL BE EXACTLY 1!
+                assert len(eval_calls) == 1
