@@ -1240,3 +1240,23 @@ class TestAgenticUXAndFormatting:
                         mode="chat",
                         is_chat_mode=True,
                     )
+
+    def test_interactive_detail_viewer_live_streaming(self) -> None:
+        """Verify interactive_detail_viewer pulls updated lines from lines_provider and responds to keys."""
+        from scrpcy.ui.interactive import interactive_detail_viewer
+
+        log_state = ["Line 1", "Line 2"]
+        def provider():
+            return list(log_state)
+
+        with patch("sys.stdin.isatty", return_value=True):
+            # First poll returns None (streaming tick), second poll returns ESC
+            with patch("scrpcy.ui.interactive._poll_key", side_effect=[None, "ESC"]):
+                # Update log_state to simulate background task producing new lines
+                log_state.append("Line 3 (newly streamed)")
+                choice = interactive_detail_viewer(
+                    title="Test Task Log",
+                    lines_provider=provider,
+                    is_live=lambda: True,
+                )
+                assert choice == "back"

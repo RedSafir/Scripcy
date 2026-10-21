@@ -128,6 +128,21 @@ def _read_key() -> str:
             termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
 
 
+def _poll_key() -> str | None:
+    """Non-blocking read of a single keypress, returns None if no key pressed."""
+    if sys.platform == "win32":
+        import msvcrt
+        if not msvcrt.kbhit():
+            return None
+        return _read_key()
+    else:
+        import select
+        r, _, _ = select.select([sys.stdin], [], [], 0)
+        if r:
+            return _read_key()
+        return None
+
+
 def _format_model_display_name(model_id: str) -> str:
     """Format model identifier into human-friendly Antigravity-style label."""
     clean = model_id
@@ -1532,32 +1547,58 @@ def interactive_item_browser(
 
 def interactive_detail_viewer(
     title: str,
-    content_lines: list[str],
+    content_lines: list[str] | None = None,
     actions: list[tuple[str, str, str]] | None = None,
     console: Console | None = None,
+    lines_provider: Any | None = None,
+    title_provider: Any | None = None,
+    is_live: Any | None = None,
 ) -> str:
-    """Interactive log / document viewer with scroll support per DESIGN.md."""
+    """Interactive log / document viewer with scroll and live streaming support per DESIGN.md."""
+    import time
+
     c = console or Console(force_terminal=True)
+    initial_lines = lines_provider() if lines_provider else (content_lines or [])
     if not sys.stdin.isatty():
         c.print(f"\n[bold cyan]=== {title} ===[/bold cyan]")
-        for l in content_lines[:20]:
+        for l in initial_lines[:20]:
             c.print(l)
         return "back"
 
     acts = actions or [("back", "Back", "esc")]
     view_height = max(5, (c.height or 24) - 8)
+    auto_scroll = True
     scroll_top = 0
-    total_lines = len(content_lines)
     prev_lines_drawn = 0
 
     c.show_cursor(False)
     try:
         while True:
+            cur_lines = lines_provider() if lines_provider else (content_lines or [])
+            cur_title = title_provider() if title_provider else title
+            total_lines = len(cur_lines)
+
+            if auto_scroll:
+                scroll_top = max(0, total_lines - view_height)
+            else:
+                scroll_top = max(0, min(scroll_top, max(0, total_lines - view_height)))
+
             lines: list[Any] = []
-            lines.append(Text.from_markup(f"[bold bright_white]{title}[/bold bright_white] [dim]({total_lines} lines)[/dim]"))
+            header_t = Text()
+            header_t.append(cur_title, style="bold bright_white")
+            header_t.append(f" ({total_lines} lines)", style="dim")
+            if lines_provider:
+                currently_running = is_live() if is_live else False
+                if currently_running:
+                    header_t.append("   •   ", style="dim")
+                    header_t.append("[● Live Streaming]", style="bold cyan")
+                else:
+                    header_t.append("   •   ", style="dim")
+                    header_t.append("[✓ Finished]", style="bold green")
+            lines.append(header_t)
             lines.append(Text(""))
 
-            visible = content_lines[scroll_top : scroll_top + view_height]
+            visible = cur_lines[scroll_top : scroll_top + view_height]
             if not visible:
                 lines.append(Text("(No log output)", style="dim"))
             else:
@@ -1572,6 +1613,8 @@ def interactive_detail_viewer(
             if total_lines > view_height:
                 action_bar.append(f"[Line {scroll_top + 1}-{min(total_lines, scroll_top + view_height)}/{total_lines}] ", style="bold cyan")
                 action_bar.append("↑/↓ Scroll · ", style="dim")
+                if not auto_scroll and lines_provider:
+                    action_bar.append("G Follow · ", style="dim")
             for a_key, a_label, a_key_hint in acts:
                 action_bar.append(f"[{a_key_hint}] ", style="bold cyan")
                 action_bar.append(f"{a_label}   ", style="dim")
@@ -1591,15 +1634,39 @@ def interactive_detail_viewer(
             sys.stdout.flush()
             prev_lines_drawn = rendered_lines
 
-            key = _read_key()
+            if lines_provider:
+                # Poll keys non-blocking with 0.25s cadence
+                start_poll = time.time()
+                key = None
+                while time.time() - start_poll < 0.25:
+                    key = _poll_key()
+                    if key is not None:
+                        break
+                    time.sleep(0.04)
+            else:
+                key = _read_key()
+
+            if key is None:
+                continue
+
             if key == "UP":
                 scroll_top = max(0, scroll_top - 1)
+                auto_scroll = False
             elif key == "DOWN":
-                scroll_top = max(0, min(total_lines - view_height, scroll_top + 1))
+                scroll_top = min(max(0, total_lines - view_height), scroll_top + 1)
+                if scroll_top >= max(0, total_lines - view_height):
+                    auto_scroll = True
+            elif key in ("g", "G"):
+                auto_scroll = True
+                scroll_top = max(0, total_lines - view_height)
             elif key in ("ESC", "\x03", "q", "Q"):
                 if prev_lines_drawn > 0:
                     _clear_lines(prev_lines_drawn, c)
                 return "back"
+            elif key == "ENTER":
+                if prev_lines_drawn > 0:
+                    _clear_lines(prev_lines_drawn, c)
+                return acts[0][0] if acts else "back"
             else:
                 k_clean = key.lower()
                 for a_key, a_label, a_key_hint in acts:

@@ -199,6 +199,8 @@ class TaskManager:
                 return True
         return False
 
+    cancel = cancel_task
+
     def clear_completed(self) -> int:
         """Remove finished or cancelled tasks from memory."""
         with self._lock:

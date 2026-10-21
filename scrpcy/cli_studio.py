@@ -1440,48 +1440,46 @@ class CLIStudio:
                 return
 
             elif action == "detail" and selected_task:
+                def _get_live_task_logs() -> list[str]:
+                    cur_t = self.task_manager.get_task(selected_task.id) or selected_task
+                    logs = list(cur_t.logs) or [f"Task: {cur_t.name}", f"Status: {cur_t.status}"]
+                    if cur_t.error:
+                        logs.append(f"Error: {cur_t.error}")
+                    if cur_t.result_summary:
+                        logs.append(f"Summary: {cur_t.result_summary}")
+                    return logs
 
-                t_logs = list(selected_task.logs) or [f"Task: {selected_task.name}", f"Status: {selected_task.status}"]
+                def _get_live_task_title() -> str:
+                    cur_t = self.task_manager.get_task(selected_task.id) or selected_task
+                    st_badge = f"[{cur_t.status.upper()}]"
+                    return f"Log Tugas [{cur_t.id}]: {cur_t.name} {st_badge}"
 
-                if selected_task.error:
-
-                    t_logs.append(f"Error: {selected_task.error}")
-
-                if selected_task.result_summary:
-
-                    t_logs.append(f"Summary: {selected_task.result_summary}")
-
-
+                def _is_task_live() -> bool:
+                    cur_t = self.task_manager.get_task(selected_task.id) or selected_task
+                    return cur_t.status == "running"
 
                 detail_acts = [
-
                     ("cancel", "Interrupt Task", "x"),
-
                     ("back", "Back", "esc"),
-
                 ]
 
                 d_choice = interactive_detail_viewer(
-
                     title=f"Log Tugas [{selected_task.id}]: {selected_task.name}",
-
-                    content_lines=t_logs,
-
+                    content_lines=_get_live_task_logs(),
                     actions=detail_acts,
-
                     console=self.console,
-
+                    lines_provider=_get_live_task_logs,
+                    title_provider=_get_live_task_title,
+                    is_live=_is_task_live,
                 )
 
                 if d_choice == "cancel":
-
-                    self.task_manager.cancel(selected_task.id)
+                    self.task_manager.cancel_task(selected_task.id)
+                    self.console.print(f"[bold yellow][!] Membatalkan proses tugas '{selected_task.name}'.[/bold yellow]\n")
 
             elif action == "cancel" and selected_task:
-
                 if selected_task.status == "running":
-
-                    self.task_manager.cancel(selected_task.id)
+                    self.task_manager.cancel_task(selected_task.id)
 
             elif action == "clear":
 
