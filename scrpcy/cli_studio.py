@@ -5473,27 +5473,35 @@ class CLIStudio:
                                 turn += 1
                                 continue
 
-                        # If Devil's Advocate spots outdated references or weak arguments, trigger reference mapping
+                        # If Devil's Advocate spots outdated references or weak arguments, trigger reference mapping and refinement
                         if c_report.needs_citation_mapping and turn < max_agent_turns - 1:
+                            self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Devil's Advocate[/bold bright_white] [yellow]Skor {c_report.score}/10: {c_report.critique_summary}[/yellow]")
                             stems = self._get_cached_stems()
+                            mapped_papers = []
                             if stems and self.scout:
-                                self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Devil's Advocate[/bold bright_white] [yellow]Skor {c_report.score}/10: {c_report.critique_summary}[/yellow]")
                                 self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Reference Mapping[/bold bright_white] [cyan]Menelusuri jaringan sitasi dokumen vault...[/cyan]")
                                 try:
                                     mapped_papers = asyncio.run(self.scout.map_vault_citation_network(stems, limit=2))
-                                    if mapped_papers:
-                                        lines_map = [f"- {p.title} ({p.year or 'n.d.'}) [{p.relevance_reason}]" for p in mapped_papers]
-                                        current_query = (
-                                            f"### HASIL REFERENCE MAPPING (JARINGAN SITASI VAULT):\n"
-                                            f"Paper terhubung yang ditemukan:\n" + "\n".join(lines_map) +
-                                            f"\n\nCatatan Devil's Advocate: {', '.join(c_report.weaknesses)}\n"
-                                            f"Pertanyaan riset asli: \"{query}\"\n"
-                                            f"Instruksi: Perkuat argumen sintesis dengan mengintegrasikan konteks literatur di atas dan jawab potensi sanggahan."
-                                        )
-                                        turn += 1
-                                        continue
                                 except Exception:
                                     pass
+
+                            lines_map = [f"- {p.title} ({p.year or 'n.d.'}) [{p.relevance_reason}]" for p in mapped_papers]
+                            extra_ref = ""
+                            if lines_map:
+                                extra_ref = "### HASIL REFERENCE MAPPING (JARINGAN SITASI VAULT):\nPaper terhubung yang ditemukan:\n" + "\n".join(lines_map) + "\n\n"
+
+                            weaknesses_str = ", ".join(c_report.weaknesses) if c_report.weaknesses else "Perkuat landasan argumen dan sertakan batasan metodologis."
+                            counter_str = ("\nPotensi sanggahan: " + ", ".join(c_report.counter_arguments)) if c_report.counter_arguments else ""
+                            recency_str = f"\nCatatan kebaruan: {c_report.recency_alert}" if c_report.recency_alert else ""
+
+                            current_query = (
+                                f"{extra_ref}### EVALUASI DEVIL'S ADVOCATE (SKOR {c_report.score}/10):\n"
+                                f"Catatan kelemahan: {weaknesses_str}{counter_str}{recency_str}\n\n"
+                                f"Pertanyaan riset asli: \"{query}\"\n"
+                                f"Instruksi: Mentailor ulang sintesis untuk mengatasi catatan kelemahan di atas, mengantisipasi potensi sanggahan, dan memperkokoh argumen."
+                            )
+                            turn += 1
+                            continue
 
                     final_response = turn_response
                     break
