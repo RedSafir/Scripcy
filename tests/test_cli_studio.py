@@ -1341,3 +1341,38 @@ class TestAgenticUXAndFormatting:
         assert did_flush is True
         assert cleared[0] is True
         assert len(cli_studio._pending_ui_events) == 0
+
+    def test_interactive_input_prompt_renders_status_line(self, test_console: Console) -> None:
+        from scrpcy.ui.interactive import interactive_input_prompt
+
+        keys = ["/", "q", "u", "i", "t", "ENTER"]
+        with patch("sys.stdin.isatty", return_value=True):
+            with patch("scrpcy.ui.interactive._read_key", side_effect=keys):
+                res = interactive_input_prompt(
+                    console=test_console,
+                    prompt_label="> ",
+                    status_line_callback=lambda: "[bold cyan]⠋[/bold cyan] [bold bright_white]Sedang download paper...[/bold bright_white]",
+                )
+        assert res == "/quit"
+
+    def test_chat_session_restores_running_task_indicator_on_reentry(self, cli_studio: CLIStudio) -> None:
+        from scrpcy.core.tasks import TaskInfo
+        sess = cli_studio.chat_manager.create_session("Riset Karhutla")
+        cli_studio.sub_mode = "chat"
+        cli_studio.active_chat_session = sess
+
+        # Simulate background task still running for this session
+        running_task = TaskInfo(
+            id="task-777",
+            name="Chat (Riset Karhutla): jelaskan hotspot satelit",
+            task_type="agent",
+            session_id=sess.id,
+            status="running",
+            progress="Menghubungi AI...",
+        )
+        cli_studio.task_manager._tasks[running_task.id] = running_task
+
+        # Verify active tasks are detected
+        active = [t for t in cli_studio.task_manager.list_tasks_for_session(sess.id) if t.status == "running"]
+        assert len(active) == 1
+        assert active[0].id == "task-777" 

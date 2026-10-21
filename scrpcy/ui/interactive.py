@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+import time
 from typing import Any, Callable
 
 from rich.console import Console
@@ -963,6 +964,7 @@ def interactive_input_prompt(
     current_effort: str = "high",
     current_skill: str = "scrpcy_manual",
     on_idle: Callable[[Callable[[], None]], bool] | None = None,
+    status_line_callback: Callable[[], str | None] | None = None,
 ) -> str:
     """Prompt user with live slash command autocomplete and interactive help."""
     c = console or Console(force_terminal=True)
@@ -1038,6 +1040,13 @@ def interactive_input_prompt(
 
             # Build lines to render with outlier framing & persistent footer
             lines_to_render: list[Text] = []
+
+            # 0. Live Status Line (e.g. background task progress / spinner)
+            status_text = status_line_callback() if status_line_callback is not None else None
+            if status_text:
+                lines_to_render.append(Text.from_markup(status_text))
+                lines_to_render.append(Text(""))
+
             divider_line = Text("─" * max(10, width - 1), style="grey23")
 
             # 1. Top Outlier Line
@@ -1112,6 +1121,7 @@ def interactive_input_prompt(
             # Read keystroke (with idle callback if provided)
             if on_idle is not None:
                 key = None
+                last_spin_time = time.monotonic()
                 while key is None:
                     key = _read_key(timeout=0.08)
                     if key is not None:
@@ -1126,8 +1136,16 @@ def interactive_input_prompt(
                         # Something was printed by idle handler; break out to redraw prompt
                         break
 
+                    now = time.monotonic()
+                    if status_line_callback is not None and (now - last_spin_time >= 0.12):
+                        last_spin_time = now
+                        new_status = status_line_callback()
+                        if new_status != status_text:
+                            # Status or spinner frame changed; break out to redraw prompt in place
+                            break
+
                 if key is None:
-                    # Idle handler printed output and requested prompt redraw
+                    # Idle handler or status update requested prompt redraw
                     continue
             else:
                 key = _read_key()

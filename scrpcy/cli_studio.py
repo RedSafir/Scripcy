@@ -312,6 +312,21 @@ class CLIStudio:
                 ctx_lbl = self.current_project.name if self.current_project else ""
 
                 self._flush_pending_ui_events()
+
+                def _get_project_status_indicator() -> str | None:
+                    if not hasattr(self, "task_manager") or not self.task_manager:
+                        return None
+                    active_tasks = [t for t in self.task_manager.list_tasks() if t.status == "running"]
+                    if not active_tasks:
+                        return None
+                    SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+                    idx = int(time.time() * 8) % len(SPINNER_FRAMES)
+                    frame = SPINNER_FRAMES[idx]
+                    if len(active_tasks) == 1:
+                        t = active_tasks[0]
+                        return f"[bold cyan]{frame}[/bold cyan] [bold bright_white]{t.name}[/bold bright_white] [dim]({t.progress or 'Sedang memproses di background...'})[/dim]"
+                    return f"[bold cyan]{frame}[/bold cyan] [bold bright_white]{len(active_tasks)} proses latar belakang aktif...[/bold bright_white]"
+
                 raw_input = interactive_input_prompt(
                     console=self.console,
                     prompt_label=prompt_lbl,
@@ -323,6 +338,7 @@ class CLIStudio:
                     current_effort=eff,
                     current_skill=self.active_skill_name,
                     on_idle=self._flush_pending_ui_events,
+                    status_line_callback=_get_project_status_indicator,
                 ).strip()
 
                 if not raw_input:
@@ -1846,6 +1862,32 @@ class CLIStudio:
                 self.console.print()
                 render_academic_markdown(msg.content, console=self.console)
 
+        # Show active background tasks bound to this session upon entering/re-entering
+        session_tasks = self.task_manager.list_tasks_for_session(session.id) if self.task_manager else []
+        running = [t for t in session_tasks if t.status == "running"]
+        if running:
+            self.console.print(f"\n[bold yellow]●[/bold yellow] [bold bright_white]{len(running)} proses latar belakang sedang berjalan di sesi ini:[/bold bright_white]")
+            for t in running:
+                self.console.print(f"  [bold cyan]●[/bold cyan] [cyan]{t.name}[/cyan] [dim]({t.progress or 'Sedang memproses...'} • ID: {t.id})[/dim]")
+            self.console.print(" [dim]• Indikator proses aktif di bawah prompt. Ketik /proc untuk pantau atau /detach untuk kembali.[/dim]\n")
+
+        SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+        def _get_chat_status_indicator() -> str | None:
+            if not self.task_manager:
+                return None
+            active_tasks = [t for t in self.task_manager.list_tasks_for_session(session.id) if t.status == "running"]
+            if not active_tasks:
+                return None
+            idx = int(time.time() * 8) % len(SPINNER_FRAMES)
+            frame = SPINNER_FRAMES[idx]
+            if len(active_tasks) == 1:
+                t = active_tasks[0]
+                desc = t.progress or "Sedang memproses di latar belakang..."
+                return f"[bold cyan]{frame}[/bold cyan] [bold bright_white]{t.name}[/bold bright_white] [dim]({desc})[/dim]"
+            else:
+                names = ", ".join(t.id for t in active_tasks[:2])
+                return f"[bold cyan]{frame}[/bold cyan] [bold bright_white]{len(active_tasks)} proses latar belakang aktif ({names})...[/bold bright_white]"
+
         while self.sub_mode == "chat" and self.active_chat_session:
             # Flush any background UI events first
             self._flush_pending_ui_events()
@@ -1882,6 +1924,8 @@ class CLIStudio:
                     current_skill=self.active_skill_name,
 
                     on_idle=self._flush_pending_ui_events,
+
+                    status_line_callback=_get_chat_status_indicator,
 
                 ).strip()
 
@@ -2612,7 +2656,15 @@ class CLIStudio:
         if self.sub_mode == "chat" and self.active_chat_session and self.active_chat_session.id == session_id:
             def _notify_task() -> None:
                 if task_status == "completed":
-                    self.console.print(f"\n[bold cyan]●[/bold cyan] [bold bright_white]Tugas Latar Belakang Selesai:[/bold bright_white] [cyan]{task_name}[/cyan] [dim]({summary or 'Selesai'})[/dim]")
+                    if task_type in ("chat", "agent"):
+                        self.console.print(f"\n[bold cyan]●[/bold cyan] [bold bright_white]Tugas Latar Belakang Selesai:[/bold bright_white] [cyan]{task_name}[/cyan]")
+                        msgs = self.chat_manager.get_messages(session_id) if self.chat_manager else []
+                        if msgs and msgs[-1].role == "assistant":
+                            self.console.print(f"\n[bold cyan]✦ Respons AI ({self.active_skill_name}):[/bold cyan]\n")
+                            render_academic_markdown(msgs[-1].content, console=self.console)
+                            self.console.print()
+                    else:
+                        self.console.print(f"\n[bold cyan]●[/bold cyan] [bold bright_white]Tugas Latar Belakang Selesai:[/bold bright_white] [cyan]{task_name}[/cyan] [dim]({summary or 'Selesai'})[/dim]")
                 elif task_status == "failed":
                     self.console.print(f"\n[bold red][x] Tugas Latar Belakang Gagal:[/bold red] [cyan]{task_name}[/cyan] [dim]({error_msg})[/dim]")
             self._enqueue_ui_event(_notify_task)
