@@ -422,47 +422,62 @@ def interactive_skill_selector(
         c.show_cursor(True)
 
 
-def interactive_action_confirm(action_text: str, console: Console | None = None) -> bool:
-    """Prompt the user with an Antigravity-style UP/DOWN arrow selector for action execution."""
+def interactive_action_confirm(action_text: str, console: Console | None = None) -> tuple[str, str | None]:
+    """Prompt user with 3 options: Execute, Write-in advice/feedback, or Skip."""
     c = console or Console()
 
-    # If non-interactive (e.g. redirected stdin, pipes, or unit tests)
+    # Enable ANSI Virtual Terminal processing on Windows
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            kernel32 = ctypes.windll.kernel32
+            kernel32.SetConsoleMode(kernel32.GetStdHandle(-11), 7)
+        except Exception:
+            pass
+
+    # Non-interactive fallback
     if not sys.stdin.isatty():
         c.print(f"[bold cyan]✦ Aksi Scrpcy Disarankan AI:[/bold cyan] [bold green]{action_text}[/bold green]")
         try:
-            line = c.input("  [bold bright_white]Jalankan aksi ini sekarang?[/bold bright_white] ").strip().lower()
-            return line in ("", "y", "yes", "ya", "ok", "1")
+            line = c.input("  [bold bright_white]Jalankan aksi ini sekarang? (y/n/saran):[/bold bright_white] ").strip()
+            if line.lower() in ("", "y", "yes", "ya", "ok", "1"):
+                return ("execute", None)
+            elif line.lower() in ("n", "no", "tidak", "skip", "0"):
+                return ("skip", None)
+            else:
+                return ("write_in", line)
         except Exception:
-            return False
+            return ("skip", None)
 
     options = [
-        ("Ya, jalankan di background", True),
-        ("Tidak, lewati aksi ini", False),
+        ("Ya, jalankan aksi ini", "execute"),
+        ("Beri masukan / saran tambahan untuk AI (Write-in)", "write_in"),
+        ("Tidak, lewati aksi ini", "skip"),
     ]
     cursor_idx = 0
     prev_lines_drawn = 0
 
     c.show_cursor(False)
-    prev_lines_drawn = 0
     try:
         while True:
-            lines: list[Text] = []
+            lines_out: list[Text] = []
             header = Text("✦ Aksi Scrpcy Disarankan AI: ", style="bold cyan")
             header.append(action_text, style="bold bright_white")
-            lines.append(header)
+            lines_out.append(header)
 
             for idx, (label, val) in enumerate(options):
                 is_cursor = idx == cursor_idx
                 item_text = Text()
                 if is_cursor:
                     item_text.append("  > ", style="bold cyan")
-                    item_text.append(f"[{'x' if val else ' '}] ", style="bold green" if val else "bold red")
+                    marker_style = "bold green" if val == "execute" else ("bold yellow" if val == "write_in" else "bold red")
+                    item_text.append("[x] ", style=marker_style)
                     item_text.append(label, style="bold bright_white")
                 else:
                     item_text.append("    ", style="dim")
                     item_text.append("[ ] ", style="dim")
                     item_text.append(label, style="dim white")
-                lines.append(item_text)
+                lines_out.append(item_text)
 
             footer = Text("  Navigasi: ", style="dim")
             footer.append("↑/↓", style="bold cyan")
@@ -471,43 +486,50 @@ def interactive_action_confirm(action_text: str, console: Console | None = None)
             footer.append(" Konfirmasi  ", style="dim")
             footer.append("Esc/n", style="bold yellow")
             footer.append(" Batal", style="dim")
-            lines.append(footer)
+            lines_out.append(footer)
 
-            # Redraw in place without c.clear() to prevent scrolling and screen displacement
+            # Clean redraw: erase previous lines completely
             if prev_lines_drawn > 0:
                 sys.stdout.write(f"\x1b[{prev_lines_drawn}A\r\x1b[J")
                 sys.stdout.flush()
 
-            for line in lines:
+            for line in lines_out:
                 c.print(line)
             sys.stdout.flush()
-            prev_lines_drawn = len(lines)
+            prev_lines_drawn = len(lines_out)
 
             key = _read_key()
             if key in ("ESC", "n", "N", "q", "Q"):
-                # Cleanly erase options from screen so they don't clutter the chat
                 if prev_lines_drawn > 0:
                     sys.stdout.write(f"\x1b[{prev_lines_drawn}A\r\x1b[J")
                     sys.stdout.flush()
-                return False
+                return ("skip", None)
             elif key == "ENTER":
-                val = options[cursor_idx][1]
-                # Cleanly erase options from screen so they don't clutter the chat
+                choice = options[cursor_idx][1]
+                # Cleanly erase options from screen so chat stays pristine
                 if prev_lines_drawn > 0:
                     sys.stdout.write(f"\x1b[{prev_lines_drawn}A\r\x1b[J")
                     sys.stdout.flush()
-                return val
-            elif key in ("UP", "DOWN", "LEFT", "RIGHT", "TAB"):
-                cursor_idx = 1 - cursor_idx
+                if choice == "write_in":
+                    c.show_cursor(True)
+                    c.print(f"[bold cyan]● Berikan masukan / instruksi tambahan untuk AI:[/bold cyan]")
+                    try:
+                        user_advice = c.input("  > ").strip()
+                    except Exception:
+                        user_advice = ""
+                    return ("write_in", user_advice if user_advice else None)
+                return (choice, None)
+            elif key in ("UP", "LEFT"):
+                cursor_idx = (cursor_idx - 1) % len(options)
+            elif key in ("DOWN", "RIGHT", "TAB"):
+                cursor_idx = (cursor_idx + 1) % len(options)
             elif key in ("y", "Y"):
-                # Cleanly erase options from screen so they don't clutter the chat
                 if prev_lines_drawn > 0:
                     sys.stdout.write(f"\x1b[{prev_lines_drawn}A\r\x1b[J")
                     sys.stdout.flush()
-                return True
+                return ("execute", None)
     finally:
         c.show_cursor(True)
-
 
 def interactive_token_warning_confirm(
     chunk_count: int,

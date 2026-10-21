@@ -248,7 +248,7 @@ class CLIStudio:
                 elif self.sub_mode == "chat":
                     session = self._ensure_active_chat_session()
                     sess_name = session.name if session else "chat1"
-                    prompt_lbl = f"{self.current_project.name}/{sess_name}> " if self.current_project else f"{sess_name}> "
+                    prompt_lbl = f"{self.current_project.name}/chat/{sess_name}> " if self.current_project else f"chat/{sess_name}> "
                     resolved_mode = "chat"
                 elif self.current_project:
                     prompt_lbl = f"{self.current_project.name}> "
@@ -664,17 +664,17 @@ class CLIStudio:
         elif cmd in ("/delete", "/remove", "/rm"):
             self.cmd_delete_project(args)
         elif cmd in ("/vault", "/docs", "/v"):
-            self.render_mode_divider()
             if args:
                 self.handle_vault_interaction(args)
             else:
+                self.render_mode_divider()
                 self.sub_mode = "vault"
                 self.render_vault_landing()
         elif cmd in ("/processing", "/proc", "/p"):
-            self.render_mode_divider()
             if args:
                 self.handle_processing_interaction(args)
             else:
+                self.render_mode_divider()
                 self.sub_mode = "processing"
                 self.render_processing_summary()
         elif cmd in ("/chat", "/c"):
@@ -1299,12 +1299,122 @@ class CLIStudio:
             self.cmd_vault_remove(arg)
         elif cmd in ("restore", "unarchive"):
             self.cmd_vault_restore(arg)
-        elif cmd == "view":
+        elif cmd in ("view", "read"):
             self.cmd_view(arg)
         elif cmd == "clear":
             self.clear_screen()
+        elif cmd in ("curate", "kurasi"):
+            self._cmd_vault_curate(arg)
         else:
             self.console.print(f"[yellow]Unknown vault command: '{clean}'. Type 'help' to see vault commands, or 'back' to return.[/yellow]\n")
+
+    def _cmd_vault_curate(self, criteria: str) -> None:
+        """Dispatch background agentic vault curation loop."""
+        if not criteria:
+            self.console.print("[yellow]Usage: vault curate \"<kriteria penelitian>\"[/yellow]\n")
+            return
+        session = self._ensure_active_chat_session() if self.chat_manager else None
+        session_id = session.id if session else None
+        task_id = self.task_manager.add_task(
+            description=f"Kurasi vault: {criteria[:60]}",
+            session_id=session_id,
+        )
+        self.task_manager.add_completion_callback(task_id, self._on_background_task_completed)
+        import threading
+        t = threading.Thread(
+            target=self._run_background_task,
+            args=(task_id, self._background_vault_curation_worker, task_id, session_id, criteria),
+            daemon=True,
+        )
+        t.start()
+        self.console.print(
+            f"[bold cyan]\u25cf Kurasi vault dimulai di background[/bold cyan] [dim](task {task_id[:8]})[/dim]\n"
+            f"[dim]Kriteria: {criteria}[/dim]\n"
+            f"[dim]Gunakan /processing untuk memantau. Hasil tersedia saat selesai.[/dim]\n"
+        )
+
+    def _background_vault_curation_worker(
+        self,
+        task_id: str,
+        session_id: str | None,
+        criteria: str,
+    ) -> str:
+        """Agentic loop: iterates vault papers, AI evaluates each vs criteria (token-frugal).
+
+        Short AI answers per batch. Stores each round as a system note in the session.
+        Stops when AI emits [SELESAI].
+        """
+        import asyncio
+
+        tm = self.task_manager
+        tm.log(task_id, f"Memulai kurasi vault: {criteria!r}")
+
+        if not self.vault_manager or not self.engine:
+            return "Vault atau engine tidak tersedia."
+
+        stems = self._get_cached_stems()
+        if not stems:
+            return "Vault kosong, tidak ada yang perlu dikurasi."
+
+        vault_index = "\n".join(f"{i+1}. {s}" for i, s in enumerate(stems))
+
+        BATCH = 5
+        accumulated: list[str] = []
+
+        def _run(coro):
+            try:
+                return asyncio.run(coro)
+            except RuntimeError:
+                # Already running loop (shouldn't happen in thread, but safety net)
+                loop = asyncio.new_event_loop()
+                try:
+                    return loop.run_until_complete(coro)
+                finally:
+                    loop.close()
+
+        for batch_start in range(0, len(stems), BATCH):
+            batch = stems[batch_start : batch_start + BATCH]
+            batch_nums = list(range(batch_start + 1, batch_start + 1 + len(batch)))
+            batch_lines = "\n".join(f"{n}. {s}" for n, s in zip(batch_nums, batch))
+            prompt = (
+                f"Kriteria: {criteria}\n\n"
+                f"Seluruh vault ({len(stems)} paper):\n{vault_index}\n\n"
+                f"Evaluasi (RELEVAN/ARSIP, 1 baris per paper):\n{batch_lines}"
+            )
+            if batch_start + BATCH >= len(stems):
+                prompt += "\n\nIni batch terakhir. Akhiri jawaban dengan [SELESAI]."
+
+            try:
+                result = _run(
+                    self.engine.query(
+                        query=prompt,
+                        documents=[],
+                        skill_name="scrpcy_manual",
+                    )
+                )
+                round_text = result.answer.strip()
+            except Exception as exc:
+                round_text = f"[ERROR batch {batch_start+1}] {exc}"
+
+            accumulated.append(round_text)
+            tm.log(task_id, f"Batch {batch_start+1}-{batch_start+len(batch)}: {round_text[:100]}")
+
+            if self.chat_manager and session_id:
+                note = f"[LOOP-KURASI {batch_start+1}-{batch_start+len(batch)}]\n{round_text}"
+                self.chat_manager.add_message(session_id, "system", note)
+
+            if "[SELESAI]" in round_text.upper():
+                break
+
+        full_summary = "\n\n---\n\n".join(accumulated)
+        if self.chat_manager and session_id:
+            final_note = (
+                f"[LOOP-KURASI SELESAI] Kriteria: {criteria!r}\n\n{full_summary}"
+            )
+            self.chat_manager.add_message(session_id, "system", final_note)
+
+        tm.log(task_id, f"Kurasi selesai: {len(stems)} paper dievaluasi.")
+        return f"Selesai mengevaluasi {len(stems)} paper."
 
     def cmd_vault_reload(self) -> None:
         """Scan vault folder and convert all new or updated files to markdown using MarkItDown."""
@@ -1335,19 +1445,43 @@ class CLIStudio:
             raise
 
     def cmd_vault_add(self, path_str: str) -> None:
-        """Add external file into project vault and convert with MarkItDown."""
+        """Add external file or URL into project vault and convert with MarkItDown."""
         if not self.vault_manager or not self.workspace:
             self.console.print("[red][x] Vault manager is not active.[/red]\n")
             return
 
-        if not path_str:
-            self.console.print("[yellow]Usage: add <path/to/file>[/yellow]\n")
+        clean_path = path_str.strip().strip('"\'')
+        if not clean_path:
+            self.console.print("[yellow]Usage: add <path/to/file or url>[/yellow]\n")
             return
 
-        src_path = Path(path_str).expanduser().resolve()
-        if not src_path.exists():
-            self.console.print(f"[bold red][x] File not found at:[/bold red] '{src_path}'\n")
-            return
+        if clean_path.startswith(("http://", "https://")):
+            import tempfile
+            import urllib.request
+            import urllib.parse
+            try:
+                with self.console.status(f"[cyan]Downloading document from URL...[/cyan]"):
+                    parsed_url = urllib.parse.urlparse(clean_path)
+                    suggested_name = Path(parsed_url.path).name or "downloaded_paper.pdf"
+                    if not suggested_name.lower().endswith((".pdf", ".docx", ".txt", ".md")):
+                        suggested_name += ".pdf"
+                    temp_dir = Path(tempfile.gettempdir())
+                    dest_file = temp_dir / suggested_name
+                    req = urllib.request.Request(
+                        clean_path,
+                        headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"},
+                    )
+                    with urllib.request.urlopen(req, timeout=30) as resp, open(dest_file, "wb") as out_f:
+                        out_f.write(resp.read())
+                    src_path = dest_file
+            except Exception as exc:
+                self.console.print(f"[bold red][x] Failed to download URL:[/bold red] {exc}\n")
+                return
+        else:
+            src_path = Path(clean_path).expanduser().resolve()
+            if not src_path.exists():
+                self.console.print(f"[bold red][x] File not found at:[/bold red] '{src_path}'\n")
+                return
 
         if self.sub_mode == "chat":
             task = self.task_manager.submit(
@@ -1379,21 +1513,35 @@ class CLIStudio:
         self.console.print(f"    Format: {item.extension.upper().lstrip('.')} | Size: {item.readable_size}\n")
 
     def cmd_vault_remove(self, identifier: str) -> None:
-        """Soft-remove a file from active project by moving it to .archive/."""
+        """Soft-archive one or more vault entries using snapshot resolution to prevent index-shifting."""
         if not self.vault_manager:
             return
 
         if not identifier:
-            self.console.print("[yellow]Usage: remove <# | filename>[/yellow]\n")
+            self.console.print("[yellow]Usage: remove <# | filename> [# ...][/yellow]\n")
+            return
+
+        raw_ids = [t.strip() for t in re.split(r"[\s,]+", identifier.strip()) if t.strip()]
+        if not raw_ids:
             return
 
         try:
-            archived = self.vault_manager.archive_resource(identifier)
-            self.active_documents.discard(archived.path.stem)
-            self.console.print(f"[yellow][-] File '{archived.filename}' moved to .archive/.[/yellow]")
-            self.console.print(f"[dim]Excluded from active AI context. Use 'restore {archived.filename}' to re-include anytime.[/dim]\n")
+            archived_items = self.vault_manager.archive_multiple(raw_ids)
+            for item in archived_items:
+                self.active_documents.discard(item.path.stem)
+            self._sync_vault_cache()
+
+            if archived_items:
+                for item in archived_items:
+                    self.console.print(f"[yellow][-] '{item.filename}' dipindahkan ke .archive/.[/yellow]")
+                if len(archived_items) > 1:
+                    self.console.print(f"[dim]{len(archived_items)} dokumen diarsipkan dan dikeluarkan dari konteks AI.[/dim]\n")
+                else:
+                    self.console.print(f"[dim]Dikeluarkan dari konteks AI aktif. Gunakan \'restore\' untuk mengembalikan.[/dim]\n")
+            else:
+                self.console.print(f"[bold red][x] Tidak ada dokumen yang cocok dengan ID: {identifier}[/bold red]\n")
         except Exception as exc:
-            self.console.print(f"[bold red][x] Failed to remove file:[/bold red] {exc}\n")
+            self.console.print(f"[bold red][x] Gagal mengarsipkan dokumen:[/bold red] {exc}\n")
 
     def cmd_vault_restore(self, identifier: str) -> None:
         """Restore an archived file back to active vault/."""
@@ -2404,6 +2552,8 @@ class CLIStudio:
     def cmd_skill(self, arg: str) -> None:
         """Switch current active persona skill, or view catalog if no argument given."""
         arg = arg.strip()
+        if arg.lower().startswith("use "):
+            arg = arg[4:].strip()
         if not arg:
             if sys.stdin.isatty():
                 skills = self.skills_loader.list_skills()
@@ -3014,38 +3164,26 @@ class CLIStudio:
         elif sub in ("remove", "rm", "archive"):
             if not arg and len(parts) > 1 and parts[1].isdigit():
                 arg = parts[1]
-            stems = self._get_cached_stems()
-            target_stem = None
-            if arg.isdigit():
-                idx = int(arg) - 1
-                if 0 <= idx < len(stems):
-                    target_stem = stems[idx]
-            else:
-                matching = [s for s in stems if s.lower() == arg.lower() or arg.lower() in s.lower()]
-                if matching:
-                    target_stem = matching[0]
 
-            if not target_stem and self.vault_manager:
-                self.vault_manager.reload_vault(force=False)
-                self._sync_vault_cache()
-                stems = self._get_cached_stems()
-                if arg.isdigit():
-                    idx = int(arg) - 1
-                    if 0 <= idx < len(stems):
-                        target_stem = stems[idx]
-                else:
-                    matching = [s for s in stems if s.lower() == arg.lower() or arg.lower() in s.lower()]
-                    if matching:
-                        target_stem = matching[0]
+            raw_ids = [t.strip() for t in re.split(r"[\s,]+", arg.strip()) if t.strip()]
+            if not raw_ids:
+                return "Mengarsipkan", "Tidak Ada Target", "Tidak ada ID yang diberikan."
 
-            if not target_stem or not self.vault_manager:
-                return "Mengarsipkan", f"Dokumen '{arg}' Tidak Ditemukan", f"Dokumen '{arg}' tidak ditemukan di vault aktif."
+            if not self.vault_manager:
+                return "Mengarsipkan", "Gagal", "Vault manager tidak aktif."
 
             try:
-                archived = self.vault_manager.archive_resource(target_stem)
-                self.active_documents.discard(archived.path.stem)
+                archived_items = self.vault_manager.archive_multiple(raw_ids)
+                for item in archived_items:
+                    self.active_documents.discard(item.path.stem)
                 self._sync_vault_cache()
-                return "Mengarsipkan", f"vault/{archived.filename}", f"Dokumen '{archived.filename}' berhasil dipindahkan ke .archive/ dan dikeluarkan dari konteks AI aktif."
+
+                if not archived_items:
+                    return "Mengarsipkan", f"ID '{arg}' Tidak Ditemukan", f"Tidak ada dokumen di vault yang cocok dengan: {arg}"
+
+                lines_out = [f"Dokumen '{item.filename}' berhasil diarsipkan ke .archive/." for item in archived_items]
+                label = f"vault/{archived_items[0].filename}" if len(archived_items) == 1 else f"{len(archived_items)} dokumen diarsipkan"
+                return "Mengarsipkan", label, "\n".join(lines_out)
             except Exception as exc:
                 return "Mengarsipkan", "Gagal", f"Gagal mengarsipkan dokumen '{arg}': {exc}"
 
@@ -3271,7 +3409,11 @@ class CLIStudio:
                     ):
                         turn_tokens.append(token)
 
-                asyncio.run(_stream_chat())
+                with self.console.status(
+                    f"[bold cyan]●[/bold cyan] [bold bright_white]Menghubungi AI & Menganalisis...[/bold bright_white] [dim]({model_label})[/dim]",
+                    spinner="dots",
+                ):
+                    asyncio.run(_stream_chat())
                 turn_response = "".join(turn_tokens)
                 last_turn_tokens = turn_tokens
 
@@ -3284,7 +3426,11 @@ class CLIStudio:
 
                 if internal_match and turn < max_agent_turns - 1:
                     cmd_line = internal_match.group(1).strip()
-                    action_label, target_label, tool_output = self._execute_internal_vault_tool(cmd_line)
+                    with self.console.status(
+                        f"[bold cyan]●[/bold cyan] [bold bright_white]Membaca dokumen dari vault...[/bold bright_white]",
+                        spinner="dots",
+                    ):
+                        action_label, target_label, tool_output = self._execute_internal_vault_tool(cmd_line)
 
                     # Status Indicator: Membaca -> Menganalisis
                     self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]{action_label}[/bold bright_white] [cyan]{target_label}[/cyan] [dim](Membaca teks dari vault...)[/dim]")
@@ -3356,6 +3502,27 @@ class CLIStudio:
             if a not in unique_actions:
                 unique_actions.append(a)
 
+        # Coalesce multiple separate /vault remove lines into a single bulk command
+        # to prevent index-shifting and prompt fatigue
+        remove_args: list[str] = []
+        filtered_actions: list[str] = []
+        for a in unique_actions:
+            clean_a = a.strip()
+            if any(clean_a.startswith(k) for k in ("/vault remove", "vault remove", "/vault rm", "vault rm", "/vault archive", "vault archive")):
+                parts = clean_a.split(maxsplit=2)
+                if len(parts) > 2:
+                    remove_args.extend(parts[2].replace(",", " ").split())
+                elif len(parts) == 2 and parts[1].isdigit():
+                    remove_args.append(parts[1])
+            else:
+                filtered_actions.append(a)
+
+        if remove_args:
+            deduped_args = list(dict.fromkeys(remove_args))
+            filtered_actions.append(f"/vault remove {' '.join(deduped_args)}")
+
+        unique_actions = list(dict.fromkeys(filtered_actions))
+
         for action in unique_actions:
             # Action Pill: Mengubah / Menulis
             if "docx " in action:
@@ -3365,18 +3532,45 @@ class CLIStudio:
                 v_arg = action.split("vault add", 1)[1].strip()
                 self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Mengubah[/bold bright_white] [cyan]vault/{v_arg}[/cyan]")
             elif any(k in action for k in ("vault remove", "vault rm", "vault archive")):
-                v_arg = action.split(maxsplit=2)[-1] if len(action.split()) > 2 else ""
-                self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Mengarsipkan[/bold bright_white] [cyan]vault/{v_arg} -> vault/.archive/[/cyan]")
+                _rm_parts = action.split(maxsplit=2)
+                v_arg = _rm_parts[2].strip() if len(_rm_parts) > 2 else ""
+                ids_display = v_arg.replace(",", " ").split()
+                if len(ids_display) > 1:
+                    self.console.print(
+                        f"[bold cyan]●[/bold cyan] [bold bright_white]Mengarsipkan[/bold bright_white] "
+                        f"[cyan]{len(ids_display)} dokumen -> vault/.archive/[/cyan] "
+                        f"[dim]({chr(44).join(ids_display)})[/dim]"
+                    )
+                else:
+                    self.console.print(
+                        f"[bold cyan]●[/bold cyan] [bold bright_white]Mengarsipkan[/bold bright_white] "
+                        f"[cyan]vault/{v_arg} -> vault/.archive/[/cyan]"
+                    )
             elif action.strip() in ("/clear", "clear"):
                 self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Membersihkan[/bold bright_white] [cyan]Konteks chat aktif[/cyan]")
 
-            confirmed = interactive_action_confirm(action, console=self.console)
-            if confirmed:
+            choice_res = interactive_action_confirm(action, console=self.console)
+            if isinstance(choice_res, tuple):
+                action_choice, user_note = choice_res
+            else:
+                action_choice = "execute" if choice_res else "skip"
+                user_note = None
+
+            if action_choice == "execute":
                 self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Menjalankan aksi:[/bold bright_white] [cyan]{action}[/cyan]\n")
                 if action.strip() in ("/clear", "clear"):
                     self.clear_screen()
                 else:
                     cmd_to_run = action if action.startswith("/") else f"/{action}"
                     self.handle_project_command(cmd_to_run)
+            elif action_choice == "write_in" and user_note:
+                self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Masukan pengguna dikirim ke AI:[/bold bright_white] [italic]{user_note}[/italic]\n")
+                feed_query = (
+                    f"Pengguna meninjau saran aksi Anda `{action}` dan memberikan arahan/masukan berikut:\n"
+                    f"\"{user_note}\"\n\n"
+                    f"Silakan sesuaikan analisis, strategi investigasi, atau rencana kurasi Anda berdasarkan masukan tersebut."
+                )
+                self.handle_chat(feed_query)
+                break  # stop further actions to let AI adapt to user guidance
             else:
                 self.console.print(f"[dim]Aksi '{action}' dilewati.[/dim]\n")

@@ -205,6 +205,52 @@ class VaultManager:
             title=dest.stem,
         )
 
+    def archive_multiple(self, identifiers: list[str | int]) -> list[VaultItem]:
+        """Soft-archive multiple resources atomically using initial active snapshot (prevents index-shifting)."""
+        active_files = self.list_active_files()
+        targets: list[VaultItem] = []
+        seen_filenames: set[str] = set()
+
+        for ident in identifiers:
+            target: VaultItem | None = None
+            if isinstance(ident, int) or (isinstance(ident, str) and str(ident).strip().isdigit()):
+                idx = int(str(ident).strip()) - 1
+                if 0 <= idx < len(active_files):
+                    target = active_files[idx]
+            else:
+                clean_ident = str(ident).strip().lower()
+                for f in active_files:
+                    if f.filename.lower() == clean_ident or f.path.stem.lower() == clean_ident:
+                        target = f
+                        break
+            if target and target.filename not in seen_filenames:
+                targets.append(target)
+                seen_filenames.add(target.filename)
+
+        archived_items: list[VaultItem] = []
+        for t in targets:
+            dest = self.archive_dir / t.filename
+            if t.path.exists():
+                shutil.move(str(t.path), str(dest))
+                cache_path = self.workspace.get_cache_path(f"{t.path.stem}.md")
+                if cache_path.exists():
+                    try:
+                        cache_path.unlink()
+                    except OSError:
+                        pass
+                archived_items.append(
+                    VaultItem(
+                        filename=dest.name,
+                        path=dest,
+                        extension=dest.suffix.lower(),
+                        size_bytes=dest.stat().st_size,
+                        is_archived=True,
+                        is_cached=False,
+                        title=dest.stem,
+                    )
+                )
+        return archived_items
+
     def archive_resource(self, identifier: str | int) -> VaultItem:
         """Soft-remove a file from active project by moving it to .archive/."""
         active_files = self.list_active_files()

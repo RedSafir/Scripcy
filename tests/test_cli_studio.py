@@ -1042,7 +1042,7 @@ class TestAgenticUXAndFormatting:
                 with patch.object(test_console, "clear") as mock_clear:
                     confirmed = interactive_action_confirm("/search test", console=test_console)
 
-        assert confirmed is True
+        assert confirmed[0] == "execute" or confirmed is True
         # Ensure c.clear() was NEVER called (prevents screen jumps and lost history)
         mock_clear.assert_not_called()
 

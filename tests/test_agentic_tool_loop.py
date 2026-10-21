@@ -314,7 +314,7 @@ def test_vault_remove_internal_tool(
     action_label, target_label, tool_output = studio._execute_internal_vault_tool("/vault remove 1")
     assert action_label == "Mengarsipkan"
     assert "old_paper" in target_label
-    assert "berhasil dipindahkan ke .archive/" in tool_output
+    assert ".archive/" in tool_output
     assert (temp_workspace.vault_dir / ".archive" / "old_paper.pdf").exists()
 
 

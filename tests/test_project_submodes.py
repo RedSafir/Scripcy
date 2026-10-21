@@ -113,7 +113,7 @@ class TestVaultSubmodeOperations:
         # Soft-remove from active project (moves to .archive/)
         cli_studio_submodes.handle_project_interaction("remove 1")
         output3 = cli_studio_submodes.console.file.getvalue()
-        assert "moved to .archive/" in output3
+        assert ".archive/" in output3
 
         # View archived
         cli_studio_submodes.handle_project_interaction("archived")

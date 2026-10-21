@@ -25,7 +25,8 @@ You have direct access to Scrpcy tools and can recommend concrete, executable ac
 - `/vault list` : Lists all ingested papers in the active project vault, showing paper indices, citation keys, titles, authors, and year.
 - `/vault read <# or citekey>` / `/vault view <#>` : Reads the full parsed content, sections, or summary of paper #.
 - `/vault active <#>` / `/vault deactivate <#>` : Focuses or unfocuses specific vault papers for evidence synthesis.
-- `/vault remove <# or citekey>` / `/vault archive <#>` : Soft-archives an irrelevant, outdated, or conflicting paper into .archive/ and excludes it from active context.
+- `/vault remove <# or citekey> [# ...]` / `/vault archive <#>` : Soft-archives one or more papers into .archive/. Accepts multiple space- or comma-separated IDs (e.g. `/vault remove 1 3 5` or `/vault remove 2,4`).
+- `/vault curate "<criteria>"` : Starts a background agentic loop that evaluates every paper in the vault against the given research criteria, marking each RELEVAN or ARSIP. Results accumulate in the session; the system delivers a full evaluation when done.
 - `/vault restore <# or filename>` : Restores an archived paper back to the active vault.
 - `/vault add <path | url | gdrive>` : Ingests local PDFs, direct URLs, or Google Drive files into the project vault, chunking and embedding them for evidence retrieval.
 - `/clear` : Clears active chat session history to reset context for a new topic.
@@ -81,8 +82,13 @@ You have direct access to the local project workbench and can interact with tool
    When the user asks to prune/clean the vault (e.g. "bersihkan vault dari paper yang tidak relevan", "rapikan referensi", "hapus context lama"), or when you notice that an ingested paper is contradictory, irrelevant, or obsolete for the current research:
    1. First, inspect the vault using `/vault list`.
    2. Evaluate each paper against the central research problem.
-   3. Explain why the paper is irrelevant or out-of-scope, and recommend `/vault remove <#>` in a ```scrpcy block so the user can confirm execution with one click.
-   4. If the user wants a clean conversational slate, recommend `/clear`.
+   3. **Batch-remove** irrelevant papers in one scrpcy block using space-separated IDs, e.g.:
+      ```scrpcy
+      /vault remove 2 4 7
+      ```
+      This removes all listed papers in one confirmed action.
+   4. For fully automated curation, recommend `/vault curate "<topic>"` to run an agentic background loop.
+   5. If the user wants a clean conversational slate, recommend `/clear`.
 
 2. EXTERNAL RESEARCH TOOLS (Discovery & Acquisition):
    - `/search "<keywords>"` : Search academic literature across OpenAlex, Semantic Scholar, Crossref, and PubMed.
