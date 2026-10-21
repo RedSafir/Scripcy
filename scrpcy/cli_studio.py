@@ -34,6 +34,7 @@ from scrpcy.core.tracker import TokenTracker
 from scrpcy.core.vault import VaultItem, VaultManager
 from scrpcy.core.verifier import FactChecker, VerificationReport
 from scrpcy.core.critic import DevilsAdvocate, CritiqueReport
+from scrpcy.core.polisher import AcademicPolisher, PolishResult
 from scrpcy.core.workspace import WorkspaceManager
 
 # Safe UTF-8 console output for Windows terminal and quiet litellm output
@@ -127,6 +128,7 @@ class CLIStudio:
         self.vault_manager: VaultManager | None = None
         self.fact_checker: FactChecker | None = None
         self.devils_advocate: DevilsAdvocate | None = None
+        self.polisher: AcademicPolisher | None = None
         self.chat_manager: ChatManager | None = None
         self.sub_mode: str | None = None
         self.active_chat_session: ChatSession | None = None
@@ -177,6 +179,7 @@ class CLIStudio:
         self.sub_mode = None
         self.fact_checker = FactChecker(engine=self.engine)
         self.devils_advocate = DevilsAdvocate(engine=self.engine)
+        self.polisher = AcademicPolisher(engine=self.engine)
         self.active_documents.clear()
         self._sync_vault_cache()
 
@@ -2934,6 +2937,15 @@ class CLIStudio:
                 loop.close()
 
             resp = "".join(tokens).strip()
+            if resp:
+                try:
+                    polisher = self.polisher or AcademicPolisher(engine=self.engine)
+                    p_res = polisher.polish(resp, query)
+                    if p_res.applied:
+                        resp = p_res.polished_text
+                except Exception:
+                    pass
+
             elapsed_c = time.time() - start_t
             in_tok = estimate_tokens(query) + 250
             out_tok = estimate_tokens(resp)
@@ -5750,6 +5762,15 @@ class CLIStudio:
                 else:
                     # Run FactChecker & Devil's Advocate verification
                     if not internal_match:
+                        # 1. Context-Preserving Stylistic Polish (prior to FactChecker & Devil's Advocate)
+                        try:
+                            polisher = self.polisher or AcademicPolisher(engine=self.engine)
+                            p_res = polisher.polish(turn_response, query)
+                            if p_res.applied:
+                                turn_response = p_res.polished_text
+                        except Exception:
+                            pass
+
                         verifier = self.fact_checker or FactChecker(engine=self.engine)
                         v_report = verifier.verify_synthesis(turn_response, evidence)
 
@@ -5864,6 +5885,15 @@ class CLIStudio:
                     b_loop.close()
 
                 final_text = "".join(bg_tokens).strip()
+                if final_text:
+                    try:
+                        polisher = self.polisher or AcademicPolisher(engine=self.engine)
+                        p_res = polisher.polish(final_text, query)
+                        if p_res.applied:
+                            final_text = p_res.polished_text
+                    except Exception:
+                        pass
+
                 if self.chat_manager and session and final_text:
                     self.chat_manager.add_message(session.id, "assistant", final_text)
                     self.chat_manager.update_session_status(session.id, "detached")

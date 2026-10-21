@@ -25,6 +25,7 @@ from scrpcy.core.mcp_client import (
 )
 from scrpcy.core.models import DocumentMetadata, ParsedDocument
 from scrpcy.core.parser import DocumentParser, parse_pdf
+from scrpcy.core.polisher import AcademicPolisher, PolishResult
 from scrpcy.core.project import ProjectInfo, ProjectManager
 from scrpcy.core.scout import LiteratureScout, ScoutQuery, ScoutResult
 from scrpcy.core.search import PaperSearcher, SearchResult, sanitize_filename
@@ -48,6 +49,8 @@ __all__ = [
     "MockMetadataExtractor",
     "PaperSearcher",
     "ParsedDocument",
+    "PolishResult",
+    "AcademicPolisher",
     "ProjectInfo",
     "ProjectManager",
     "ScoutQuery",
