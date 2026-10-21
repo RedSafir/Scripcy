@@ -579,16 +579,25 @@ class LiteratureScout:
         limit: int = 10,
     ) -> list[ScoutResult]:
         """Traverse the citation graph forwards (citations) and/or backwards (references)."""
+        seed_id = seed_identifier.strip()
+        if not any(seed_id.upper().startswith(p) for p in ("DOI:", "ARXIV:", "CORPUSID:")) and "10." not in seed_id and len(seed_id) != 40:
+            try:
+                s2_matches = await self.searcher.search_semantic_scholar(seed_id, limit=1)
+                if s2_matches and s2_matches[0].paper_id:
+                    seed_id = s2_matches[0].paper_id
+            except Exception:
+                pass
+
         candidates: list[SearchResult] = []
         if direction in ("citations", "forward", "both"):
             try:
-                cites = await self.searcher.get_paper_citations(seed_identifier, limit=limit)
+                cites = await self.searcher.get_paper_citations(seed_id, limit=limit)
                 candidates.extend(cites)
             except Exception:
                 pass
         if direction in ("references", "backward", "both"):
             try:
-                refs = await self.searcher.get_paper_references(seed_identifier, limit=limit)
+                refs = await self.searcher.get_paper_references(seed_id, limit=limit)
                 candidates.extend(refs)
             except Exception:
                 pass
