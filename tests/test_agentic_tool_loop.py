@@ -509,5 +509,6 @@ def test_detailed_background_chat_task_logs(
     assert "Pertanyaan: Apa implikasi kebakaran hutan gambut tropis?" in log_dump
     assert "Model:" in log_dump
     assert "Token:" in log_dump
-    assert "Respons AI:" in log_dump
-    assert "Ini adalah sintesis lengkap dari respons AI" in log_dump
+    assert "Selesai!" in log_dump
+    assert "Respons AI:" not in log_dump
+    assert t.tokens_burned > 0

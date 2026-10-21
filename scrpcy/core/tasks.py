@@ -31,6 +31,24 @@ class TaskInfo(BaseModel):
     logs: list[str] = Field(default_factory=list, description="Logged messages during execution.")
     error: str | None = Field(default=None, description="Error message if failed.")
     result_summary: str | None = Field(default=None, description="Short summary of task result.")
+    tokens_burned: int = Field(default=0, description="Total tokens consumed by the task.")
+
+    @property
+    def display_tokens(self) -> int:
+        """Return explicit burned tokens or parse total tokens from execution logs."""
+        if self.tokens_burned:
+            return self.tokens_burned
+        import re
+        for entry in self.logs:
+            entry_s = str(entry).lower()
+            if "total" in entry_s and ("token" in entry_s or "in ·" in entry_s or "in •" in entry_s or "in *" in entry_s):
+                m = re.search(r"(\d[\d,]*)\s*total", entry_s)
+                if m:
+                    try:
+                        return int(m.group(1).replace(",", ""))
+                    except Exception:
+                        pass
+        return 0
 
     @property
     def duration_seconds(self) -> float:
@@ -90,9 +108,14 @@ class TaskManager:
                     finished_at TEXT,
                     logs TEXT,
                     error TEXT,
-                    result_summary TEXT
+                    result_summary TEXT,
+                    tokens_burned INTEGER DEFAULT 0
                 )
             """)
+            try:
+                conn.execute("ALTER TABLE tasks ADD COLUMN tokens_burned INTEGER DEFAULT 0")
+            except Exception:
+                pass
             conn.commit()
 
     def _load_from_db(self) -> None:
@@ -126,6 +149,13 @@ class TaskManager:
                         except Exception:
                             logs = [r["logs"]]
 
+                    tokens_burned = 0
+                    if "tokens_burned" in r.keys() and r["tokens_burned"] is not None:
+                        try:
+                            tokens_burned = int(r["tokens_burned"])
+                        except Exception:
+                            tokens_burned = 0
+
                     info = TaskInfo(
                         id=t_id,
                         name=r["name"],
@@ -138,6 +168,7 @@ class TaskManager:
                         logs=logs,
                         error=err,
                         result_summary=r["result_summary"],
+                        tokens_burned=tokens_burned,
                     )
                     self._tasks[t_id] = info
 
@@ -151,15 +182,16 @@ class TaskManager:
                 conn.execute("""
                     INSERT INTO tasks (
                         id, name, task_type, session_id, status, progress,
-                        started_at, finished_at, logs, error, result_summary
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        started_at, finished_at, logs, error, result_summary, tokens_burned
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(id) DO UPDATE SET
                         status=excluded.status,
                         progress=excluded.progress,
                         finished_at=excluded.finished_at,
                         logs=excluded.logs,
                         error=excluded.error,
-                        result_summary=excluded.result_summary
+                        result_summary=excluded.result_summary,
+                        tokens_burned=excluded.tokens_burned
                 """, (
                     info.id,
                     info.name,
@@ -172,6 +204,7 @@ class TaskManager:
                     json.dumps(info.logs),
                     info.error,
                     info.result_summary,
+                    getattr(info, "tokens_burned", 0),
                 ))
                 conn.commit()
         except Exception:
@@ -276,6 +309,14 @@ class TaskManager:
             if task:
                 task.logs.append(f"[{timestamp}] {message}")
                 task.progress = message
+                self._persist_task(task)
+
+    def update_tokens(self, task_id: str, tokens: int) -> None:
+        """Update total tokens consumed by a task."""
+        with self._lock:
+            task = self._tasks.get(task_id)
+            if task:
+                task.tokens_burned = max(0, int(tokens))
                 self._persist_task(task)
 
     def list_tasks(self, limit: int = 50) -> list[TaskInfo]:

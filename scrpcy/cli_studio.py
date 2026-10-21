@@ -1350,30 +1350,42 @@ class CLIStudio:
 
 
 
+    def get_sanitized_task_logs(self, task: Any) -> list[str]:
+        """Return task execution logs free of raw markdown AI syntheses and chat history dumps."""
+        raw_logs = list(getattr(task, "logs", [])) or [f"Task: {task.name}", f"Status: {task.status}"]
+        flat_logs: list[str] = []
+        for entry in raw_logs:
+            entry_str = str(entry)
+            if entry_str.startswith("Respons AI:") or "Respons AI:\n" in entry_str:
+                continue
+            for l in entry_str.splitlines():
+                l_strip = l.strip()
+                if l_strip.startswith("Respons AI:"):
+                    continue
+                flat_logs.append(l)
+        if getattr(task, "error", None):
+            flat_logs.append(f"Error: {task.error}")
+        res_sum = getattr(task, "result_summary", None)
+        if res_sum and not res_sum.startswith("#"):
+            if res_sum not in "\n".join(flat_logs):
+                flat_logs.append(f"Summary: {res_sum}")
+        return flat_logs
+
     def run_interactive_processing_view(self) -> None:
         """Browse task items table per DESIGN.md."""
         while True:
             tasks = self.task_manager.list_tasks()
 
             columns = [
-
                 {"name": "#", "justify": "right", "width": 3, "style": "dim"},
-
                 {"name": "Task ID", "style": "bold cyan", "width": 10},
-
-                {"name": "Type", "justify": "center", "style": "dim", "width": 10},
-
-                {"name": "Task Name / Description", "style": "bold white", "width": 30},
-
+                {"name": "Type", "justify": "center", "style": "dim", "width": 8},
+                {"name": "Task Name / Description", "style": "bold white", "width": 28},
                 {"name": "Origin Session", "style": "dim cyan", "width": 16},
-
-                {"name": "Status", "justify": "center", "width": 18},
-
+                {"name": "Status", "justify": "center", "width": 16},
+                {"name": "Tokens", "justify": "right", "style": "dim yellow", "width": 11},
                 {"name": "Duration", "justify": "right", "style": "dim", "width": 9},
-
             ]
-
-
 
             def _row_builder(idx: int, t: Any, is_selected: bool) -> list[Any]:
                 if t.status in ("need_action", "waiting", "need user action") or getattr(t, "needs_action", False):
@@ -1387,36 +1399,38 @@ class CLIStudio:
                 else:
                     st_badge = "[bold red][Failed][/bold red]"
 
+                sess_name = None
+                if t.session_id:
+                    if self.chat_manager:
+                        sess = self.chat_manager.get_session(t.session_id)
+                        if sess:
+                            sess_name = sess.name
+                    if not sess_name:
+                        sess_name = t.session_id
+                    if sess_name.lower().startswith("session:"):
+                        sess_name = sess_name[8:].strip()
+                    elif sess_name.lower().startswith("session :"):
+                        sess_name = sess_name[9:].strip()
 
+                sess_label = sess_name[:16] if sess_name else "[global]"
 
-                sess_label = f"session: {t.session_id}" if t.session_id else "[global]"
+                tok_count = getattr(t, "display_tokens", 0)
+                tok_str = f"{tok_count:,} tok" if tok_count > 0 else "-"
 
                 arrow = "> " if is_selected else "  "
-
                 id_text = Text()
-
                 id_text.append(arrow, style="bold cyan" if is_selected else "dim")
-
                 id_text.append(t.id, style="bold cyan" if is_selected else "dim")
 
-
-
                 return [
-
                     str(idx + 1),
-
                     id_text,
-
                     t.task_type.upper(),
-
                     t.name[:28],
-
                     sess_label,
-
                     st_badge,
-
+                    tok_str,
                     f"{t.duration_seconds:.1f}s",
-
                 ]
 
 
@@ -1475,16 +1489,7 @@ class CLIStudio:
             elif action == "detail" and selected_task:
                 def _get_live_task_logs() -> list[str]:
                     cur_t = self.task_manager.get_task(selected_task.id) or selected_task
-                    raw_logs = list(cur_t.logs) or [f"Task: {cur_t.name}", f"Status: {cur_t.status}"]
-                    flat_logs: list[str] = []
-                    for entry in raw_logs:
-                        for l in str(entry).splitlines():
-                            flat_logs.append(l)
-                    if cur_t.error:
-                        flat_logs.append(f"Error: {cur_t.error}")
-                    if cur_t.result_summary and cur_t.result_summary not in "\n".join(raw_logs):
-                        flat_logs.append(f"Summary: {cur_t.result_summary}")
-                    return flat_logs
+                    return self.get_sanitized_task_logs(cur_t)
 
                 def _get_live_task_title() -> str:
                     cur_t = self.task_manager.get_task(selected_task.id) or selected_task
@@ -2937,10 +2942,10 @@ class CLIStudio:
             if self.chat_manager and resp:
                 self.chat_manager.add_message(session.id, "assistant", resp)
 
+            self.task_manager.update_tokens(task_id, tot_tok)
             self.task_manager.log(task_id, f"Token: {in_tok:,} in · {out_tok:,} out · {tot_tok:,} total ({model_name}) • {elapsed_c:.1f}s")
             self.task_manager.log(task_id, f"Selesai! {len(resp)} karakter disimpan ke riwayat sesi.")
-            self.task_manager.log(task_id, f"Respons AI:\n{resp}")
-            return resp[:300] if resp else "Selesai"
+            return f"Sintesis selesai ({len(resp)} karakter, {tot_tok:,} total token)" if resp else "Selesai"
 
         task = self.task_manager.submit(
             name=f"Chat: {query[:35]}...",
@@ -3570,12 +3575,21 @@ class CLIStudio:
             self.console.print("[yellow]Usage: remove <# | filename> [# ...][/yellow]\n")
             return
 
-        import shlex
-        try:
-            tokens = shlex.split(identifier.strip())
-        except Exception:
-            tokens = [t.strip() for t in re.split(r"[\s,]+", identifier.strip()) if t.strip()]
-        raw_ids = [t.strip().strip('"\'') for t in tokens if t.strip().strip('"\'')]
+        clean_id = identifier.strip()
+        raw_ids: list[str] = []
+        if '"' in clean_id or "'" in clean_id:
+            import shlex
+            try:
+                tokens = shlex.split(clean_id)
+                for t in tokens:
+                    for sub in t.split(","):
+                        s = sub.strip().strip('"\'')
+                        if s:
+                            raw_ids.append(s)
+            except Exception:
+                raw_ids = [t.strip().strip('"\'') for t in re.split(r"[\s,]+", clean_id) if t.strip().strip('"\'')]
+        else:
+            raw_ids = [t.strip() for t in re.split(r"[\s,]+", clean_id) if t.strip()]
         if not raw_ids:
             return
 
@@ -3769,17 +3783,18 @@ class CLIStudio:
         table = Table(
             title=f"Background Processing Tasks [{self.current_project.name if self.current_project else 'Studio'}]",
             box=None,
-            padding=(0, 2),
+            padding=(0, 1),
             title_style="bold bright_white",
             header_style="bold cyan",
         )
         table.add_column("#", justify="right", style="dim", width=3)
-        table.add_column("Task ID", style="bold cyan", width=10)
-        table.add_column("Type", justify="center", style="dim", width=10)
-        table.add_column("Description", style="white")
-        table.add_column("Status", justify="center", width=14)
-        table.add_column("Duration", justify="right", style="dim", width=9)
-        table.add_column("Progress / Note", style="dim")
+        table.add_column("Task ID", style="bold cyan", width=9)
+        table.add_column("Type", justify="center", style="dim", width=7)
+        table.add_column("Description", style="white", no_wrap=True)
+        table.add_column("Origin Session", style="dim cyan", width=14)
+        table.add_column("Status", justify="center", width=13)
+        table.add_column("Tokens", justify="right", style="dim yellow", width=11, no_wrap=True)
+        table.add_column("Duration", justify="right", style="dim", width=8)
 
         for idx, t in enumerate(tasks, 1):
             if t.status == "running":
@@ -3791,15 +3806,33 @@ class CLIStudio:
             else:
                 status_badge = "[bold red][Failed][/bold red]"
 
+            sess_name = None
+            if t.session_id:
+                if self.chat_manager:
+                    sess = self.chat_manager.get_session(t.session_id)
+                    if sess:
+                        sess_name = sess.name
+                if not sess_name:
+                    sess_name = t.session_id
+                if sess_name.lower().startswith("session:"):
+                    sess_name = sess_name[8:].strip()
+                elif sess_name.lower().startswith("session :"):
+                    sess_name = sess_name[9:].strip()
+            sess_label = sess_name[:14] if sess_name else "[global]"
+
+            tok_count = getattr(t, "display_tokens", 0)
+            tok_str = f"{tok_count:,} tok" if tok_count > 0 else "-"
+
             duration_str = f"{t.duration_seconds:.1f}s"
             table.add_row(
                 str(idx),
                 t.id,
                 t.task_type.upper(),
                 t.name,
+                sess_label,
                 status_badge,
+                tok_str,
                 duration_str,
-                t.progress[:35],
             )
 
         self.console.print(table)
@@ -5841,10 +5874,10 @@ class CLIStudio:
                 tot_tok = in_tok + out_tok
                 elapsed_bg = time.time() - start_time
 
+                self.task_manager.update_tokens(task_id, tot_tok)
                 self.task_manager.log(task_id, f"Token: {in_tok:,} in · {out_tok:,} out · {tot_tok:,} total ({model_label}) • {elapsed_bg:.1f}s")
                 self.task_manager.log(task_id, f"Selesai! {len(final_text)} karakter disimpan ke riwayat sesi.")
-                self.task_manager.log(task_id, f"Respons AI:\n{final_text}")
-                return final_text[:300] if final_text else "Selesai"
+                return f"Sintesis selesai ({len(final_text)} karakter, {tot_tok:,} total token)" if final_text else "Selesai"
 
             task = self.task_manager.submit(
                 name=f"Chat ({session.name if session else 'session'}): {query[:30]}...",

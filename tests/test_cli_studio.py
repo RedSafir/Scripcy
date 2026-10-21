@@ -1382,4 +1382,54 @@ class TestAgenticUXAndFormatting:
         # Verify active tasks are detected
         active = [t for t in cli_studio.task_manager.list_tasks_for_session(sess.id) if t.status == "running"]
         assert len(active) == 1
-        assert active[0].id == "task-777" 
+        assert active[0].id == "task-777"
+
+    def test_render_processing_view_displays_clean_session_and_tokens(self, cli_studio: CLIStudio) -> None:
+        from scrpcy.core.tasks import TaskInfo
+        sess = cli_studio.chat_manager.create_session("cari_paper")
+        task = TaskInfo(
+            id="task-99",
+            name="Chat: sintesis",
+            task_type="chat",
+            session_id=sess.id,
+            status="completed",
+            tokens_burned=2450,
+            progress="Selesai",
+        )
+        cli_studio.task_manager._tasks[task.id] = task
+
+        cli_studio.render_processing_view()
+        rendered = cli_studio.console.file.getvalue()
+        # Origin session must show direct session name, not "session: cari_paper"
+        assert "cari_paper" in rendered
+        assert "session: cari_paper" not in rendered
+        assert "session : cari_paper" not in rendered
+        # Tokens must be displayed in the list
+        assert "2,450 tok" in rendered
+
+    def test_get_sanitized_task_logs_filters_raw_chat_dumps(self, cli_studio: CLIStudio) -> None:
+        from scrpcy.core.tasks import TaskInfo
+        raw_logs = [
+            "[21:58:12] Started task: 'Chat: uji mutasi'",
+            "[21:58:12] Pertanyaan: uji mutasi",
+            "[21:58:13] Model: gemini-2.5-flash",
+            "[21:58:24] Token: 382 in · 1,009 out · 1,391 total (gemini-2.5-flash) • 12.1s",
+            "[21:58:24] Selesai! 4323 karakter disimpan ke riwayat sesi.",
+            "Respons AI:\n### Analisis Mutasi EGFR\nBerdasarkan data vault...",
+        ]
+        task = TaskInfo(
+            id="task-101",
+            name="Chat: uji mutasi",
+            task_type="chat",
+            status="completed",
+            logs=raw_logs,
+            result_summary="Sintesis selesai (4323 karakter, 1,391 total token)",
+        )
+        sanitized = cli_studio.get_sanitized_task_logs(task)
+        # Should keep system execution telemetry
+        assert any("Token: 382 in" in line for line in sanitized)
+        assert any("Selesai! 4323 karakter" in line for line in sanitized)
+        assert any("Summary: Sintesis selesai" in line for line in sanitized)
+        # Should NOT dump the raw chat dialogue or markdown header
+        assert not any("### Analisis Mutasi EGFR" in line for line in sanitized)
+        assert not any("Respons AI:" in line for line in sanitized) 

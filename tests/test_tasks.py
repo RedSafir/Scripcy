@@ -97,3 +97,21 @@ class TestTaskManager:
         assert loaded.status == "completed"
         assert loaded.result_summary == "success result"
         tm2.shutdown(wait=False)
+
+    def test_update_tokens_and_display(self, task_manager: TaskManager) -> None:
+        task = task_manager.submit("Token Task", "chat", lambda: "ok")
+        assert task.tokens_burned == 0
+        assert task.display_tokens == 0
+
+        task_manager.update_tokens(task.id, 1450)
+        updated = task_manager.get_task(task.id)
+        assert updated is not None
+        assert updated.tokens_burned == 1450
+        assert updated.display_tokens == 1450
+
+    def test_display_tokens_from_legacy_log(self, task_manager: TaskManager) -> None:
+        task = task_manager.submit("Legacy Log Task", "chat", lambda: "ok")
+        task_manager.log(task.id, "Token: 382 in · 1,009 out · 1,391 total (gemini-2.5-flash) • 12.1s")
+        updated = task_manager.get_task(task.id)
+        assert updated is not None
+        assert updated.display_tokens == 1391
