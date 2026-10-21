@@ -37,6 +37,11 @@ class VaultItem(BaseModel):
     cite_key: str = ""
 
     @property
+    def stem(self) -> str:
+        """Return filename stem without extension."""
+        return self.path.stem
+
+    @property
     def readable_size(self) -> str:
         """Return formatted file size."""
         size = self.size_bytes

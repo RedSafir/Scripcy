@@ -51,11 +51,16 @@ except Exception:
     pass
 
 from scrpcy.ui.interactive import (
+    _clear_lines,
+    init_windows_terminal,
     _format_model_display_name,
     interactive_action_confirm,
     interactive_carousel_table,
+    interactive_detail_viewer,
     interactive_help_view,
     interactive_input_prompt,
+    interactive_item_browser,
+    interactive_menu,
     interactive_model_selector,
     interactive_skill_selector,
     interactive_token_warning_confirm,
@@ -218,13 +223,17 @@ class CLIStudio:
         )
 
     def render_mode_divider(self) -> None:
-        """Render horizontal divider when switching between modes or resources."""
-        width = self.console.width or 80
-        self.console.print(Text("─" * width, style="grey23"))
+        """Deprecated: Outlier horizontal lines are exclusively reserved for input framing."""
+        pass
 
     def run(self) -> None:
         """Main interaction loop handling Dashboard and Project modes."""
+        init_windows_terminal()
         self.print_banner()
+
+        if sys.stdin.isatty():
+            self._run_interactive_tui()
+            return
 
         if self.current_project:
             self.print_project_banner()
@@ -268,6 +277,7 @@ class CLIStudio:
                     context_label=ctx_lbl,
                     current_model=mod,
                     current_effort=eff,
+                    current_skill=self.active_skill_name,
                 ).strip()
 
                 if not raw_input:
@@ -316,6 +326,1602 @@ class CLIStudio:
     # =========================================================================
     # DASHBOARD MODE HANDLERS
     # =========================================================================
+
+
+
+    # =========================================================================
+
+    # ZERO-STACKING INTERACTIVE TUI NAVIGATION (DESIGN.md COMPLIANT)
+
+    # =========================================================================
+
+
+
+    def _run_interactive_tui(self) -> None:
+
+        """Top-level controller for pure cursor-driven, zero-stacking TUI."""
+
+        while True:
+
+            try:
+
+                if self.current_project is None:
+
+                    res = self.run_interactive_dashboard()
+
+                    if res == "exit":
+
+                        break
+
+                else:
+
+                    self.run_interactive_project()
+
+            except (KeyboardInterrupt, EOFError):
+
+                if self.current_project:
+
+                    self.current_project = None
+
+                    self.workspace = None
+
+                    self.sub_mode = None
+
+                    continue
+
+                else:
+
+                    self.console.print("\n[bold cyan]Closing scrpcy research studio. Goodbye![/bold cyan]")
+
+                    break
+
+            except Exception as exc:
+
+                self.console.print(f"\n[bold red][!] Error:[/bold red] {escape(str(exc))}\n")
+
+                time.sleep(1.5)
+
+
+
+    def run_interactive_dashboard(self) -> str | None:
+
+        """Dashboard interactive menu without typing."""
+
+        while self.current_project is None:
+
+            projects = self.project_manager.list_projects()
+
+            p_count = len(projects)
+
+
+
+            header = Text()
+
+            header.append("scrpcy", style="bold cyan")
+
+            header.append(" • ", style="dim")
+
+            header.append(f"dashboard ({p_count} registered projects)", style="dim")
+
+
+
+            options = [
+
+                ("projects", f"Projects ({p_count} terdaftar)"),
+
+                ("settings", "Settings & Models"),
+
+                ("exit", "Exit"),
+
+            ]
+
+
+
+            choice = interactive_menu(
+
+                options=options,
+
+                header=header,
+
+                console=self.console,
+
+                footer_hint="↑/↓ Navigate · enter Select · 1-3 Quick jump · esc Exit",
+
+                allow_back=True,
+
+            )
+
+
+
+            if choice in ("exit", None):
+
+                self.console.print("\n[bold cyan]Closing scrpcy research studio. Goodbye![/bold cyan]")
+
+                return "exit"
+
+
+
+            if choice == "projects":
+
+                self.run_interactive_dashboard_projects()
+
+            elif choice == "settings":
+
+                self.run_interactive_dashboard_settings()
+
+
+
+        return None
+
+
+
+    def run_interactive_dashboard_projects(self) -> None:
+
+        """Browse and select or create projects with zero terminal stacking."""
+
+        while self.current_project is None:
+
+            projects = self.project_manager.list_projects()
+
+            if not projects:
+
+                header = Text("Belum ada master project terdaftar.", style="dim")
+
+                opts = [
+
+                    ("new", "Create New Project"),
+
+                    ("back", "Back to Dashboard"),
+
+                ]
+
+                ch = interactive_menu(opts, header=header, console=self.console)
+
+                if ch == "new":
+
+                    self.interactive_create_project()
+
+                else:
+
+                    return
+
+            else:
+
+                columns = [
+
+                    {"name": "#", "justify": "right", "width": 3, "style": "dim"},
+
+                    {"name": "Project Name", "style": "bold white", "width": 20},
+
+                    {"name": "Location", "style": "dim", "width": 38},
+
+                    {"name": "Model", "style": "cyan", "width": 26},
+
+                    {"name": "Last Opened", "style": "dim", "width": 16},
+
+                ]
+
+
+
+                def _row_builder(idx: int, p: ProjectInfo, is_selected: bool) -> list[Any]:
+
+                    m_label = _format_model_display_name(p.model or self.config.default_model)
+
+                    last_str = p.last_opened[:16].replace("T", " ") if p.last_opened else ""
+
+                    arrow = "> " if is_selected else "  "
+
+                    p_name_text = Text()
+
+                    p_name_text.append(arrow, style="bold cyan" if is_selected else "dim")
+
+                    p_name_text.append(p.name, style="bold bright_white" if is_selected else "white")
+
+                    return [
+
+                        str(idx + 1),
+
+                        p_name_text,
+
+                        str(p.path)[:36],
+
+                        m_label[:24],
+
+                        last_str,
+
+                    ]
+
+
+
+                header = Text()
+
+                header.append("Daftar Master Projects", style="bold bright_white")
+
+                header.append(f" ({len(projects)} projects)", style="dim")
+
+
+
+                actions = [
+
+                    ("open", "Open Project", "enter"),
+
+                    ("new", "New Project", "n"),
+
+                    ("delete", "Delete Project", "d"),
+
+                    ("back", "Back", "esc"),
+
+                ]
+
+
+
+                action, idx, selected_p = interactive_item_browser(
+
+                    title=header,
+
+                    columns=columns,
+
+                    items=projects,
+
+                    row_builder=_row_builder,
+
+                    actions=actions,
+
+                    console=self.console,
+
+                    empty_message="Belum ada project.",
+
+                )
+
+
+
+                if action in ("back", "esc"):
+
+                    return
+
+                elif action == "open" and selected_p:
+
+                    self.open_project(selected_p, show_banner=False)
+
+                    return
+
+                elif action == "new":
+
+                    self.interactive_create_project()
+
+                    if self.current_project:
+
+                        return
+
+                elif action == "delete" and selected_p:
+
+                    ans, _ = interactive_action_confirm(
+
+                        f"Hapus registrasi project '{selected_p.name}' dari Scrpcy?",
+
+                        console=self.console,
+
+                    )
+
+                    if ans == "yes":
+
+                        self.project_manager.remove_project(selected_p.name)
+
+
+
+    def interactive_create_project(self) -> None:
+
+        """Prompt user cleanly for project name."""
+
+        try:
+
+            self.console.print()
+
+            p_name = self.console.input("[bold cyan]Nama project baru: [/bold cyan]").strip()
+
+            if not p_name:
+
+                return
+
+            p_info = self.project_manager.create_project(name=p_name)
+
+            self.open_project(p_info, show_banner=False)
+
+        except (KeyboardInterrupt, EOFError):
+
+            self.console.print()
+
+            return
+
+
+
+    def run_interactive_dashboard_settings(self) -> None:
+
+        """Dashboard settings menu."""
+
+        while True:
+
+            cur_m = _format_model_display_name(self.config.default_model)
+
+            header = Text()
+
+            header.append("Scrpcy Global Settings\n", style="bold bright_white")
+
+            header.append(f"Default Model: {cur_m} · Citation: {self.config.citation.style}", style="dim")
+
+
+
+            opts = [
+
+                ("model", f"Switch Default Model ({cur_m})"),
+
+                ("citation", f"Citation Style ({self.config.citation.style.upper()})"),
+
+                ("keys", "Manage API Keys"),
+
+                ("back", "Back"),
+
+            ]
+
+
+
+            ch = interactive_menu(opts, header=header, console=self.console)
+
+            if ch in ("back", None):
+
+                return
+
+            if ch == "model":
+
+                self.cmd_models("")
+
+            elif ch == "citation":
+
+                self.run_interactive_citation_settings()
+
+            elif ch == "keys":
+
+                self.cmd_models("list")
+
+
+
+    def run_interactive_citation_settings(self) -> None:
+
+        """Select citation style."""
+
+        opts = [
+
+            ("apa", "APA Style (American Psychological Association)"),
+
+            ("ieee", "IEEE Style (Numbered [1], [2])"),
+
+            ("bibtex", "BibTeX Citation Keys ([Vaswani2017])"),
+
+            ("back", "Back"),
+
+        ]
+
+        ch = interactive_menu(opts, header="Pilih Gaya Sitasi:", console=self.console)
+
+        if ch and ch != "back":
+
+            self.cmd_settings(f"set citation.style {ch}")
+
+
+
+    # =========================================================================
+
+    # PROJECT MODE TUI (skripsi)
+
+    # =========================================================================
+
+
+
+    def run_interactive_project(self) -> None:
+
+        """Project root interactive menu without typing."""
+
+        while self.current_project is not None and self.sub_mode is None:
+
+            cached_count = len(self._get_cached_stems())
+
+            active_count = len(self.active_documents)
+
+            model_name = self.get_active_project_model()
+
+            effort = self.get_active_project_effort()
+
+            model_label = _format_model_display_name(model_name)
+
+
+
+            active_sess, closed_sess = self.chat_manager.get_active_sessions_count() if self.chat_manager else (0, 0)
+
+            running_tasks = len([t for t in self.task_manager.list_tasks() if t.status == "running"])
+
+
+
+            header = Text()
+
+            header.append("scrpcy", style="bold cyan")
+
+            header.append(" • ", style="dim")
+
+            header.append(self.current_project.name, style="bold bright_white")
+
+            header.append(" • ", style="dim")
+
+            header.append(f"{model_label} ({effort})", style="bold cyan")
+
+            header.append(" • ", style="dim")
+
+            header.append(f"vault: {cached_count} indexed ({active_count} active)\n", style="dim")
+
+            header.append("[✓] Connected to Master Project: ", style="bold green")
+
+            header.append(f"{self.current_project.name}\n", style="bold cyan")
+
+            header.append("  Location: ", style="bold white")
+
+            header.append(f"{self.current_project.path}\n", style="dim")
+
+            header.append("  Papers in Vault: ", style="bold white")
+
+            header.append(f"{cached_count} indexed ({active_count} active in context)\n", style="dim")
+
+            header.append("  Chat Sessions: ", style="bold white")
+
+            header.append(f"{active_sess} running, {closed_sess} closed\n", style="dim")
+
+            header.append("  Background Tasks: ", style="bold white")
+
+            header.append(f"{running_tasks} running", style="bold cyan" if running_tasks else "dim")
+
+
+
+            options = [
+
+                ("vault", f"Vault ({cached_count} berkas)"),
+
+                ("sessions", f"Sessions ({active_sess} running, {closed_sess} closed)"),
+
+                ("processing", f"Processing ({running_tasks} proses aktif)"),
+
+                ("settings", f"Settings ({model_label})"),
+
+                ("exit", "Exit / Kembali ke Dashboard"),
+
+            ]
+
+
+
+            choice = interactive_menu(
+
+                options=options,
+
+                header=header,
+
+                console=self.console,
+
+                footer_hint="↑/↓ Navigate · enter Select · 1-5 Quick jump · esc Dashboard",
+
+                allow_back=True,
+
+            )
+
+
+
+            if choice in ("exit", None):
+
+                self.current_project = None
+
+                self.workspace = None
+
+                return
+
+
+
+            if choice == "vault":
+
+                self.sub_mode = "vault"
+
+                self.run_interactive_vault()
+
+                self.sub_mode = None
+
+            elif choice == "sessions":
+
+                self.sub_mode = "sessions"
+
+                self.run_interactive_sessions()
+
+                self.sub_mode = None
+
+            elif choice == "processing":
+
+                self.sub_mode = "processing"
+
+                self.run_interactive_processing()
+
+                self.sub_mode = None
+
+            elif choice == "settings":
+
+                self.cmd_models("")
+
+
+
+    # =========================================================================
+
+    # VAULT MODE TUI
+
+    # =========================================================================
+
+
+
+    def run_interactive_vault(self) -> None:
+
+        """Vault resources interactive overview and options without typing."""
+
+        while self.sub_mode == "vault" and self.current_project:
+
+            active_items = self.vault_manager.list_active_files() if self.vault_manager else []
+
+            cached_count = sum(1 for it in active_items if it.is_cached)
+
+            needs_reload = len(active_items) - cached_count
+
+            archived_count = len(self.vault_manager.list_archived_files()) if self.vault_manager else 0
+
+            vault_path = (self.workspace.root_dir / "vault") if self.workspace else ""
+
+
+
+            header_table = Table(box=None, padding=(0, 2), show_header=False)
+
+            header_table.add_column("Label", style="dim", width=18)
+
+            header_table.add_column("Value", style="white")
+
+            header_table.add_row("Status", "[bold cyan]Aktif[/bold cyan]")
+
+            header_table.add_row("Folder Vault", str(vault_path))
+
+            header_table.add_row("Total Berkas", f"{len(active_items)} berkas aktif ({cached_count} terindeks Markdown, {needs_reload} perlu reload)")
+
+            header_table.add_row("Diarsipkan", f"{archived_count} berkas di .archive/ (tidak aktif di konteks AI)")
+
+            header_table.add_row("Format Dokumen", "[dim]PDF, DOCX, PPTX, XLSX, TXT, HTML, MD (didukung Microsoft MarkItDown)[/dim]")
+
+
+
+            options = [
+
+                ("view", f"View Papers ({len(active_items)} berkas)"),
+
+                ("add", "Add Paper (Google Drive / Find Paper / File)"),
+
+                ("back", "Back to Project"),
+
+            ]
+
+
+
+            choice = interactive_menu(
+
+                options=options,
+
+                header=header_table,
+
+                console=self.console,
+
+                footer_hint="↑/↓ Navigate · enter Select · 1-3 Quick jump · esc Back",
+
+                allow_back=True,
+
+            )
+
+
+
+            if choice in ("back", None):
+
+                return
+
+
+
+            if choice == "view":
+
+                self.run_interactive_vault_view()
+
+            elif choice == "add":
+
+                self.run_interactive_vault_add()
+
+
+
+    def run_interactive_vault_view(self) -> None:
+
+        """Browse vault items table carousel per DESIGN.md."""
+
+        while True:
+
+            active_items = self.vault_manager.list_active_files() if self.vault_manager else []
+
+            if not active_items:
+
+                self.console.print("\n[dim]Vault masih kosong (0 berkas aktif).\n[/dim]")
+
+                time.sleep(1.2)
+
+                return
+
+
+
+            columns = [
+
+                {"name": "#", "justify": "right", "width": 3, "style": "dim"},
+
+                {"name": "Filename", "style": "bold white", "width": 34},
+
+                {"name": "Format", "justify": "center", "width": 8, "style": "dim"},
+
+                {"name": "Size", "justify": "right", "width": 10, "style": "dim"},
+
+                {"name": "Context Status", "justify": "center", "width": 16},
+
+                {"name": "Cite Key / Title", "style": "cyan"},
+
+            ]
+
+
+
+            def _row_builder(idx: int, item: Any, is_selected: bool) -> list[Any]:
+
+                is_active = item.stem in self.active_documents
+
+                ctx_badge = "[bold cyan][Active][/bold cyan]" if is_active else "[dim][Inactive][/dim]"
+
+                arrow = "> " if is_selected else "  "
+
+                fname_text = Text()
+
+                fname_text.append(arrow, style="bold cyan" if is_selected else "dim")
+
+                fname_text.append(item.filename[:30], style="bold bright_white" if is_selected else "white")
+
+                return [
+
+                    str(idx + 1),
+
+                    fname_text,
+
+                    item.extension.upper().lstrip("."),
+
+                    item.readable_size,
+
+                    ctx_badge,
+
+                    (item.title or item.cite_key)[:40],
+
+                ]
+
+
+
+            header = Text()
+
+            header.append(f"Daftar Berkas Vault [{self.current_project.name}]", style="bold bright_white")
+
+            header.append(f" • {len(active_items)} berkas", style="dim")
+
+
+
+            actions = [
+
+                ("toggle", "Toggle Active", "enter"),
+
+                ("read", "Read Document", "r"),
+
+                ("archive", "Archive / Remove", "x"),
+
+                ("restore", "Restore", "u"),
+
+                ("refresh", "Refresh", "f"),
+
+                ("back", "Back", "esc"),
+
+            ]
+
+
+
+            action, idx, selected_item = interactive_item_browser(
+
+                title=header,
+
+                columns=columns,
+
+                items=active_items,
+
+                row_builder=_row_builder,
+
+                actions=actions,
+
+                console=self.console,
+
+                empty_message="Vault kosong.",
+
+            )
+
+
+
+            if action in ("back", "esc"):
+
+                return
+
+            elif action == "toggle" and selected_item:
+
+                if selected_item.stem in self.active_documents:
+
+                    self.active_documents.remove(selected_item.stem)
+
+                else:
+
+                    self.active_documents.add(selected_item.stem)
+
+            elif action == "read" and selected_item:
+
+                cache_doc = self.workspace.get_cached_document(selected_item.stem) if self.workspace else None
+
+                if cache_doc and cache_doc.exists():
+
+                    lines = cache_doc.read_text(encoding="utf-8", errors="replace").splitlines()
+
+                    interactive_detail_viewer(
+
+                        title=f"Membaca Dokumen: {selected_item.filename}",
+
+                        content_lines=lines,
+
+                        actions=[("back", "Back", "esc")],
+
+                        console=self.console,
+
+                    )
+
+            elif action == "archive" and selected_item:
+
+                ans, _ = interactive_action_confirm(
+
+                    f"Arsipkan '{selected_item.filename}' ke .archive/?",
+
+                    console=self.console,
+
+                )
+
+                if ans == "yes":
+
+                    self.vault_manager.archive_file(selected_item.filename)
+
+                    if selected_item.stem in self.active_documents:
+
+                        self.active_documents.remove(selected_item.stem)
+
+            elif action == "restore":
+
+                archived = self.vault_manager.list_archived_files()
+
+                if not archived:
+
+                    self.console.print("\n[dim]Tidak ada berkas di .archive/.\n[/dim]")
+
+                    time.sleep(1.0)
+
+                else:
+
+                    arch_opts = [(f.filename, f.filename) for f in archived] + [("back", "Back")]
+
+                    ch = interactive_menu(arch_opts, header="Pilih berkas untuk di-restore:", console=self.console)
+
+                    if ch and ch != "back":
+
+                        self.vault_manager.restore_file(ch)
+
+                        self.active_documents.add(Path(ch).stem)
+
+                        self._sync_vault_cache()
+
+            elif action == "refresh":
+
+                self._sync_vault_cache()
+
+
+
+    def run_interactive_vault_add(self) -> None:
+
+        """Add document options submenu."""
+
+        opts = [
+
+            ("gdrive", "Google Drive Link (URL Google Drive)"),
+
+            ("findpaper", "Find Paper (Literature Discovery & Download)"),
+
+            ("local", "Local File / Path (.pdf, .docx, .txt)"),
+
+            ("back", "Back"),
+
+        ]
+
+        choice = interactive_menu(opts, header="Tambah Dokumen ke Vault:", console=self.console)
+
+        if choice in ("back", None):
+
+            return
+
+        if choice == "gdrive":
+
+            try:
+
+                self.console.print()
+
+                url = self.console.input("[bold cyan]Masukkan URL Google Drive: [/bold cyan]").strip()
+
+                if url:
+
+                    self.cmd_vault_gdrive(url)
+
+            except (KeyboardInterrupt, EOFError):
+
+                pass
+
+        elif choice == "findpaper":
+
+            try:
+
+                self.console.print()
+
+                query = self.console.input("[bold cyan]Topik atau judul paper untuk dicari: [/bold cyan]").strip()
+
+                if query:
+
+                    self.cmd_findpaper(query)
+
+            except (KeyboardInterrupt, EOFError):
+
+                pass
+
+        elif choice == "local":
+
+            try:
+
+                self.console.print()
+
+                path_str = self.console.input("[bold cyan]Path berkas lokal (.pdf, .docx, dll): [/bold cyan]").strip()
+
+                if path_str:
+
+                    self.cmd_vault_add(path_str)
+
+            except (KeyboardInterrupt, EOFError):
+
+                pass
+
+
+
+    # =========================================================================
+
+    # PROCESSING MODE TUI
+
+    # =========================================================================
+
+
+
+    def run_interactive_processing(self) -> None:
+
+        """Processing status and task inspection without typing."""
+
+        while self.sub_mode == "processing" and self.current_project:
+
+            tasks = self.task_manager.list_tasks()
+
+            running_tasks = [t for t in tasks if t.status == "running"]
+
+            completed_tasks = [t for t in tasks if t.status == "completed"]
+
+            failed_tasks = [t for t in tasks if t.status == "failed"]
+
+            cancelled_tasks = [t for t in tasks if t.status == "cancelled"]
+
+
+
+            header_table = Table(box=None, padding=(0, 2), show_header=False)
+
+            header_table.add_column("Property", style="dim", width=18)
+
+            header_table.add_column("Value", style="white")
+
+            header_table.add_row("Status", "[bold cyan]Active Processing[/bold cyan]" if running_tasks else "[dim]Idle[/dim]")
+
+            header_table.add_row("Running Tasks", f"[bold cyan]{len(running_tasks)}[/bold cyan] proses" if running_tasks else "0 proses")
+
+            header_table.add_row("Completed Tasks", f"{len(completed_tasks)} selesai")
+
+            header_table.add_row("Failed / Cancelled", f"{len(failed_tasks)} gagal, {len(cancelled_tasks)} dibatalkan")
+
+            header_table.add_row("Total Riwayat", f"{len(tasks)} tasks terdaftar")
+
+
+
+            options = [
+
+                ("view", f"View Task List ({len(tasks)} tasks)"),
+
+                ("back", "Back to Project"),
+
+            ]
+
+
+
+            choice = interactive_menu(
+
+                options=options,
+
+                header=header_table,
+
+                console=self.console,
+
+                footer_hint="↑/↓ Navigate · enter Select · 1-2 Quick jump · esc Back",
+
+                allow_back=True,
+
+            )
+
+
+
+            if choice in ("back", None):
+
+                return
+
+
+
+            if choice == "view":
+
+                self.run_interactive_processing_view()
+
+
+
+    def run_interactive_processing_view(self) -> None:
+
+        """Browse task items table per DESIGN.md."""
+
+        while True:
+
+            tasks = self.task_manager.list_tasks()
+
+            if not tasks:
+
+                self.console.print("\n[dim]Belum ada background task terdaftar.\n[/dim]")
+
+                time.sleep(1.2)
+
+                return
+
+
+
+            columns = [
+
+                {"name": "#", "justify": "right", "width": 3, "style": "dim"},
+
+                {"name": "Task ID", "style": "bold cyan", "width": 10},
+
+                {"name": "Type", "justify": "center", "style": "dim", "width": 10},
+
+                {"name": "Task Name / Description", "style": "bold white", "width": 30},
+
+                {"name": "Origin Session", "style": "dim cyan", "width": 16},
+
+                {"name": "Status", "justify": "center", "width": 18},
+
+                {"name": "Duration", "justify": "right", "style": "dim", "width": 9},
+
+            ]
+
+
+
+            def _row_builder(idx: int, t: Any, is_selected: bool) -> list[Any]:
+
+                if t.status == "running":
+
+                    st_badge = "[bold cyan][Progress][/bold cyan]"
+
+                elif t.status == "completed":
+
+                    st_badge = "[bold green][Finish][/bold green]"
+
+                elif t.status == "cancelled":
+
+                    st_badge = "[dim][Cancelled][/dim]"
+
+                elif getattr(t, "needs_action", False):
+
+                    st_badge = "[bold yellow][Need User Action][/bold yellow]"
+
+                else:
+
+                    st_badge = "[bold red][Failed][/bold red]"
+
+
+
+                sess_label = f"session: {t.session_id}" if t.session_id else "[global]"
+
+                arrow = "> " if is_selected else "  "
+
+                id_text = Text()
+
+                id_text.append(arrow, style="bold cyan" if is_selected else "dim")
+
+                id_text.append(t.id, style="bold cyan" if is_selected else "dim")
+
+
+
+                return [
+
+                    str(idx + 1),
+
+                    id_text,
+
+                    t.task_type.upper(),
+
+                    t.name[:28],
+
+                    sess_label,
+
+                    st_badge,
+
+                    f"{t.duration_seconds:.1f}s",
+
+                ]
+
+
+
+            header = Text()
+
+            header.append(f"Background Processing Tasks [{self.current_project.name}]", style="bold bright_white")
+
+            header.append(f" • {len(tasks)} tasks", style="dim")
+
+
+
+            actions = [
+
+                ("detail", "Detail & Logs", "enter"),
+
+                ("cancel", "Interrupt Task", "x"),
+
+                ("clear", "Clear Finished", "c"),
+
+                ("back", "Back", "esc"),
+
+            ]
+
+
+
+            action, idx, selected_task = interactive_item_browser(
+
+                title=header,
+
+                columns=columns,
+
+                items=tasks,
+
+                row_builder=_row_builder,
+
+                actions=actions,
+
+                console=self.console,
+
+                empty_message="Tidak ada task.",
+
+            )
+
+
+
+            if action in ("back", "esc"):
+
+                return
+
+            elif action == "detail" and selected_task:
+
+                t_logs = list(selected_task.logs) or [f"Task: {selected_task.name}", f"Status: {selected_task.status}"]
+
+                if selected_task.error:
+
+                    t_logs.append(f"Error: {selected_task.error}")
+
+                if selected_task.result_summary:
+
+                    t_logs.append(f"Summary: {selected_task.result_summary}")
+
+
+
+                detail_acts = [
+
+                    ("cancel", "Interrupt Task", "x"),
+
+                    ("back", "Back", "esc"),
+
+                ]
+
+                d_choice = interactive_detail_viewer(
+
+                    title=f"Log Tugas [{selected_task.id}]: {selected_task.name}",
+
+                    content_lines=t_logs,
+
+                    actions=detail_acts,
+
+                    console=self.console,
+
+                )
+
+                if d_choice == "cancel":
+
+                    self.task_manager.cancel(selected_task.id)
+
+            elif action == "cancel" and selected_task:
+
+                if selected_task.status == "running":
+
+                    self.task_manager.cancel(selected_task.id)
+
+            elif action == "clear":
+
+                self.task_manager.clear_completed()
+
+
+
+    # =========================================================================
+
+    # SESSIONS MODE TUI (TMUX-STYLE CHAT SESSIONS)
+
+    # =========================================================================
+
+
+
+    def run_interactive_sessions(self) -> None:
+
+        """TMUX-style sessions manager without typing."""
+
+        while self.sub_mode == "sessions" and self.current_project:
+
+            active_cnt, closed_cnt = self.chat_manager.get_active_sessions_count() if self.chat_manager else (0, 0)
+
+            total_cnt = active_cnt + closed_cnt
+
+
+
+            header_table = Table(box=None, padding=(0, 2), show_header=False)
+
+            header_table.add_column("Property", style="dim", width=20)
+
+            header_table.add_column("Value", style="white")
+
+            header_table.add_row("Active / Running", f"[bold cyan]{active_cnt}[/bold cyan] sessions")
+
+            header_table.add_row("Closed / Terminated", f"[dim]{closed_cnt} sessions[/dim]")
+
+            header_table.add_row("Total Sessions", f"{total_cnt} sessions")
+
+
+
+            options = [
+
+                ("list", f"List Sessions ({total_cnt} total)"),
+
+                ("new", "New Session"),
+
+                ("back", "Back to Project"),
+
+            ]
+
+
+
+            choice = interactive_menu(
+
+                options=options,
+
+                header=header_table,
+
+                console=self.console,
+
+                footer_hint="↑/↓ Navigate · enter Select · 1-3 Quick jump · esc Back",
+
+                allow_back=True,
+
+            )
+
+
+
+            if choice in ("back", None):
+
+                return
+
+
+
+            if choice == "list":
+
+                self.run_interactive_sessions_list()
+
+            elif choice == "new":
+
+                self.interactive_create_chat_session()
+
+
+
+    def run_interactive_sessions_list(self) -> None:
+
+        """Browse sessions list and Attach/Start/Close/Delete per DESIGN.md."""
+
+        while True:
+
+            sessions = self.chat_manager.list_sessions() if self.chat_manager else []
+
+            if not sessions:
+
+                self.console.print("\n[dim]Belum ada sesi percakapan. Buat sesi baru untuk memulai.\n[/dim]")
+
+                time.sleep(1.2)
+
+                return
+
+
+
+            columns = [
+
+                {"name": "#", "justify": "right", "width": 3, "style": "dim"},
+
+                {"name": "Session Name", "style": "bold white", "width": 24},
+
+                {"name": "Status", "justify": "center", "width": 14},
+
+                {"name": "Persona / Skill", "style": "cyan", "width": 20},
+
+                {"name": "Exchanges", "justify": "center", "width": 12, "style": "dim"},
+
+                {"name": "Last Updated", "style": "dim", "width": 16},
+
+            ]
+
+
+
+            def _row_builder(idx: int, s: Any, is_selected: bool) -> list[Any]:
+
+                st = getattr(s, "status", "running")
+
+                if st == "running":
+
+                    st_badge = "[bold cyan][Running][/bold cyan]"
+
+                elif st == "detached":
+
+                    st_badge = "[dim cyan][Detached][/dim cyan]"
+
+                else:
+
+                    st_badge = "[dim][Closed][/dim]"
+
+
+
+                is_curr = self.active_chat_session and s.id == self.active_chat_session.id
+
+                arrow = "> " if is_selected else "  "
+
+                name_text = Text()
+
+                name_text.append(arrow, style="bold cyan" if is_selected else "dim")
+
+                name_text.append(s.name[:20], style="bold bright_white" if is_selected else "white")
+
+                if is_curr:
+
+                    name_text.append(" (current)", style="dim cyan")
+
+
+
+                last_str = s.updated_at[:16].replace("T", " ") if s.updated_at else ""
+
+                return [
+
+                    str(idx + 1),
+
+                    name_text,
+
+                    st_badge,
+
+                    s.active_skill,
+
+                    f"{s.message_count} msgs",
+
+                    last_str,
+
+                ]
+
+
+
+            header = Text()
+
+            header.append(f"Saved Chat Sessions [{self.current_project.name}]", style="bold bright_white")
+
+            header.append(f" • {len(sessions)} sessions", style="dim")
+
+
+
+            actions = [
+
+                ("attach", "Attach / Open", "enter"),
+
+                ("terminate", "Close / Terminate", "x"),
+
+                ("start", "Start Session", "s"),
+
+                ("delete", "Delete Session", "d"),
+
+                ("back", "Back", "esc"),
+
+            ]
+
+
+
+            action, idx, selected_sess = interactive_item_browser(
+
+                title=header,
+
+                columns=columns,
+
+                items=sessions,
+
+                row_builder=_row_builder,
+
+                actions=actions,
+
+                console=self.console,
+
+                empty_message="Tidak ada sesi.",
+
+            )
+
+
+
+            if action in ("back", "esc"):
+
+                return
+
+            elif action == "attach" and selected_sess:
+
+                st = getattr(selected_sess, "status", "running")
+
+                if st == "closed":
+
+                    self.chat_manager.update_session_status(selected_sess.id, "running")
+
+                    selected_sess.status = "running"
+
+                self.active_chat_session = selected_sess
+
+                self.active_skill_name = selected_sess.active_skill
+
+                self.sub_mode = "chat"
+
+                self.run_interactive_chat_session(selected_sess)
+
+                self.sub_mode = "sessions"
+
+            elif action == "start" and selected_sess:
+
+                self.chat_manager.update_session_status(selected_sess.id, "running")
+
+                selected_sess.status = "running"
+
+                self.active_chat_session = selected_sess
+
+                self.active_skill_name = selected_sess.active_skill
+
+                self.sub_mode = "chat"
+
+                self.run_interactive_chat_session(selected_sess)
+
+                self.sub_mode = "sessions"
+
+            elif action == "terminate" and selected_sess:
+
+                self.chat_manager.update_session_status(selected_sess.id, "closed")
+
+            elif action == "delete" and selected_sess:
+
+                ans, _ = interactive_action_confirm(
+
+                    f"Hapus permanen riwayat chat '{selected_sess.name}'?",
+
+                    console=self.console,
+
+                )
+
+                if ans == "yes":
+
+                    self.chat_manager.delete_session(selected_sess.id)
+
+                    if self.active_chat_session and self.active_chat_session.id == selected_sess.id:
+
+                        self.active_chat_session = None
+
+
+
+    def interactive_create_chat_session(self) -> None:
+
+        """Create new session and immediately attach."""
+
+        try:
+
+            self.console.print()
+
+            s_name = self.console.input("[bold cyan]Nama sesi baru (tekan Enter untuk default): [/bold cyan]").strip()
+
+            session = self.chat_manager.create_session(
+
+                name=s_name if s_name else None,
+
+                active_skill=self.active_skill_name,
+
+                status="running",
+
+            )
+
+            self.active_chat_session = session
+
+            self.sub_mode = "chat"
+
+            self.run_interactive_chat_session(session)
+
+            self.sub_mode = "sessions"
+
+        except (KeyboardInterrupt, EOFError):
+
+            self.console.print()
+
+            return
+
+
+
+    def run_interactive_chat_session(self, session: ChatSession) -> None:
+
+        """Active Chat Session: Prompt user for messages, supports /detach and /close."""
+
+        model_name = self.get_active_project_model()
+
+        model_label = _format_model_display_name(model_name)
+
+        eff = self.get_active_project_effort()
+
+
+
+        self.console.print(f"\n[bold cyan]● Sesi Aktif: {session.name}[/bold cyan] [dim]({session.active_skill} • {model_label})[/dim]")
+
+        # Show last few messages for orientation
+
+        messages = self.chat_manager.get_messages(session.id, limit=4)
+
+        for msg in messages:
+
+            if msg.role == "user":
+
+                self.console.print(f"\n[bold bright_white]{self.current_project.name}/chat/{session.name}>[/bold bright_white] {escape(msg.content)}")
+
+            else:
+
+                self.console.print(f"\n{render_academic_markdown(msg.content)}")
+
+
+
+        while self.sub_mode == "chat" and self.active_chat_session:
+
+            prompt_lbl = f"{self.current_project.name}/chat/{session.name}> "
+
+            ctx_lbl = f"{self.current_project.name} • {session.name}"
+
+
+
+            try:
+
+                raw_input = interactive_input_prompt(
+
+                    console=self.console,
+
+                    prompt_label=prompt_lbl,
+
+                    is_project_mode=True,
+
+                    is_chat_mode=True,
+
+                    mode="chat",
+
+                    context_label=ctx_lbl,
+
+                    current_model=model_name,
+
+                    current_effort=eff,
+
+                    current_skill=self.active_skill_name,
+
+                ).strip()
+
+            except (KeyboardInterrupt, EOFError):
+
+                # Ctrl+C inside chat detaches to sessions menu
+
+                self.chat_manager.update_session_status(session.id, "detached")
+
+                self.console.print(f"\n[bold cyan]● Sesi '{session.name}' di-detach ke latar belakang.[/bold cyan]\n")
+
+                break
+
+
+
+            if not raw_input:
+
+                continue
+
+
+
+            clean_lower = raw_input.lower().strip()
+
+            if clean_lower in ("/detach", "detach", "/back", "back"):
+
+                self.chat_manager.update_session_status(session.id, "detached")
+
+                self.console.print(f"\n[bold cyan]● Sesi '{session.name}' di-detach ke latar belakang.[/bold cyan]\n")
+
+                break
+
+
+
+            if clean_lower in ("/close", "close", "/terminate", "terminate", "/exit", "exit"):
+
+                self.chat_manager.update_session_status(session.id, "closed")
+
+                self.console.print(f"\n[dim]● Sesi '{session.name}' ditutup (terminated).[/dim]\n")
+
+                break
+
+
+
+            if raw_input in ("?", "/help"):
+
+                interactive_help_view(
+
+                    console=self.console,
+
+                    current_model=model_name,
+
+                    current_effort=eff,
+
+                    is_project_mode=True,
+
+                    is_chat_mode=True,
+
+                    mode="chat",
+
+                    context_label=ctx_lbl,
+
+                )
+
+                continue
+
+
+
+            # Process prompt through chat logic
+
+            self.handle_chat_submode_interaction(raw_input)
+
+
 
     def print_dashboard_help(self) -> None:
         """Render simple available commands for Dashboard mode."""
@@ -874,20 +2480,20 @@ class CLIStudio:
 
         if task_status == "completed":
             note = (
-                f"### [PROSES LATAR BELAKANG SELESAI: {task_name}]\n"
-                f"- ID Tugas: `{task_id}` ({task_type})\n"
+                f"[PROSES LATAR BELAKANG SELESAI: {task_name}]\n"
+                f"- ID Tugas: {task_id} ({task_type})\n"
                 f"- Ringkasan Hasil: {summary or 'Selesai tanpa kendala.'}\n"
                 f"- Status Vault: Dokumen dan metadata telah terindeks ke dalam vault dan siap dianalisis dalam sesi riset ini."
             )
         elif task_status == "failed":
             note = (
-                f"### [PROSES LATAR BELAKANG GAGAL: {task_name}]\n"
-                f"- ID Tugas: `{task_id}`\n"
+                f"[PROSES LATAR BELAKANG GAGAL: {task_name}]\n"
+                f"- ID Tugas: {task_id}\n"
                 f"- Kendala: {error_msg or 'Terjadi kesalahan eksekusi.'}\n"
-                f"- Rekomendasi: Anda dapat mencoba mencari sumber alternatif atau memeriksa log dengan perintah `/proc`."
+                f"- Rekomendasi: Anda dapat mencoba mencari sumber alternatif atau memeriksa log dengan perintah /proc."
             )
         elif task_status == "cancelled":
-            note = f"### [PROSES LATAR BELAKANG DIBATALKAN: {task_name} ({task_id})]"
+            note = f"[PROSES LATAR BELAKANG DIBATALKAN: {task_name} ({task_id})]"
         else:
             return
 
@@ -899,9 +2505,174 @@ class CLIStudio:
         # If user is currently active inside this exact chat session, display visual notification pill
         if self.sub_mode == "chat" and self.active_chat_session and self.active_chat_session.id == session_id:
             if task_status == "completed":
-                self.console.print(f"\n[bold cyan]●[/bold cyan] [bold bright_white]Tugas Latar Belakang Selesai:[/bold bright_white] [cyan]{task_name}[/cyan] [dim]({summary or 'Selesai'})[/dim]\n")
+                self.console.print(f"\n[bold cyan]●[/bold cyan] [bold bright_white]Tugas Latar Belakang Selesai:[/bold bright_white] [cyan]{task_name}[/cyan] [dim]({summary or 'Selesai'})[/dim]")
             elif task_status == "failed":
-                self.console.print(f"\n[bold red][x] Tugas Latar Belakang Gagal:[/bold red] [cyan]{task_name}[/cyan] [dim]({error_msg})[/dim]\n")
+                self.console.print(f"\n[bold red][x] Tugas Latar Belakang Gagal:[/bold red] [cyan]{task_name}[/cyan] [dim]({error_msg})[/dim]")
+
+        # Autonomous AI Agent Loop: Evaluate task results and formulate user briefing
+        if task_type != "evaluation":
+            try:
+                self._run_task_ai_evaluation(task, session_id)
+            except Exception:
+                pass
+
+    def _run_task_ai_evaluation(self, task: Any, session_id: str) -> None:
+        """Autonomous Agent Loop: Evaluate background task results and formulate user briefing."""
+        if not self.engine or not self.chat_manager:
+            return
+
+        session = self.chat_manager.get_session(session_id)
+        if not session:
+            return
+
+        task_status = getattr(task, "status", "")
+        task_name = getattr(task, "name", "Task")
+        task_id = getattr(task, "id", "")
+        task_type = getattr(task, "task_type", "")
+        summary = getattr(task, "result_summary", "")
+        error_msg = getattr(task, "error", "")
+
+        # Current documents in vault
+        stems = self._get_cached_stems()
+        vault_summary_lines = []
+        for idx, stem in enumerate(stems[:10], 1):
+            meta = self._get_doc_metadata(stem) if hasattr(self, "_get_doc_metadata") else None
+            title = meta.title if meta and meta.title else stem.replace("_", " ")
+            year = meta.year if meta and meta.year else ""
+            vault_summary_lines.append(f"{idx}. [{stem}] {title} ({year})")
+        vault_str = "\n".join(vault_summary_lines) if vault_summary_lines else "(Vault kosong)"
+
+        # Session context / recent query
+        messages = self.chat_manager.get_messages(session_id)
+        last_user_query = ""
+        for m in reversed(messages):
+            if m.role == "user":
+                last_user_query = m.content
+                break
+
+        eval_prompt = (
+            f"[EVALUASI HASIL TUGAS LATAR BELAKANG]\n"
+            f"Nama Tugas: {task_name}\n"
+            f"ID Tugas: {task_id} ({task_type})\n"
+            f"Status: {task_status}\n"
+            f"Ringkasan/Kendala: {summary if task_status == 'completed' else error_msg}\n\n"
+            f"Konteks Riset Sesi ({session.name}):\n"
+            f"Pertanyaan/Fokus Riset: \"{last_user_query or session.name}\"\n\n"
+            f"Dokumen di Vault Saat Ini:\n"
+            f"{vault_str}\n\n"
+            f"Instruksi Evaluasi Mandiri (Agent Loop):\n"
+            f"1. Periksa apakah dokumen yang diperoleh relevan, atau apakah ada indikasi salah jurnal, isi korup, atau paywalled.\n"
+            f"2. Evaluasi apakah literatur yang ada saat ini sudah cukup untuk menjawab fokus riset pengguna atau masih kurang.\n"
+            f"3. Berikan sinyal evaluasi internal:\n"
+            f"   - [STATUS: OK] jika semua terpenuhi.\n"
+            f"   - [STATUS: PERLU TINDAKAN] jika ada dokumen yang perlu dihapus/ditambah.\n"
+            f"4. Berikan tanggapan dan feedback yang terstruktur, ringkas, dan jelas kepada pengguna:\n"
+            f"   - Rangkum apa yang telah dilakukan sistem di latar belakang.\n"
+            f"   - Berikan hasil evaluasi terhadap dokumen.\n"
+            f"   - Rekomendasikan langkah konkret berikutnya (sertakan perintah ```scrpcy jika ada tindakan lanjutan seperti `/vault remove` atau `/scout`)."
+        )
+
+        model_name = self.get_active_project_model()
+        api_key = self.config.get_api_key_for_model(model_name)
+        if not api_key:
+            return
+
+        try:
+            if self.sub_mode == "chat" and self.active_chat_session and self.active_chat_session.id == session_id:
+                self.console.print("[bold cyan]●[/bold cyan] [bold bright_white]Berpikir[/bold bright_white] [dim]Mengevaluasi hasil proses dengan AI...[/dim]\n")
+
+            history_msgs = [{"role": m.role, "content": m.content} for m in messages[-6:]]
+            tokens: list[str] = []
+
+            async def _run_eval() -> None:
+                async for tok in self.engine.stream_query(
+                    query=eval_prompt,
+                    documents=[],
+                    skill_name=self.active_skill_name,
+                    model=model_name,
+                    max_evidence_chunks=0,
+                    history=history_msgs,
+                ):
+                    tokens.append(tok)
+
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                loop.run_until_complete(_run_eval())
+            finally:
+                loop.close()
+
+            ai_briefing = "".join(tokens).strip()
+            if ai_briefing:
+                self.chat_manager.add_message(session_id, "assistant", ai_briefing)
+                if self.sub_mode == "chat" and self.active_chat_session and self.active_chat_session.id == session_id:
+                    self.console.print(f"\n[bold cyan]✦ Evaluasi AI ({self.active_skill_name}):[/bold cyan]\n")
+                    render_academic_markdown(ai_briefing, console=self.console)
+                    self.console.print()
+                    self._handle_suggested_actions(ai_briefing)
+        except Exception as exc:
+            self.task_manager.log(task_id, f"AI evaluation error: {exc}")
+
+    def submit_chat_background(self, query: str) -> None:
+        """Submit a research query to run completely in background task manager."""
+        if not self.workspace or not self.engine:
+            self.console.print("[red][x] No active project workspace loaded.[/red]\n")
+            return
+
+        session = self._ensure_active_chat_session() if self.chat_manager else None
+        if not session:
+            self.console.print("[red][x] No active chat session.[/red]\n")
+            return
+
+        def _chat_worker(task_id: str) -> str:
+            self.task_manager.log(task_id, f"Starting background chat query: '{query[:45]}...'")
+            if self.chat_manager:
+                self.chat_manager.add_message(session.id, "user", query)
+
+            active_paths = [self.workspace.get_cache_path(f"{s}.md") for s in self.active_documents]
+            existing_paths = [p for p in active_paths if p.exists()]
+            model_name = self.get_active_project_model()
+
+            history_msgs = []
+            if self.chat_manager:
+                for m in self.chat_manager.get_messages(session.id)[-8:]:
+                    if m.role == "user" and m.content == query:
+                        continue
+                    history_msgs.append({"role": m.role, "content": m.content})
+
+            tokens = []
+            async def _stream() -> None:
+                async for tok in self.engine.stream_query(
+                    query=query,
+                    documents=existing_paths,
+                    skill_name=self.active_skill_name,
+                    model=model_name,
+                    max_evidence_chunks=self.config.citation.max_evidence_chunks,
+                    history=history_msgs,
+                ):
+                    tokens.append(tok)
+
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                loop.run_until_complete(_stream())
+            finally:
+                loop.close()
+
+            resp = "".join(tokens).strip()
+            if self.chat_manager and resp:
+                self.chat_manager.add_message(session.id, "assistant", resp)
+            return resp[:200] if resp else "Selesai"
+
+        task = self.task_manager.submit(
+            name=f"Chat: {query[:35]}...",
+            task_type="chat",
+            target_fn=_chat_worker,
+            session_id=session.id,
+        )
+        self.console.print(f"[bold green][✓] Pertanyaan dikirim ke proses latar belakang:[/bold green] [bold cyan]{task.id}[/bold cyan]")
+        self.console.print(" [dim]• Anda dapat tetap mengetik, keluar (/back), atau memantau status dengan /proc.[/dim]")
+        self.console.print(" [dim]• Saat selesai, AI akan otomatis mengevaluasi hasil dan menyimpan jawaban di sesi ini.[/dim]\n")
 
     def _background_download_worker(self, task_id: str, papers: list[ScoutResult]) -> str:
         """Background agent worker downloading and ingesting academic papers into vault."""
@@ -2063,6 +3834,22 @@ class CLIStudio:
                 self.sub_mode = "chat_hub"
                 self.console.print(f"[dim]Kembali ke menu chat: {self.current_project.name}/chat>[/dim]\n")
                 return
+            elif cmd in ("/bg", "/async"):
+                if not arg:
+                    self.console.print("[yellow]Gunakan: /bg <pertanyaan atau perintah>[/yellow]\n")
+                    return
+                self.submit_chat_background(arg)
+                return
+            elif cmd in ("/cancel", "/stop"):
+                if self.active_chat_session:
+                    session_tasks = [t for t in self.task_manager.list_tasks_for_session(self.active_chat_session.id) if t.status == "running"]
+                    if session_tasks:
+                        for t in session_tasks:
+                            self.task_manager.cancel_task(t.id)
+                        self.console.print(f"[bold yellow][!] Membatalkan {len(session_tasks)} proses latar belakang di sesi ini.[/bold yellow]\n")
+                    else:
+                        self.console.print("[dim]Tidak ada proses latar belakang yang sedang berjalan di sesi ini.[/dim]\n")
+                return
             elif cmd in ("/help", "/?"):
                 interactive_help_view(
                     console=self.console,
@@ -2183,13 +3970,50 @@ class CLIStudio:
             if msg.role == "user":
                 self.console.print(f"[bold bright_white]User:[/bold bright_white] {escape(msg.content)}")
             elif msg.role == "system":
-                self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Sistem:[/bold bright_white] [dim]{escape(msg.content)}[/dim]")
+                self.render_system_message(msg.content)
             else:
                 self.console.print(f"[bold cyan]AI ({self.active_chat_session.active_skill}):[/bold cyan]\n")
                 render_academic_markdown(msg.content, console=self.console)
                 if msg.citations:
                     self.console.print(f"[dim]Citations: {', '.join(msg.citations)}[/dim]")
             self.console.print()
+
+    def render_system_message(self, content: str) -> None:
+        """Render system notifications cleanly without raw hashes or quotes."""
+        lines = content.strip().splitlines()
+        header = lines[0] if lines else ""
+        match_completed = re.search(r"\[PROSES LATAR BELAKANG SELESAI:\s*(.*?)\]", header, re.IGNORECASE)
+        match_failed = re.search(r"\[PROSES LATAR BELAKANG GAGAL:\s*(.*?)\]", header, re.IGNORECASE)
+        match_cancelled = re.search(r"\[PROSES LATAR BELAKANG DIBATALKAN:\s*(.*?)\]", header, re.IGNORECASE)
+        match_curation = re.search(r"\[LOOP-KURASI(?:\s+SELESAI)?\]\s*(.*)", header, re.IGNORECASE)
+
+        if match_completed:
+            task_name = match_completed.group(1).strip()
+            self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Sistem:[/bold bright_white] [bold green]✓[/bold green] [bold cyan]PROSES LATAR BELAKANG SELESAI:[/bold cyan] [cyan]{task_name}[/cyan]")
+            for line in lines[1:]:
+                clean = re.sub(r"^[-\*#\s]+", "", line).replace("`", "").strip()
+                if clean:
+                    self.console.print(f"  [dim]•[/dim] [dim]{clean}[/dim]")
+        elif match_failed:
+            task_name = match_failed.group(1).strip()
+            self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Sistem:[/bold bright_white] [bold red]✗[/bold red] [bold red]PROSES LATAR BELAKANG GAGAL:[/bold red] [cyan]{task_name}[/cyan]")
+            for line in lines[1:]:
+                clean = re.sub(r"^[-\*#\s]+", "", line).replace("`", "").strip()
+                if clean:
+                    self.console.print(f"  [dim]•[/dim] [dim]{clean}[/dim]")
+        elif match_cancelled:
+            task_name = match_cancelled.group(1).strip()
+            self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Sistem:[/bold bright_white] [bold yellow]● Dibatalkan:[/bold yellow] [cyan]{task_name}[/cyan]")
+        elif match_curation:
+            extra = match_curation.group(1).strip()
+            self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Sistem:[/bold bright_white] [bold cyan]Kurasi Vault:[/bold cyan] [dim]{extra}[/dim]")
+            for line in lines[1:]:
+                clean = re.sub(r"^[-\*#\s]+", "", line).replace("`", "").strip()
+                if clean:
+                    self.console.print(f"  [dim]•[/dim] [dim]{clean}[/dim]")
+        else:
+            clean = re.sub(r"###\s*", "", content).replace("`", "")
+            self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Sistem:[/bold bright_white] [dim]{clean}[/dim]")
 
     def cmd_chat_export(self) -> None:
         """Export current chat session to Markdown."""
@@ -2886,6 +4710,7 @@ class CLIStudio:
                 chosen_model = f"9router/{live_models[0]}"
 
             if chosen_model:
+                self.config_manager.config.default_model = chosen_model
                 if self.current_project:
                     self.current_project.model = chosen_model
                     self.project_manager.set_project_model(self.current_project.name, chosen_model)
@@ -3206,6 +5031,133 @@ class CLIStudio:
             return " ".join(salient[:6])
         return query.strip()
 
+    def _run_agent_turn_interactive(
+        self,
+        coro: Any,
+        step_desc: str,
+        prompt_lbl: str,
+        model_label: str,
+        effort: str,
+    ) -> Any:
+        """Run an agent streaming turn with framed input outlier and persistent footer.
+        
+        Renders:
+        ● Step indicator / spinner
+        [Empty line]
+        ─────────────────────────────────────────────────────────────
+        skripsi/chat/testing1> █
+        ─────────────────────────────────────────────────────────────
+        ? for shortcuts               scrpcy_manual • Gemini 3.8 Flash • high
+        """
+        import shutil
+
+        # Non-interactive fallback for CI, pipes, or tests
+        if not sys.stdin.isatty():
+            with self.console.status(
+                f"[bold cyan]●[/bold cyan] [bold bright_white]{step_desc}[/bold bright_white] [dim]({model_label})[/dim]",
+                spinner="dots",
+            ):
+                return asyncio.run(coro)
+
+        SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+
+        # Flush any stale keystrokes before starting the wait loop
+        if sys.platform == "win32":
+            import msvcrt
+            while msvcrt.kbhit():
+                try:
+                    msvcrt.getwch()
+                except Exception:
+                    break
+
+        async def _interactive_loop() -> Any:
+            t = asyncio.create_task(coro)
+            typed_buffer: list[str] = []
+            frame_idx = 0
+            last_spin = time.time()
+            prev_lines_drawn = 0
+
+            def _get_layout() -> tuple[str, str]:
+                cur_width = self.console.width or shutil.get_terminal_size((80, 24)).columns
+                cur_div = "─" * cur_width
+                left_st = "? for shortcuts"
+                right_st = f"{self.active_skill_name} • {model_label} • {effort}" if self.active_skill_name else f"{model_label} • {effort}"
+                pad = max(2, cur_width - len(left_st) - len(right_st) - 2)
+                cur_foot = f"{left_st}{' ' * pad}{right_st}"
+                return cur_div, cur_foot
+
+            divider, footer = _get_layout()
+
+            try:
+                while not t.done():
+                    now = time.time()
+                    need_redraw = False
+                    if now - last_spin >= 0.08:
+                        frame_idx = (frame_idx + 1) % len(SPINNER_FRAMES)
+                        last_spin = now
+                        need_redraw = True
+
+                    if sys.platform == "win32":
+                        import msvcrt
+                        while msvcrt.kbhit():
+                            ch = msvcrt.getwch()
+                            need_redraw = True
+                            if ch in ("\x03", "\x1b"):  # Ctrl+C or Esc
+                                t.cancel()
+                                raise asyncio.CancelledError("cancel")
+                            elif ch in ("\r", "\n"):
+                                cmd = "".join(typed_buffer).strip().lower()
+                                if cmd in ("/cancel", "cancel", "/batal", "batal", "/stop", "stop", "/back", "back", "/exit"):
+                                    t.cancel()
+                                    raise asyncio.CancelledError("cancel")
+                                typed_buffer.clear()
+                            elif ch in ("\b", "\x7f"):
+                                if typed_buffer:
+                                    typed_buffer.pop()
+                            elif ch.isprintable():
+                                typed_buffer.append(ch)
+                                curr = "".join(typed_buffer).strip().lower()
+                                if curr in ("/cancel", "cancel", "/batal", "/stop", "/back", "back"):
+                                    t.cancel()
+                                    raise asyncio.CancelledError("cancel")
+
+                    if need_redraw:
+                        divider, footer = _get_layout()
+                        buf_str = "".join(typed_buffer)
+                        frame = SPINNER_FRAMES[frame_idx]
+                        lines = [
+                            f"\033[36m{frame}\033[0m {step_desc}",
+                            "",
+                            f"\033[90m{divider}\033[0m",
+                            f"\033[1;36m{prompt_lbl}\033[0m\033[1;37m{buf_str}\033[0m\033[1;37m█\033[0m",
+                            f"\033[90m{divider}\033[0m",
+                            f"\033[90m{footer}\033[0m",
+                        ]
+                        if prev_lines_drawn > 0:
+                            _clear_lines(prev_lines_drawn, self.console)
+                        sys.stdout.write("\n".join(lines) + "\n")
+                        sys.stdout.flush()
+                        prev_lines_drawn = len(lines)
+
+                    await asyncio.sleep(0.03)
+
+                if prev_lines_drawn > 0:
+                    _clear_lines(prev_lines_drawn, self.console)
+                return await t
+
+            except BaseException:
+                if prev_lines_drawn > 0:
+                    _clear_lines(prev_lines_drawn, self.console)
+                if not t.done():
+                    t.cancel()
+                try:
+                    await t
+                except BaseException:
+                    pass
+                raise
+
+        return asyncio.run(_interactive_loop())
+
     def handle_chat(self, query: str) -> None:
         """Process research query with evidence synthesis and real-time streaming output."""
         if not self.workspace or not self.engine:
@@ -3375,7 +5327,7 @@ class CLIStudio:
 
         # 2. Action Indicator: Berpikir
         self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Berpikir[/bold bright_white] [dim]Menganalisis literatur dan menyusun sintesis ilmiah...[/dim]")
-        self.console.print(f"\n[bold cyan]✦ {model_label}[/bold cyan] [dim]({self.active_skill_name} • {effort} effort)[/dim]\n")
+        self.console.print(f"\n[bold cyan]✦ {model_label}[/bold cyan] [dim]({self.active_skill_name} • {effort} effort)[/dim]")
 
         start_time = time.time()
         max_agent_turns = 3
@@ -3409,11 +5361,16 @@ class CLIStudio:
                     ):
                         turn_tokens.append(token)
 
-                with self.console.status(
-                    f"[bold cyan]●[/bold cyan] [bold bright_white]Menghubungi AI & Menganalisis...[/bold bright_white] [dim]({model_label})[/dim]",
-                    spinner="dots",
-                ):
-                    asyncio.run(_stream_chat())
+                prompt_str = f"{self.current_project.name}/chat/{session.name}> " if (self.sub_mode == "chat" and session and self.current_project) else (f"{self.current_project.name}> " if self.current_project else "> ")
+                step_title = "Menghubungi AI & Menganalisis..." if turn == 0 else "Menyintesis temuan dokumen ke dalam jawaban akhir..."
+
+                self._run_agent_turn_interactive(
+                    coro=_stream_chat(),
+                    step_desc=step_title,
+                    prompt_lbl=prompt_str,
+                    model_label=model_label,
+                    effort=effort,
+                )
                 turn_response = "".join(turn_tokens)
                 last_turn_tokens = turn_tokens
 
@@ -3478,9 +5435,7 @@ class CLIStudio:
 
         except (KeyboardInterrupt, asyncio.CancelledError):
             self.console.print("\n\n[bold yellow]● Pertanyaan dibatalkan oleh pengguna (Ctrl+C).[/bold yellow]\n")
-            if last_turn_tokens and self.chat_manager:
-                partial_resp = "".join(last_turn_tokens).strip()
-                self.chat_manager.add_message(session.id, "assistant", f"{partial_resp} [Dibatalkan]")
+            # Stay inside active chat session; do not corrupt history with [Dibatalkan]
             return
         except Exception as exc:
             self.console.print(f"\n[bold red][x] Generation error:[/bold red] {exc}\n")

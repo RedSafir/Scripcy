@@ -11,6 +11,61 @@ from rich.table import Table
 from rich.text import Text
 
 
+def init_windows_terminal() -> None:
+    """Initialize Windows Console VT processing and UTF-8 encoding."""
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32
+        try:
+            kernel32.SetConsoleOutputCP(65001)
+            kernel32.SetConsoleCP(65001)
+        except Exception:
+            pass
+
+        target_mode = 0x0001 | 0x0002 | 0x0004 | 0x0008
+        for handle_id in (-11, -12):
+            h = kernel32.GetStdHandle(handle_id)
+            if h and h != -1:
+                mode = ctypes.c_ulong()
+                if kernel32.GetConsoleMode(h, ctypes.byref(mode)):
+                    kernel32.SetConsoleMode(h, mode.value | target_mode)
+
+        GENERIC_READ = 0x80000000
+        GENERIC_WRITE = 0x40000000
+        FILE_SHARE_WRITE = 2
+        OPEN_EXISTING = 3
+        h_con = kernel32.CreateFileW(
+            "CONOUT$",
+            GENERIC_READ | GENERIC_WRITE,
+            FILE_SHARE_WRITE,
+            None,
+            OPEN_EXISTING,
+            0,
+            None,
+        )
+        if h_con and h_con != -1:
+            mode = ctypes.c_ulong()
+            if kernel32.GetConsoleMode(h_con, ctypes.byref(mode)):
+                kernel32.SetConsoleMode(h_con, mode.value | target_mode)
+            kernel32.CloseHandle(h_con)
+    except Exception:
+        pass
+
+
+init_windows_terminal()
+
+
+def _clear_lines(num_lines: int, console: Console | None = None) -> None:
+    """Cross-platform zero-flicker line clear: erases N lines upward without stacking."""
+    if num_lines <= 0:
+        return
+    sys.stdout.write(f"\x1b[{num_lines}A\r\x1b[J")
+    sys.stdout.flush()
+
+
 def _read_key() -> str:
     """Read a single keypress or escape sequence cross-platform."""
     if sys.platform == "win32":
@@ -249,8 +304,7 @@ def interactive_model_selector(
 
             # Redraw in place without scrolling
             if prev_lines_drawn > 0:
-                sys.stdout.write(f"\x1b[{prev_lines_drawn}A\r\x1b[J")
-                sys.stdout.flush()
+                _clear_lines(prev_lines_drawn, c)
 
             for line in lines:
                 c.print(line)
@@ -262,13 +316,11 @@ def interactive_model_selector(
 
             if key == "ESC":
                 if prev_lines_drawn > 0:
-                    sys.stdout.write(f"\x1b[{prev_lines_drawn}A\r\x1b[J")
-                    sys.stdout.flush()
+                    _clear_lines(prev_lines_drawn, c)
                 return None
             elif key == "ENTER":
                 if prev_lines_drawn > 0:
-                    sys.stdout.write(f"\x1b[{prev_lines_drawn}A\r\x1b[J")
-                    sys.stdout.flush()
+                    _clear_lines(prev_lines_drawn, c)
                 chosen_m = filtered[cursor_idx] if filtered else current_model
                 return chosen_m, active_effort
             elif key == "UP":
@@ -386,8 +438,7 @@ def interactive_skill_selector(
 
             # Redraw in place without scrolling
             if prev_lines_drawn > 0:
-                sys.stdout.write(f"\x1b[{prev_lines_drawn}A\r\x1b[J")
-                sys.stdout.flush()
+                _clear_lines(prev_lines_drawn, c)
 
             for line in lines:
                 c.print(line)
@@ -398,13 +449,11 @@ def interactive_skill_selector(
 
             if key == "ESC":
                 if prev_lines_drawn > 0:
-                    sys.stdout.write(f"\x1b[{prev_lines_drawn}A\r\x1b[J")
-                    sys.stdout.flush()
+                    _clear_lines(prev_lines_drawn, c)
                 return None
             elif key == "ENTER":
                 if prev_lines_drawn > 0:
-                    sys.stdout.write(f"\x1b[{prev_lines_drawn}A\r\x1b[J")
-                    sys.stdout.flush()
+                    _clear_lines(prev_lines_drawn, c)
                 if filtered:
                     return getattr(filtered[cursor_idx], "name", str(filtered[cursor_idx]))
                 return current_skill
@@ -490,8 +539,7 @@ def interactive_action_confirm(action_text: str, console: Console | None = None)
 
             # Clean redraw: erase previous lines completely
             if prev_lines_drawn > 0:
-                sys.stdout.write(f"\x1b[{prev_lines_drawn}A\r\x1b[J")
-                sys.stdout.flush()
+                _clear_lines(prev_lines_drawn, c)
 
             for line in lines_out:
                 c.print(line)
@@ -501,15 +549,13 @@ def interactive_action_confirm(action_text: str, console: Console | None = None)
             key = _read_key()
             if key in ("ESC", "n", "N", "q", "Q"):
                 if prev_lines_drawn > 0:
-                    sys.stdout.write(f"\x1b[{prev_lines_drawn}A\r\x1b[J")
-                    sys.stdout.flush()
+                    _clear_lines(prev_lines_drawn, c)
                 return ("skip", None)
             elif key == "ENTER":
                 choice = options[cursor_idx][1]
                 # Cleanly erase options from screen so chat stays pristine
                 if prev_lines_drawn > 0:
-                    sys.stdout.write(f"\x1b[{prev_lines_drawn}A\r\x1b[J")
-                    sys.stdout.flush()
+                    _clear_lines(prev_lines_drawn, c)
                 if choice == "write_in":
                     c.show_cursor(True)
                     c.print(f"[bold cyan]● Berikan masukan / instruksi tambahan untuk AI:[/bold cyan]")
@@ -525,8 +571,7 @@ def interactive_action_confirm(action_text: str, console: Console | None = None)
                 cursor_idx = (cursor_idx + 1) % len(options)
             elif key in ("y", "Y"):
                 if prev_lines_drawn > 0:
-                    sys.stdout.write(f"\x1b[{prev_lines_drawn}A\r\x1b[J")
-                    sys.stdout.flush()
+                    _clear_lines(prev_lines_drawn, c)
                 return ("execute", None)
     finally:
         c.show_cursor(True)
@@ -609,8 +654,7 @@ def interactive_token_warning_confirm(
 
             # Redraw in place without c.clear()
             if prev_lines_drawn > 0:
-                sys.stdout.write(f"\x1b[{prev_lines_drawn}A\r\x1b[J")
-                sys.stdout.flush()
+                _clear_lines(prev_lines_drawn, c)
 
             for line in lines:
                 c.print(line)
@@ -620,14 +664,12 @@ def interactive_token_warning_confirm(
             key = _read_key()
             if key in ("ESC", "q", "Q"):
                 if prev_lines_drawn > 0:
-                    sys.stdout.write(f"\x1b[{prev_lines_drawn}A\r\x1b[J")
-                    sys.stdout.flush()
+                    _clear_lines(prev_lines_drawn, c)
                 return "cancel"
             elif key == "ENTER":
                 val = options[cursor_idx][1]
                 if prev_lines_drawn > 0:
-                    sys.stdout.write(f"\x1b[{prev_lines_drawn}A\r\x1b[J")
-                    sys.stdout.flush()
+                    _clear_lines(prev_lines_drawn, c)
                 return val
             elif key in ("UP", "LEFT"):
                 cursor_idx = (cursor_idx - 1) % len(options)
@@ -839,8 +881,7 @@ def interactive_help_view(
 
             # Redraw in place without scrolling
             if prev_lines_drawn > 0:
-                sys.stdout.write(f"\x1b[{prev_lines_drawn}A\r\x1b[J")
-                sys.stdout.flush()
+                _clear_lines(prev_lines_drawn, c)
 
             for line in lines:
                 c.print(line)
@@ -850,8 +891,7 @@ def interactive_help_view(
             key = _read_key()
             if key in ("ESC", "q", "Q", "ENTER"):
                 if prev_lines_drawn > 0:
-                    sys.stdout.write(f"\x1b[{prev_lines_drawn}A\r\x1b[J")
-                    sys.stdout.flush()
+                    _clear_lines(prev_lines_drawn, c)
                 return
             elif key == "UP":
                 cursor_idx = max(0, cursor_idx - 1)
@@ -870,6 +910,7 @@ def interactive_input_prompt(
     context_label: str = "",
     current_model: str = "gemini/gemini-2.5-pro",
     current_effort: str = "high",
+    current_skill: str = "scrpcy_manual",
 ) -> str:
     """Prompt user with live slash command autocomplete and interactive help."""
     c = console or Console(force_terminal=True)
@@ -923,8 +964,7 @@ def interactive_input_prompt(
             # Check if user entered help shortcut "?"
             if buffer.strip() == "?":
                 if prev_lines_drawn > 0:
-                    sys.stdout.write(f"\x1b[{prev_lines_drawn}A\r\x1b[J")
-                    sys.stdout.flush()
+                    _clear_lines(prev_lines_drawn, c)
                     prev_lines_drawn = 0
                 interactive_help_view(
                     console=c,
@@ -944,17 +984,21 @@ def interactive_input_prompt(
             else:
                 suggestion_cursor = max(0, min(suggestion_cursor, len(suggestions) - 1))
 
-            # Build lines to render (No divider lines on each input)
+            # Build lines to render with outlier framing & persistent footer
             lines_to_render: list[Text] = []
+            divider_line = Text("─" * max(10, width - 1), style="grey23")
 
-            # 1. Input line
+            # 1. Top Outlier Line
+            lines_to_render.append(divider_line)
+
+            # 2. Input line
             input_row = Text()
             input_row.append(prompt_label, style="bold cyan")
             input_row.append(buffer, style="bold bright_white")
             input_row.append("█", style="blink bold white")
             lines_to_render.append(input_row)
 
-            # 2. Suggestions dropdown if typing a slash command
+            # 3. Suggestions dropdown if typing a slash command
             if suggestions:
                 max_display = 6
                 display_slice = suggestions[:max_display]
@@ -975,19 +1019,33 @@ def interactive_input_prompt(
                     rem = len(suggestions) - max_display
                     lines_to_render.append(Text(f"  ↓ {rem} more", style="dim"))
 
-                # Navigation hint & right status
-                s_footer = Text("↑/↓ Navigate · enter Select · tab Complete · esc to cancel", style="dim")
-                m_label = _format_model_display_name(current_model)
-                right_st = f"{m_label} · {current_effort}"
-                pad_w = max(2, width - len(s_footer.plain) - len(right_st) - 2)
-                s_footer.append(" " * pad_w)
-                s_footer.append(right_st, style="dim")
-                lines_to_render.append(s_footer)
+            # 4. Bottom Outlier Line
+            lines_to_render.append(divider_line)
+
+            # 5. Persistent Footer: left '? for shortcuts' and right status
+            if suggestions:
+                s_footer = Text("↑/↓ Navigate · enter Select · tab Complete · esc Cancel · ? for shortcuts", style="dim")
+            elif mode == "chat" or (mode is None and is_chat_mode):
+                s_footer = Text("? for shortcuts · /detach to background · /close to terminate", style="dim")
+            else:
+                s_footer = Text("? for shortcuts", style="dim")
+
+            m_label = _format_model_display_name(current_model)
+            if context_label and (mode == "chat" or is_chat_mode):
+                right_st = f"{context_label} • {m_label}"
+            elif current_skill:
+                right_st = f"{current_skill} • {m_label} • {current_effort}"
+            else:
+                right_st = f"{m_label} • {current_effort}"
+
+            pad_w = max(2, width - len(s_footer.plain) - len(right_st) - 2)
+            s_footer.append(" " * pad_w)
+            s_footer.append(right_st, style="dim")
+            lines_to_render.append(s_footer)
 
             # Redraw in place
             if prev_lines_drawn > 0:
-                sys.stdout.write(f"\x1b[{prev_lines_drawn}A\r\x1b[J")
-                sys.stdout.flush()
+                _clear_lines(prev_lines_drawn, c)
 
             for line in lines_to_render:
                 c.print(line)
@@ -1014,8 +1072,7 @@ def interactive_input_prompt(
 
                 # Final redraw without dropdown
                 if prev_lines_drawn > 0:
-                    sys.stdout.write(f"\x1b[{prev_lines_drawn}A\r\x1b[J")
-                    sys.stdout.flush()
+                    _clear_lines(prev_lines_drawn, c)
 
                 final_row = Text()
                 final_row.append(prompt_label, style="bold cyan")
@@ -1180,8 +1237,7 @@ def interactive_carousel_table(
 
             # Redraw in place without scrolling
             if prev_lines_drawn > 0:
-                sys.stdout.write(f"\x1b[{prev_lines_drawn}A\r\x1b[J")
-                sys.stdout.flush()
+                _clear_lines(prev_lines_drawn, c)
 
             sys.stdout.write(rendered)
             sys.stdout.flush()
@@ -1196,8 +1252,7 @@ def interactive_carousel_table(
                 current_slide = min(total_slides - 1, current_slide + 1)
             elif key == "ENTER":
                 if prev_lines_drawn > 0:
-                    sys.stdout.write(f"\x1b[{prev_lines_drawn}A\r\x1b[J")
-                    sys.stdout.flush()
+                    _clear_lines(prev_lines_drawn, c)
                 # Print static final state cleanly
                 c.print()
                 c.print(header_text)
@@ -1209,8 +1264,7 @@ def interactive_carousel_table(
                 return input_buffer.strip()
             elif key in ("ESC", "\x03"):
                 if prev_lines_drawn > 0:
-                    sys.stdout.write(f"\x1b[{prev_lines_drawn}A\r\x1b[J")
-                    sys.stdout.flush()
+                    _clear_lines(prev_lines_drawn, c)
                 return ""
             elif key == "BACKSPACE":
                 if input_buffer:
@@ -1218,10 +1272,298 @@ def interactive_carousel_table(
             elif len(key) == 1 and key.isprintable():
                 if not input_buffer and key in ("q", "Q"):
                     if prev_lines_drawn > 0:
-                        sys.stdout.write(f"\x1b[{prev_lines_drawn}A\r\x1b[J")
-                        sys.stdout.flush()
+                        _clear_lines(prev_lines_drawn, c)
                     return ""
                 input_buffer += key
     finally:
         c.show_cursor(True)
 
+
+
+def interactive_menu(
+    options: list[tuple[str, str]],
+    header: Any | None = None,
+    cursor_idx: int = 0,
+    console: Console | None = None,
+    footer_hint: str = "↑/↓ Navigate · enter Select · 1-N Quick jump · esc Back",
+    allow_back: bool = True,
+) -> str | None:
+    """Antigravity-style in-place interactive menu selector without terminal stacking."""
+    if not options:
+        return None
+
+    c = console or Console(force_terminal=True)
+    if not sys.stdin.isatty():
+        if header:
+            c.print(header)
+        return options[0][0]
+
+    cursor = max(0, min(cursor_idx, len(options) - 1))
+    prev_lines_drawn = 0
+    c.show_cursor(False)
+    try:
+        while True:
+            lines: list[Any] = []
+            if header is not None:
+                lines.append(header)
+                lines.append(Text(""))
+
+            for idx, (k, label) in enumerate(options, 1):
+                is_sel = (idx - 1) == cursor
+                opt_row = Text()
+                if is_sel:
+                    opt_row.append("> ", style="bold cyan")
+                    opt_row.append(f"[{idx}] ", style="bold cyan")
+                    opt_row.append(label, style="bold bright_white")
+                else:
+                    opt_row.append("  ", style="dim")
+                    opt_row.append(f"[{idx}] ", style="dim")
+                    opt_row.append(label, style="white")
+                lines.append(opt_row)
+
+            lines.append(Text(""))
+            # STRICTLY NO HORIZONTAL LINE PER DESIGN.MD AND USER SPECIFICATION
+            lines.append(Text(footer_hint, style="dim"))
+
+            # Exact terminal line count via capture
+            with c.capture() as capture:
+                for item in lines:
+                    c.print(item)
+            rendered_lines = len(capture.get().splitlines())
+
+            if prev_lines_drawn > 0:
+                _clear_lines(prev_lines_drawn, c)
+
+            for item in lines:
+                c.print(item)
+            sys.stdout.flush()
+            prev_lines_drawn = rendered_lines
+
+            key = _read_key()
+            if key == "UP":
+                cursor = (cursor - 1) % len(options)
+            elif key == "DOWN":
+                cursor = (cursor + 1) % len(options)
+            elif key == "ENTER":
+                if prev_lines_drawn > 0:
+                    _clear_lines(prev_lines_drawn, c)
+                return options[cursor][0]
+            elif key in ("ESC", "\x03", "q", "Q"):
+                if allow_back:
+                    if prev_lines_drawn > 0:
+                        _clear_lines(prev_lines_drawn, c)
+                    return None
+            elif len(key) == 1 and key.isdigit():
+                d = int(key) - 1
+                if 0 <= d < len(options):
+                    if prev_lines_drawn > 0:
+                        _clear_lines(prev_lines_drawn, c)
+                    return options[d][0]
+    finally:
+        c.show_cursor(True)
+
+
+def interactive_item_browser(
+    title: Any | None,
+    columns: list[dict[str, Any]],
+    items: list[Any],
+    row_builder: Any,
+    actions: list[tuple[str, str, str]],
+    page_size: int = 7,
+    console: Console | None = None,
+    empty_message: str = "Tidak ada item.",
+) -> tuple[str, int, Any | None]:
+    """Interactive slide/carousel item browser with actions per DESIGN.md."""
+    import math
+
+    c = console or Console(force_terminal=True)
+    total_items = len(items)
+
+    if not sys.stdin.isatty():
+        if total_items == 0:
+            return ("back", -1, None)
+        return (actions[0][0] if actions else "select", 0, items[0])
+
+    if total_items == 0:
+        c.print(f"\n[dim]{empty_message}[/dim]\n")
+        return ("back", -1, None)
+
+    total_slides = max(1, math.ceil(total_items / page_size))
+    current_slide = 0
+    cursor_idx = 0
+    prev_lines_drawn = 0
+
+    c.show_cursor(False)
+    try:
+        while True:
+            start_idx = current_slide * page_size
+            end_idx = min(total_items, start_idx + page_size)
+            slice_items = items[start_idx:end_idx]
+
+            cursor_idx = max(0, min(cursor_idx, len(slice_items) - 1))
+            absolute_cursor = start_idx + cursor_idx
+
+            cap_console = Console(record=True, width=c.width or 80)
+            if title:
+                if isinstance(title, str):
+                    cap_console.print(title)
+                else:
+                    cap_console.print(title)
+                cap_console.print()
+
+            table = Table(box=None, padding=(0, 2), show_header=True, header_style="bold cyan")
+            for col in columns:
+                table.add_column(
+                    col.get("name", ""),
+                    justify=col.get("justify", "left"),
+                    style=col.get("style"),
+                    width=col.get("width"),
+                    overflow=col.get("overflow", "ellipsis"),
+                )
+
+            for i, it in enumerate(slice_items):
+                is_selected = i == cursor_idx
+                row_vals = row_builder(start_idx + i, it, is_selected)
+                table.add_row(*row_vals)
+
+            cap_console.print(table)
+            cap_console.print()
+
+            # Actions / Navigation bar
+            action_bar = Text()
+            if total_slides > 1:
+                action_bar.append(f"[Slide {current_slide + 1}/{total_slides}] ", style="bold cyan")
+                action_bar.append("←/→ Page · ", style="dim")
+            action_bar.append("↑/↓ Navigate · ", style="dim")
+
+            for a_key, a_label, a_key_hint in actions:
+                action_bar.append(f"[{a_key_hint}] ", style="bold cyan")
+                action_bar.append(f"{a_label}   ", style="dim")
+
+            
+            cap_console.print(action_bar)
+
+            rendered = cap_console.export_text()
+            lines_count = rendered.count("\n")
+
+            if prev_lines_drawn > 0:
+                _clear_lines(prev_lines_drawn, c)
+
+            sys.stdout.write(rendered)
+            sys.stdout.flush()
+            prev_lines_drawn = lines_count
+
+            key = _read_key()
+            if key == "UP":
+                cursor_idx = (cursor_idx - 1) % len(slice_items)
+            elif key == "DOWN":
+                cursor_idx = (cursor_idx + 1) % len(slice_items)
+            elif key == "LEFT" and total_slides > 1:
+                current_slide = (current_slide - 1) % total_slides
+                cursor_idx = 0
+            elif key == "RIGHT" and total_slides > 1:
+                current_slide = (current_slide + 1) % total_slides
+                cursor_idx = 0
+            elif key in ("ESC", "\x03"):
+                if prev_lines_drawn > 0:
+                    _clear_lines(prev_lines_drawn, c)
+                return ("back", absolute_cursor, items[absolute_cursor] if items else None)
+            elif key == "ENTER":
+                if prev_lines_drawn > 0:
+                    _clear_lines(prev_lines_drawn, c)
+                # Default enter action is first action
+                first_act = actions[0][0] if actions else "select"
+                return (first_act, absolute_cursor, items[absolute_cursor])
+            else:
+                # Check action shortcut match
+                k_clean = key.lower()
+                matched_action = None
+                for a_key, a_label, a_key_hint in actions:
+                    if k_clean == a_key_hint.lower():
+                        matched_action = a_key
+                        break
+                if matched_action:
+                    if prev_lines_drawn > 0:
+                        _clear_lines(prev_lines_drawn, c)
+                    return (matched_action, absolute_cursor, items[absolute_cursor])
+    finally:
+        c.show_cursor(True)
+
+
+def interactive_detail_viewer(
+    title: str,
+    content_lines: list[str],
+    actions: list[tuple[str, str, str]] | None = None,
+    console: Console | None = None,
+) -> str:
+    """Interactive log / document viewer with scroll support per DESIGN.md."""
+    c = console or Console(force_terminal=True)
+    if not sys.stdin.isatty():
+        c.print(f"\n[bold cyan]=== {title} ===[/bold cyan]")
+        for l in content_lines[:20]:
+            c.print(l)
+        return "back"
+
+    acts = actions or [("back", "Back", "esc")]
+    view_height = max(5, (c.height or 24) - 8)
+    scroll_top = 0
+    total_lines = len(content_lines)
+    prev_lines_drawn = 0
+
+    c.show_cursor(False)
+    try:
+        while True:
+            cap_console = Console(record=True, width=c.width or 80)
+            cap_console.print(f"[bold bright_white]{title}[/bold bright_white] [dim]({total_lines} lines)[/dim]")
+            cap_console.print()
+
+            visible = content_lines[scroll_top : scroll_top + view_height]
+            if not visible:
+                cap_console.print("[dim](No log output)[/dim]")
+            else:
+                for line in visible:
+                    cap_console.print(Text(line[:(c.width or 80) - 2], style="white"))
+
+            # Fill remaining space
+            for _ in range(view_height - len(visible)):
+                cap_console.print()
+
+            
+
+            action_bar = Text()
+            if total_lines > view_height:
+                action_bar.append(f"[Line {scroll_top + 1}-{min(total_lines, scroll_top + view_height)}/{total_lines}] ", style="bold cyan")
+                action_bar.append("↑/↓ Scroll · ", style="dim")
+            for a_key, a_label, a_key_hint in acts:
+                action_bar.append(f"[{a_key_hint}] ", style="bold cyan")
+                action_bar.append(f"{a_label}   ", style="dim")
+
+            cap_console.print(action_bar)
+            rendered = cap_console.export_text()
+            lines_count = rendered.count("\n")
+
+            if prev_lines_drawn > 0:
+                _clear_lines(prev_lines_drawn, c)
+
+            sys.stdout.write(rendered)
+            sys.stdout.flush()
+            prev_lines_drawn = lines_count
+
+            key = _read_key()
+            if key == "UP":
+                scroll_top = max(0, scroll_top - 1)
+            elif key == "DOWN":
+                scroll_top = max(0, min(total_lines - view_height, scroll_top + 1))
+            elif key in ("ESC", "\x03", "q", "Q"):
+                if prev_lines_drawn > 0:
+                    _clear_lines(prev_lines_drawn, c)
+                return "back"
+            else:
+                k_clean = key.lower()
+                for a_key, a_label, a_key_hint in acts:
+                    if k_clean == a_key_hint.lower():
+                        if prev_lines_drawn > 0:
+                            _clear_lines(prev_lines_drawn, c)
+                        return a_key
+    finally:
+        c.show_cursor(True)

@@ -30,6 +30,7 @@ class ChatSession(BaseModel):
     id: str
     name: str
     active_skill: str = Field(default="scrpcy_manual")
+    status: str = Field(default="running", description="Status: running, detached, closed.")
     created_at: str = Field(
         default_factory=lambda: datetime.now(timezone.utc).isoformat(),
     )
@@ -62,6 +63,7 @@ class ChatManager:
                     id TEXT PRIMARY KEY,
                     name TEXT NOT NULL,
                     active_skill TEXT NOT NULL DEFAULT 'scrpcy_manual',
+                    status TEXT NOT NULL DEFAULT 'running',
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 )
@@ -78,11 +80,17 @@ class ChatManager:
                 )
             """)
             conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id)")
+            # Migration check for existing databases
+            cur = conn.execute("PRAGMA table_info(sessions)")
+            existing_cols = [row["name"] for row in cur.fetchall()]
+            if "status" not in existing_cols:
+                conn.execute("ALTER TABLE sessions ADD COLUMN status TEXT NOT NULL DEFAULT 'running'")
 
     def create_session(
         self,
         name: str | None = None,
         active_skill: str = "scrpcy_manual",
+        status: str = "running",
     ) -> ChatSession:
         """Create a new chat session. Auto-generates 'session1', 'session2', etc. if name is omitted."""
         with self._get_connection() as conn:
@@ -112,10 +120,10 @@ class ChatManager:
 
             conn.execute(
                 """
-                INSERT INTO sessions (id, name, active_skill, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO sessions (id, name, active_skill, status, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?)
                 """,
-                (session_id, clean_name, active_skill, now_str, now_str),
+                (session_id, clean_name, active_skill, status, now_str, now_str),
             )
             conn.commit()
 
@@ -123,6 +131,7 @@ class ChatManager:
             id=session_id,
             name=clean_name,
             active_skill=active_skill,
+            status=status,
             created_at=now_str,
             updated_at=now_str,
             message_count=0,
@@ -132,7 +141,7 @@ class ChatManager:
         """Return all chat sessions sorted by updated_at descending."""
         with self._get_connection() as conn:
             cur = conn.execute("""
-                SELECT s.id, s.name, s.active_skill, s.created_at, s.updated_at,
+                SELECT s.id, s.name, s.active_skill, s.status, s.created_at, s.updated_at,
                        COUNT(m.id) AS msg_count
                 FROM sessions s
                 LEFT JOIN messages m ON s.id = m.session_id
@@ -143,10 +152,12 @@ class ChatManager:
 
         result: list[ChatSession] = []
         for r in rows:
+            st = r["status"] if "status" in r.keys() and r["status"] else "running"
             result.append(ChatSession(
                 id=r["id"],
                 name=r["name"],
                 active_skill=r["active_skill"],
+                status=st,
                 created_at=r["created_at"],
                 updated_at=r["updated_at"],
                 message_count=r["msg_count"],
@@ -256,6 +267,24 @@ class ChatManager:
         with self._get_connection() as conn:
             conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
             conn.commit()
+
+
+    def update_session_status(self, session_id: str, status: str) -> None:
+        """Update lifecycle status for a session (running, detached, closed)."""
+        now_str = datetime.now(timezone.utc).isoformat()
+        with self._get_connection() as conn:
+            conn.execute(
+                "UPDATE sessions SET status = ?, updated_at = ? WHERE id = ?",
+                (status, now_str, session_id),
+            )
+            conn.commit()
+
+    def get_active_sessions_count(self) -> tuple[int, int]:
+        """Return count of (active_or_detached, closed) sessions."""
+        sessions = self.list_sessions()
+        active_cnt = sum(1 for s in sessions if s.status in ("running", "detached"))
+        closed_cnt = sum(1 for s in sessions if s.status == "closed")
+        return active_cnt, closed_cnt
 
     def update_session_skill(self, session_id: str, skill_name: str) -> None:
         """Update active persona skill bound to a session."""

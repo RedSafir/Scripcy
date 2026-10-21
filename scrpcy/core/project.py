@@ -14,7 +14,16 @@ from pydantic import BaseModel, Field
 from scrpcy.core.workspace import WorkspaceManager
 from scrpcy.exceptions import WorkspaceError
 
+DEFAULT_REGISTRY_ENV = "SCRPCY_PROJECTS"
 DEFAULT_REGISTRY_PATH = Path.home() / ".scrpcy" / "projects.json"
+
+
+def get_default_registry_path() -> Path:
+    """Return default project registry path, honoring SCRPCY_PROJECTS environment variable."""
+    env_val = os.environ.get(DEFAULT_REGISTRY_ENV)
+    if env_val:
+        return Path(env_val).expanduser().resolve()
+    return DEFAULT_REGISTRY_PATH
 
 
 class ProjectInfo(BaseModel):
@@ -47,7 +56,7 @@ class ProjectManager:
         self.registry_file = (
             Path(registry_file).expanduser().resolve()
             if registry_file
-            else DEFAULT_REGISTRY_PATH
+            else get_default_registry_path()
         )
         self._ensure_registry_dir()
 

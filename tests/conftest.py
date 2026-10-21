@@ -95,3 +95,14 @@ def corrupted_pdf_factory(tmp_path: Path) -> Callable[[str, bytes], Path]:
         return target
 
     return _create_corrupted
+
+
+@pytest.fixture(autouse=True)
+def isolate_scrpcy_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Isolate all tests from user's real ~/.scrpcy configuration and project registry."""
+    fake_scrpcy = tmp_path / ".scrpcy_test_home"
+    fake_scrpcy.mkdir(parents=True, exist_ok=True)
+    cfg_file = fake_scrpcy / "config.json"
+    reg_file = fake_scrpcy / "projects.json"
+    monkeypatch.setenv("SCRPCY_CONFIG", str(cfg_file))
+    monkeypatch.setenv("SCRPCY_PROJECTS", str(reg_file))

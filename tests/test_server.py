@@ -309,6 +309,12 @@ class TestCLIOperations:
         cfg_file = tmp_path / "cli_cfg.json"
         monkeypatch.setenv("SCRPCY_CONFIG", str(cfg_file))
 
+        from scrpcy.core.project import ProjectManager
+        pm = ProjectManager()
+        proj_dir = tmp_path / "test_active_p"
+        proj_dir.mkdir(parents=True, exist_ok=True)
+        pm.create_project("test_active_p", proj_dir)
+
         runner = CliRunner()
         result = runner.invoke(cli_app, ["models", "use", "openai/gpt-4o"])
         assert result.exit_code == 0

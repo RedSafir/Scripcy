@@ -998,7 +998,8 @@ class TestAgenticUXAndFormatting:
 
         assert res == "hi"
         out = test_console.file.getvalue()
-        assert "─" not in out
+        assert "─" in out
+        assert "? for shortcuts" in out
         assert "> hi" in out
 
     def test_handle_chat_telemetry_and_actions(self, cli_studio: CLIStudio) -> None:
