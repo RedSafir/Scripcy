@@ -1263,14 +1263,12 @@ class TestAgenticUXAndFormatting:
 
 
     def test_orchestrator_barrier_single_response_on_concurrent_tasks(self, cli_studio: CLIStudio) -> None:
+        from scrpcy.core.tasks import TaskInfo
         sess = cli_studio.chat_manager.create_session("Riset Karhutla")
-        t1_id = cli_studio.task_manager.add_task(name="Scout Karhutla Ekonomi", task_type="scout", session_id=sess.id)
-        t2_id = cli_studio.task_manager.add_task(name="Scout Karhutla Kesehatan", task_type="scout", session_id=sess.id)
-
-        t1 = cli_studio.task_manager.get_task(t1_id)
-        t2 = cli_studio.task_manager.get_task(t2_id)
-        t1.status = "completed"
-        t1.result_summary = "Added 3 papers"
+        t1 = TaskInfo(id="task-901", name="Scout Karhutla Ekonomi", task_type="scout", session_id=sess.id, status="completed", result_summary="Added 3 papers")
+        t2 = TaskInfo(id="task-902", name="Scout Karhutla Kesehatan", task_type="scout", session_id=sess.id, status="running")
+        cli_studio.task_manager._tasks[t1.id] = t1
+        cli_studio.task_manager._tasks[t2.id] = t2
 
         eval_calls: list[str] = []
         with patch.object(cli_studio, "_ask_ai_orchestrator_barrier", return_value={"decision": "PROCEED", "reason": "Hasil cukup"}):
