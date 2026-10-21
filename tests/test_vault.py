@@ -89,3 +89,21 @@ class TestVaultManager:
         total2, converted2 = test_vault_manager.reload_vault(force=False)
         assert total2 == 2
         assert converted2 == 0
+
+
+    def test_archive_multiple_with_quotes_and_prefix(self, test_vault_manager: VaultManager) -> None:
+        (test_vault_manager.vault_dir / "The_biogeochemical_cycle_of_iron_in_the_ocean.txt").write_text("Iron ocean", encoding="utf-8")
+        (test_vault_manager.vault_dir / "Development_of_the_MIROC-ES2L_Earth_system_model_and_the_evaluation_of_biogeochemical_cycles.txt").write_text("MIROC model", encoding="utf-8")
+
+        test_vault_manager.reload_vault(force=False)
+        assert len(test_vault_manager.list_active_files()) == 2
+
+        # Test with quoted identifiers and prefix matching
+        targets = [
+            '"The_biogeochemical_cycle_of_iron_in_the_ocean"',
+            '"Development_of_the_MIROC-ES2L_Earth_system_model_and_the_evaluation_of_biogeoche"',
+        ]
+        archived = test_vault_manager.archive_multiple(targets)
+        assert len(archived) == 2
+        assert len(test_vault_manager.list_active_files()) == 0
+        assert len(test_vault_manager.list_archived_files()) == 2

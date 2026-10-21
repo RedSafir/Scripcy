@@ -1808,22 +1808,22 @@ class CLIStudio:
         self.console.print(f"\n[bold cyan]● Sesi Aktif: {session.name}[/bold cyan] [dim]({session.active_skill} • {model_label})[/dim]")
 
         # Show last few messages for orientation
-
         messages = self.chat_manager.get_messages(session.id, limit=4)
-
         for msg in messages:
-
             if msg.role == "user":
-
                 self.console.print(f"\n[bold bright_white]{self.current_project.name}/chat/{session.name}>[/bold bright_white] {escape(msg.content)}")
-
+            elif msg.role == "system":
+                first_line = msg.content.strip().splitlines()[0] if msg.content.strip() else ""
+                self.console.print(f"[dim cyan]ℹ {escape(first_line)}[/dim cyan]")
             else:
-
-                self.console.print(f"\n{render_academic_markdown(msg.content)}")
-
-
+                self.console.print()
+                render_academic_markdown(msg.content, console=self.console)
 
         while self.sub_mode == "chat" and self.active_chat_session:
+            # Process any pending suggested actions on the main thread
+            if hasattr(self, "_pending_session_actions") and self._pending_session_actions.get(session.id):
+                pending_acts = self._pending_session_actions.pop(session.id)
+                self._execute_action_list(pending_acts)
 
             prompt_lbl = f"{self.current_project.name}/chat/{session.name}> "
 
@@ -2611,11 +2611,20 @@ class CLIStudio:
             ai_briefing = "".join(tokens).strip()
             if ai_briefing:
                 self.chat_manager.add_message(session_id, "assistant", ai_briefing)
+                # Queue any suggested actions to be handled cleanly on the main thread
+                pattern = re.compile(r"```scrpcy\r?\n(.*?)\r?\n```", re.DOTALL | re.IGNORECASE)
+                matches = pattern.findall(ai_briefing)
+                if matches:
+                    raw_actions = [cmd.strip() for m in matches for cmd in m.splitlines() if cmd.strip() and not cmd.strip().startswith("#")]
+                    if raw_actions:
+                        if not hasattr(self, "_pending_session_actions"):
+                            self._pending_session_actions = {}
+                        self._pending_session_actions.setdefault(session_id, []).extend(raw_actions)
+
                 if self.sub_mode == "chat" and self.active_chat_session and self.active_chat_session.id == session_id:
                     self.console.print(f"\n[bold cyan]✦ Evaluasi AI ({self.active_skill_name}):[/bold cyan]\n")
                     render_academic_markdown(ai_briefing, console=self.console)
                     self.console.print()
-                    self._handle_suggested_actions(ai_briefing)
         except Exception as exc:
             self.task_manager.log(task_id, f"AI evaluation error: {exc}")
 
@@ -3310,7 +3319,12 @@ class CLIStudio:
             self.console.print("[yellow]Usage: remove <# | filename> [# ...][/yellow]\n")
             return
 
-        raw_ids = [t.strip() for t in re.split(r"[\s,]+", identifier.strip()) if t.strip()]
+        import shlex
+        try:
+            tokens = shlex.split(identifier.strip())
+        except Exception:
+            tokens = [t.strip() for t in re.split(r"[\s,]+", identifier.strip()) if t.strip()]
+        raw_ids = [t.strip().strip('"\'') for t in tokens if t.strip().strip('"\'')]
         if not raw_ids:
             return
 
@@ -5605,14 +5619,8 @@ class CLIStudio:
         except Exception as exc:
             self.console.print(f"\n[bold red][x] Generation error:[/bold red] {exc}\n")
 
-    def _handle_suggested_actions(self, response_text: str) -> None:
-        """Detect and offer interactive execution for Scrpcy action blocks in AI response."""
-        pattern = re.compile(r"```scrpcy\r?\n(.*?)\r?\n```", re.DOTALL | re.IGNORECASE)
-        matches = pattern.findall(response_text)
-        if not matches:
-            return
-
-        actions = [cmd.strip() for m in matches for cmd in m.splitlines() if cmd.strip() and not cmd.strip().startswith("#")]
+    def _execute_action_list(self, actions: list[str]) -> None:
+        """Present interactive confirmation for a list of Scrpcy commands on the main thread."""
         if not actions:
             return
 
@@ -5623,7 +5631,6 @@ class CLIStudio:
                 unique_actions.append(a)
 
         # Coalesce multiple separate /vault remove lines into a single bulk command
-        # to prevent index-shifting and prompt fatigue
         remove_args: list[str] = []
         filtered_actions: list[str] = []
         for a in unique_actions:
@@ -5631,9 +5638,11 @@ class CLIStudio:
             if any(clean_a.startswith(k) for k in ("/vault remove", "vault remove", "/vault rm", "vault rm", "/vault archive", "vault archive")):
                 parts = clean_a.split(maxsplit=2)
                 if len(parts) > 2:
-                    remove_args.extend(parts[2].replace(",", " ").split())
-                elif len(parts) == 2 and parts[1].isdigit():
-                    remove_args.append(parts[1])
+                    clean_arg = parts[2].replace(",", " ")
+                    tokens = [t.strip().strip('"\'') for t in clean_arg.split() if t.strip().strip('"\'')]
+                    remove_args.extend(tokens)
+                elif len(parts) == 2 and parts[1].strip().strip('"\'').isdigit():
+                    remove_args.append(parts[1].strip().strip('"\''))
             else:
                 filtered_actions.append(a)
 
@@ -5654,12 +5663,12 @@ class CLIStudio:
             elif any(k in action for k in ("vault remove", "vault rm", "vault archive")):
                 _rm_parts = action.split(maxsplit=2)
                 v_arg = _rm_parts[2].strip() if len(_rm_parts) > 2 else ""
-                ids_display = v_arg.replace(",", " ").split()
+                ids_display = [t.strip().strip('"\'') for t in v_arg.replace(",", " ").split() if t.strip().strip('"\'')]
                 if len(ids_display) > 1:
                     self.console.print(
                         f"[bold cyan]●[/bold cyan] [bold bright_white]Mengarsipkan[/bold bright_white] "
                         f"[cyan]{len(ids_display)} dokumen -> vault/.archive/[/cyan] "
-                        f"[dim]({chr(44).join(ids_display)})[/dim]"
+                        f"[dim]({', '.join(ids_display)})[/dim]"
                     )
                 else:
                     self.console.print(
@@ -5694,3 +5703,15 @@ class CLIStudio:
                 break  # stop further actions to let AI adapt to user guidance
             else:
                 self.console.print(f"[dim]Aksi '{action}' dilewati.[/dim]\n")
+
+    def _handle_suggested_actions(self, response_text: str) -> None:
+        """Detect and offer interactive execution for Scrpcy action blocks in AI response."""
+        pattern = re.compile(r"```scrpcy\r?\n(.*?)\r?\n```", re.DOTALL | re.IGNORECASE)
+        matches = pattern.findall(response_text)
+        if not matches:
+            return
+
+        actions = [cmd.strip() for m in matches for cmd in m.splitlines() if cmd.strip() and not cmd.strip().startswith("#")]
+        if not actions:
+            return
+        self._execute_action_list(actions)

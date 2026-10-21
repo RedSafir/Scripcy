@@ -218,14 +218,23 @@ class VaultManager:
 
         for ident in identifiers:
             target: VaultItem | None = None
-            if isinstance(ident, int) or (isinstance(ident, str) and str(ident).strip().isdigit()):
-                idx = int(str(ident).strip()) - 1
+            ident_clean = str(ident).strip().strip('"\'')
+            if isinstance(ident, int) or ident_clean.isdigit():
+                idx = int(ident_clean) - 1
                 if 0 <= idx < len(active_files):
                     target = active_files[idx]
             else:
-                clean_ident = str(ident).strip().lower()
+                clean_ident = ident_clean.lower()
                 for f in active_files:
-                    if f.filename.lower() == clean_ident or f.path.stem.lower() == clean_ident:
+                    f_name = f.filename.lower()
+                    f_stem = f.path.stem.lower()
+                    if (
+                        f_name == clean_ident
+                        or f_stem == clean_ident
+                        or f_stem.startswith(clean_ident)
+                        or clean_ident.startswith(f_stem)
+                        or (len(clean_ident) >= 10 and clean_ident in f_stem)
+                    ):
                         target = f
                         break
             if target and target.filename not in seen_filenames:
@@ -261,14 +270,23 @@ class VaultManager:
         active_files = self.list_active_files()
         target: VaultItem | None = None
 
-        if isinstance(identifier, int) or (isinstance(identifier, str) and identifier.isdigit()):
-            idx = int(identifier) - 1
+        ident_clean = str(identifier).strip().strip('"\'')
+        if isinstance(identifier, int) or ident_clean.isdigit():
+            idx = int(ident_clean) - 1
             if 0 <= idx < len(active_files):
                 target = active_files[idx]
         else:
-            clean_ident = str(identifier).strip().lower()
+            clean_ident = ident_clean.lower()
             for f in active_files:
-                if f.filename.lower() == clean_ident or f.path.stem.lower() == clean_ident:
+                f_name = f.filename.lower()
+                f_stem = f.path.stem.lower()
+                if (
+                    f_name == clean_ident
+                    or f_stem == clean_ident
+                    or f_stem.startswith(clean_ident)
+                    or clean_ident.startswith(f_stem)
+                    or (len(clean_ident) >= 10 and clean_ident in f_stem)
+                ):
                     target = f
                     break
 
