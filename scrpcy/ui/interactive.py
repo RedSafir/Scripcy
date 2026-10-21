@@ -1440,11 +1440,7 @@ def interactive_item_browser(
             return ("back", -1, None)
         return (actions[0][0] if actions else "select", 0, items[0])
 
-    if total_items == 0:
-        c.print(f"\n[dim]{empty_message}[/dim]\n")
-        return ("back", -1, None)
-
-    total_slides = max(1, math.ceil(total_items / page_size))
+    total_slides = max(1, math.ceil(total_items / page_size)) if total_items > 0 else 1
     current_slide = 0
     cursor_idx = 0
     prev_lines_drawn = 0
@@ -1455,6 +1451,53 @@ def interactive_item_browser(
             start_idx = current_slide * page_size
             end_idx = min(total_items, start_idx + page_size)
             slice_items = items[start_idx:end_idx]
+
+            if total_items == 0:
+                lines: list[Any] = []
+                if title:
+                    lines.append(title if not isinstance(title, str) else Text(title))
+                    lines.append(Text(""))
+
+                table = Table(box=None, padding=(0, 2), show_header=True, header_style="bold cyan")
+                for col in columns:
+                    table.add_column(
+                        col.get("name", ""),
+                        justify=col.get("justify", "left"),
+                        style=col.get("style"),
+                        width=col.get("width"),
+                        overflow=col.get("overflow", "ellipsis"),
+                    )
+                empty_row = ["-"] * len(columns)
+                target_col = 3 if len(empty_row) > 3 else (1 if len(empty_row) > 1 else 0)
+                empty_row[target_col] = f"[dim]{empty_message}[/dim]"
+                table.add_row(*empty_row)
+                lines.append(table)
+                lines.append(Text(""))
+
+                action_bar = Text()
+                action_bar.append("[esc] ", style="bold cyan")
+                action_bar.append("Back", style="dim")
+                lines.append(action_bar)
+
+                with c.capture() as capture:
+                    for item in lines:
+                        c.print(item)
+                rendered_lines = len(capture.get().splitlines())
+
+                if prev_lines_drawn > 0:
+                    _clear_lines(prev_lines_drawn, c)
+
+                for item in lines:
+                    c.print(item)
+                sys.stdout.flush()
+                prev_lines_drawn = rendered_lines
+
+                key = _read_key()
+                if key in ("ESC", "\x03", "q", "Q", "ENTER", "back", "Back"):
+                    if prev_lines_drawn > 0:
+                        _clear_lines(prev_lines_drawn, c)
+                    return ("back", -1, None)
+                continue
 
             cursor_idx = max(0, min(cursor_idx, len(slice_items) - 1))
             absolute_cursor = start_idx + cursor_idx

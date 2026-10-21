@@ -166,6 +166,8 @@ class CLIStudio:
         self.chat_manager = ChatManager(self.workspace.root_dir / "chats.db")
         existing_sessions = self.chat_manager.list_sessions()
         self.active_chat_session = existing_sessions[0] if existing_sessions else None
+        if hasattr(self, "task_manager") and self.task_manager:
+            self.task_manager.set_db_path(self.workspace.root_dir / "tasks.db")
         self.sub_mode = None
         self.active_documents.clear()
         self._sync_vault_cache()
@@ -1300,22 +1302,9 @@ class CLIStudio:
 
 
     def run_interactive_processing_view(self) -> None:
-
         """Browse task items table per DESIGN.md."""
-
         while True:
-
             tasks = self.task_manager.list_tasks()
-
-            if not tasks:
-
-                self.console.print("\n[dim]Belum ada background task terdaftar.\n[/dim]")
-
-                time.sleep(1.2)
-
-                return
-
-
 
             columns = [
 

@@ -81,3 +81,19 @@ class TestTaskManager:
         cleared = task_manager.clear_completed()
         assert cleared == 2
         assert len(task_manager.list_tasks()) == 0
+
+    def test_persistence_sqlite(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "tasks.db"
+        tm1 = TaskManager(db_path=db_path)
+        t = tm1.submit("Persistent Task", "persist", lambda: "success result")
+        time.sleep(0.15)
+        tm1.shutdown(wait=False)
+
+        # Create new manager pointing to the same db
+        tm2 = TaskManager(db_path=db_path)
+        loaded = tm2.get_task(t.id)
+        assert loaded is not None
+        assert loaded.name == "Persistent Task"
+        assert loaded.status == "completed"
+        assert loaded.result_summary == "success result"
+        tm2.shutdown(wait=False)
