@@ -1338,25 +1338,15 @@ class CLIStudio:
 
 
             def _row_builder(idx: int, t: Any, is_selected: bool) -> list[Any]:
-
-                if t.status == "running":
-
-                    st_badge = "[bold cyan][Progress][/bold cyan]"
-
-                elif t.status == "completed":
-
-                    st_badge = "[bold green][Finish][/bold green]"
-
-                elif t.status == "cancelled":
-
-                    st_badge = "[dim][Cancelled][/dim]"
-
-                elif getattr(t, "needs_action", False):
-
+                if t.status in ("need_action", "waiting", "need user action") or getattr(t, "needs_action", False):
                     st_badge = "[bold yellow][Need User Action][/bold yellow]"
-
+                elif t.status == "running":
+                    st_badge = "[bold cyan][Progress][/bold cyan]"
+                elif t.status == "completed":
+                    st_badge = "[bold green][Finish][/bold green]"
+                elif t.status == "cancelled":
+                    st_badge = "[dim][Cancelled][/dim]"
                 else:
-
                     st_badge = "[bold red][Failed][/bold red]"
 
 
@@ -1402,15 +1392,11 @@ class CLIStudio:
 
 
             actions = [
-
                 ("detail", "Detail & Logs", "enter"),
-
+                ("open", "Open Session", "o"),
                 ("cancel", "Interrupt Task", "x"),
-
                 ("clear", "Clear Finished", "c"),
-
                 ("back", "Back", "esc"),
-
             ]
 
 
@@ -1436,9 +1422,18 @@ class CLIStudio:
 
 
             if action in ("back", "esc"):
-
                 return
-
+            elif action == "open" and selected_task:
+                if selected_task.session_id and self.chat_manager:
+                    sess = self.chat_manager.get_session(selected_task.session_id)
+                    if sess:
+                        self.active_chat_session = sess
+                        self.active_skill_name = sess.active_skill
+                        self.sub_mode = "chat"
+                        self.run_interactive_chat_session(sess)
+                        self.sub_mode = "processing"
+                else:
+                    self.console.print("[dim]Tugas ini tidak terikat dengan sesi chat tertentu.[/dim]\n")
             elif action == "detail" and selected_task:
                 def _get_live_task_logs() -> list[str]:
                     cur_t = self.task_manager.get_task(selected_task.id) or selected_task
