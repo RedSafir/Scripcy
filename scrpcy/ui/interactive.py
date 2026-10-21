@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import sys
-from typing import Any
+from typing import Any, Callable
 
 from rich.console import Console
 from rich.markup import escape
@@ -66,8 +66,18 @@ def _clear_lines(num_lines: int, console: Console | None = None) -> None:
     sys.stdout.flush()
 
 
-def _read_key() -> str:
+def _read_key(timeout: float | None = None) -> str | None:
     """Read a single keypress or escape sequence cross-platform."""
+    if timeout is not None:
+        import time
+        start = time.monotonic()
+        while time.monotonic() - start < timeout:
+            k = _poll_key()
+            if k is not None:
+                return k
+            time.sleep(0.015)
+        return None
+
     if sys.platform == "win32":
         import msvcrt
 
@@ -141,6 +151,7 @@ def _poll_key() -> str | None:
         if r:
             return _read_key()
         return None
+
 
 
 def _format_model_display_name(model_id: str) -> str:
@@ -951,6 +962,7 @@ def interactive_input_prompt(
     current_model: str = "gemini/gemini-2.5-pro",
     current_effort: str = "high",
     current_skill: str = "scrpcy_manual",
+    on_idle: Callable[[Callable[[], None]], bool] | None = None,
 ) -> str:
     """Prompt user with live slash command autocomplete and interactive help."""
     c = console or Console(force_terminal=True)
@@ -1097,8 +1109,28 @@ def interactive_input_prompt(
             sys.stdout.flush()
             prev_lines_drawn = rendered_lines
 
-            # Read keystroke
-            key = _read_key()
+            # Read keystroke (with idle callback if provided)
+            if on_idle is not None:
+                key = None
+                while key is None:
+                    key = _read_key(timeout=0.08)
+                    if key is not None:
+                        break
+                    def _clear_prompt_fn() -> None:
+                        nonlocal prev_lines_drawn
+                        if prev_lines_drawn > 0:
+                            _clear_lines(prev_lines_drawn, c)
+                            prev_lines_drawn = 0
+
+                    if on_idle(_clear_prompt_fn):
+                        # Something was printed by idle handler; break out to redraw prompt
+                        break
+
+                if key is None:
+                    # Idle handler printed output and requested prompt redraw
+                    continue
+            else:
+                key = _read_key()
 
             if key == "ENTER":
                 if suggestions:

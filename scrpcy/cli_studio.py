@@ -10,7 +10,7 @@ import shlex
 import sys
 import threading
 import time
-from typing import Any
+from typing import Any, Callable
 import webbrowser
 
 from rich.console import Console
@@ -131,6 +131,8 @@ class CLIStudio:
         self.sub_mode: str | None = None
         self.active_chat_session: ChatSession | None = None
         self._has_printed_banner: bool = False
+        self._ui_events_lock = threading.Lock()
+        self._pending_ui_events: list[Callable[[], None]] = []
 
         self.current_project: ProjectInfo | None = None
         self.workspace: WorkspaceManager | None = None
@@ -177,6 +179,29 @@ class CLIStudio:
         self.devils_advocate = DevilsAdvocate(engine=self.engine)
         self.active_documents.clear()
         self._sync_vault_cache()
+
+    def _enqueue_ui_event(self, event_fn: Callable[[], None]) -> None:
+        """Enqueue UI rendering function to be cleanly printed on the main thread."""
+        with self._ui_events_lock:
+            self._pending_ui_events.append(event_fn)
+
+    def _flush_pending_ui_events(self, clear_prompt_fn: Callable[[], None] | None = None) -> bool:
+        """Drain and execute pending UI events on main thread."""
+        with self._ui_events_lock:
+            if not self._pending_ui_events:
+                return False
+            events = list(self._pending_ui_events)
+            self._pending_ui_events.clear()
+
+        if clear_prompt_fn is not None:
+            clear_prompt_fn()
+
+        for ev in events:
+            try:
+                ev()
+            except Exception:
+                pass
+        return True
 
     def get_active_project_model(self) -> str:
         """Get the model configured for the current project, or fallback default."""
@@ -286,6 +311,7 @@ class CLIStudio:
 
                 ctx_lbl = self.current_project.name if self.current_project else ""
 
+                self._flush_pending_ui_events()
                 raw_input = interactive_input_prompt(
                     console=self.console,
                     prompt_label=prompt_lbl,
@@ -296,6 +322,7 @@ class CLIStudio:
                     current_model=mod,
                     current_effort=eff,
                     current_skill=self.active_skill_name,
+                    on_idle=self._flush_pending_ui_events,
                 ).strip()
 
                 if not raw_input:
@@ -1820,6 +1847,9 @@ class CLIStudio:
                 render_academic_markdown(msg.content, console=self.console)
 
         while self.sub_mode == "chat" and self.active_chat_session:
+            # Flush any background UI events first
+            self._flush_pending_ui_events()
+
             # Process any pending suggested actions on the main thread
             if hasattr(self, "_pending_session_actions") and self._pending_session_actions.get(session.id):
                 pending_acts = self._pending_session_actions.pop(session.id)
@@ -1828,8 +1858,6 @@ class CLIStudio:
             prompt_lbl = f"{self.current_project.name}/chat/{session.name}> "
 
             ctx_lbl = f"{self.current_project.name} • {session.name}"
-
-
 
             try:
 
@@ -1852,6 +1880,8 @@ class CLIStudio:
                     current_effort=eff,
 
                     current_skill=self.active_skill_name,
+
+                    on_idle=self._flush_pending_ui_events,
 
                 ).strip()
 
@@ -2578,12 +2608,14 @@ class CLIStudio:
         except Exception:
             pass
 
-        # If user is currently active inside this exact chat session, display visual notification pill
+        # If user is currently active inside this exact chat session, display visual notification pill cleanly on main thread
         if self.sub_mode == "chat" and self.active_chat_session and self.active_chat_session.id == session_id:
-            if task_status == "completed":
-                self.console.print(f"\n[bold cyan]●[/bold cyan] [bold bright_white]Tugas Latar Belakang Selesai:[/bold bright_white] [cyan]{task_name}[/cyan] [dim]({summary or 'Selesai'})[/dim]")
-            elif task_status == "failed":
-                self.console.print(f"\n[bold red][x] Tugas Latar Belakang Gagal:[/bold red] [cyan]{task_name}[/cyan] [dim]({error_msg})[/dim]")
+            def _notify_task() -> None:
+                if task_status == "completed":
+                    self.console.print(f"\n[bold cyan]●[/bold cyan] [bold bright_white]Tugas Latar Belakang Selesai:[/bold bright_white] [cyan]{task_name}[/cyan] [dim]({summary or 'Selesai'})[/dim]")
+                elif task_status == "failed":
+                    self.console.print(f"\n[bold red][x] Tugas Latar Belakang Gagal:[/bold red] [cyan]{task_name}[/cyan] [dim]({error_msg})[/dim]")
+            self._enqueue_ui_event(_notify_task)
 
         # Multi-Thread Orchestrator Barrier: ensure exactly 1 consolidated response
         if task_type != "evaluation":
@@ -2608,11 +2640,17 @@ class CLIStudio:
                 if self.sub_mode == "chat" and self.active_chat_session and self.active_chat_session.id == session_id:
                     if decision == "WAIT":
                         sib_names = ", ".join(f"{s.id}" for s in running_siblings)
-                        self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Orchestrator Thread:[/bold bright_white] [yellow]Menunggu hasil {sib_names}[/yellow] [dim]({reason})[/dim]")
+                        self._enqueue_ui_event(
+                            lambda: self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Orchestrator Thread:[/bold bright_white] [yellow]Menunggu hasil {sib_names}[/yellow] [dim]({reason})[/dim]")
+                        )
                     elif decision == "CANCEL_AND_PROCEED":
-                        self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Orchestrator Thread:[/bold bright_white] [yellow]Membatalkan proses lain & langsung merumuskan 1 respons terpadu[/yellow] [dim]({reason})[/dim]")
+                        self._enqueue_ui_event(
+                            lambda: self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Orchestrator Thread:[/bold bright_white] [yellow]Membatalkan proses lain & langsung merumuskan 1 respons terpadu[/yellow] [dim]({reason})[/dim]")
+                        )
                     else:
-                        self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Orchestrator Thread:[/bold bright_white] [cyan]Merumuskan respons final sekarang[/cyan] [dim]({reason})[/dim]")
+                        self._enqueue_ui_event(
+                            lambda: self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Orchestrator Thread:[/bold bright_white] [cyan]Merumuskan respons final sekarang[/cyan] [dim]({reason})[/dim]")
+                        )
 
                 if decision == "WAIT":
                     start_w = time.time()
@@ -2634,7 +2672,9 @@ class CLIStudio:
                             self.task_manager.cancel_task(s.id)
                             self._evaluated_task_ids.add(s.id)
                         if self.sub_mode == "chat" and self.active_chat_session and self.active_chat_session.id == session_id:
-                            self.console.print(f"[bold cyan]●[/bold cyan] [bold yellow]Waktu tunggu tercapai ({wait_sec}s).[/bold yellow] [dim]Membatalkan proses yang terlambat dan merumuskan respons.[/dim]")
+                            self._enqueue_ui_event(
+                                lambda: self.console.print(f"[bold cyan]●[/bold cyan] [bold yellow]Waktu tunggu tercapai ({wait_sec}s).[/bold yellow] [dim]Membatalkan proses yang terlambat dan merumuskan respons.[/dim]")
+                            )
 
                 elif decision == "CANCEL_AND_PROCEED":
                     for s in running_siblings:
@@ -2650,10 +2690,13 @@ class CLIStudio:
                 if t.status in ("completed", "cancelled"):
                     self._evaluated_task_ids.add(t.id)
 
-            try:
-                self._run_task_ai_evaluation(task, session_id)
-            except Exception:
-                pass
+            # Autonomous Agent Loop: only run vault evaluation for literature acquisition / curation tasks
+            # Chat tasks synthesize and answer in the chat session directly without redundant vault auditing
+            if task_type in ("download", "scout", "curate", "convert", "gdrive", "vault_add"):
+                try:
+                    self._run_task_ai_evaluation(task, session_id)
+                except Exception:
+                    pass
 
     def _run_task_ai_evaluation(self, task: Any, session_id: str) -> None:
         """Autonomous Agent Loop: Evaluate background task results and formulate user briefing."""
@@ -2731,7 +2774,9 @@ class CLIStudio:
 
         try:
             if self.sub_mode == "chat" and self.active_chat_session and self.active_chat_session.id == session_id:
-                self.console.print("[bold cyan]●[/bold cyan] [bold bright_white]Berpikir[/bold bright_white] [dim]Mengevaluasi hasil proses dengan AI...[/dim]\n")
+                self._enqueue_ui_event(
+                    lambda: self.console.print("[bold cyan]●[/bold cyan] [bold bright_white]Berpikir[/bold bright_white] [dim]Mengevaluasi hasil proses dengan AI...[/dim]\n")
+                )
 
             history_msgs = [{"role": m.role, "content": m.content} for m in messages[-6:]]
             tokens: list[str] = []
@@ -2768,9 +2813,11 @@ class CLIStudio:
                         self._pending_session_actions.setdefault(session_id, []).extend(raw_actions)
 
                 if self.sub_mode == "chat" and self.active_chat_session and self.active_chat_session.id == session_id:
-                    self.console.print(f"\n[bold cyan]✦ Evaluasi AI ({self.active_skill_name}):[/bold cyan]\n")
-                    render_academic_markdown(ai_briefing, console=self.console)
-                    self.console.print()
+                    def _render_eval() -> None:
+                        self.console.print(f"\n[bold cyan]✦ Evaluasi AI ({self.active_skill_name}):[/bold cyan]\n")
+                        render_academic_markdown(ai_briefing, console=self.console)
+                        self.console.print()
+                    self._enqueue_ui_event(_render_eval)
         except Exception as exc:
             self.task_manager.log(task_id, f"AI evaluation error: {exc}")
 

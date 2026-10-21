@@ -1285,3 +1285,59 @@ class TestAgenticUXAndFormatting:
 
                 # Total evaluations must STILL BE EXACTLY 1!
                 assert len(eval_calls) == 1
+
+    def test_interactive_input_prompt_on_idle_clears_and_rerenders(self, test_console: Console) -> None:
+        from scrpcy.ui.interactive import interactive_input_prompt
+
+        idle_called = [0]
+        def idle_handler(clear_prompt_fn):
+            idle_called[0] += 1
+            if idle_called[0] == 1:
+                clear_prompt_fn()
+                test_console.print("Async Event Received")
+                return True
+            return False
+
+        keys = [None, "h", "i", "ENTER"]
+        key_idx = [0]
+        def fake_read_key(timeout=None):
+            k = keys[key_idx[0]]
+            key_idx[0] += 1
+            return k
+
+        with patch("sys.stdin.isatty", return_value=True):
+            with patch("scrpcy.ui.interactive._read_key", side_effect=fake_read_key):
+                res = interactive_input_prompt(
+                    console=test_console,
+                    prompt_label="> ",
+                    on_idle=idle_handler,
+                )
+
+        assert res == "hi"
+        assert idle_called[0] >= 1
+
+    def test_background_ui_events_enqueued_and_flushed_on_main_thread(self, cli_studio: CLIStudio) -> None:
+        from scrpcy.core.tasks import TaskInfo
+        sess = cli_studio.chat_manager.create_session("Riset ML")
+        cli_studio.sub_mode = "chat"
+        cli_studio.active_chat_session = sess
+
+        chat_task = TaskInfo(
+            id="task-999",
+            name="Chat: jelaskan konsep dasar ML",
+            task_type="chat",
+            session_id=sess.id,
+            status="completed",
+            result_summary="Penjelasan selesai",
+        )
+
+        # Completing the task must enqueue a UI event rather than printing directly to stdout
+        cli_studio._on_background_task_completed(chat_task)
+        assert len(cli_studio._pending_ui_events) >= 1
+
+        # Flushing executes the queued function cleanly on the main thread
+        cleared = [False]
+        did_flush = cli_studio._flush_pending_ui_events(clear_prompt_fn=lambda: cleared.__setitem__(0, True))
+        assert did_flush is True
+        assert cleared[0] is True
+        assert len(cli_studio._pending_ui_events) == 0
