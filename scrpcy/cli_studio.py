@@ -60,6 +60,7 @@ from scrpcy.ui.interactive import (
     init_windows_terminal,
     _format_model_display_name,
     interactive_action_confirm,
+    interactive_confirm,
     interactive_carousel_table,
     interactive_detail_viewer,
     interactive_help_view,
@@ -524,10 +525,8 @@ class CLIStudio:
 
 
     def run_interactive_dashboard_projects(self) -> None:
-
         """Browse and select or create projects with zero terminal stacking."""
-
-        while self.current_project is None:
+        while True:
 
             projects = self.project_manager.list_projects()
 
@@ -662,18 +661,23 @@ class CLIStudio:
                         return
 
                 elif action == "delete" and selected_p:
-
-                    ans, _ = interactive_action_confirm(
-
+                    confirmed = interactive_confirm(
                         f"Hapus registrasi project '{selected_p.name}' dari Scrpcy?",
-
+                        default=True,
+                        yes_label="Ya, hapus project",
+                        no_label="Batal",
                         console=self.console,
-
                     )
-
-                    if ans == "yes":
-
-                        self.project_manager.remove_project(selected_p.name)
+                    if confirmed:
+                        if self.current_project and self.current_project.name == selected_p.name:
+                            self.current_project = None
+                            self.workspace = None
+                            self.vault_manager = None
+                            self.active_documents.clear()
+                        removed = self.project_manager.remove_project(selected_p.name)
+                        if removed:
+                            self.console.print(f"[bold green][✓] Registrasi project '{selected_p.name}' berhasil dihapus dari Scrpcy.[/bold green]")
+                            self.console.print(f"[dim]Catatan: File asli di '{selected_p.path}' tetap aman dan tidak dihapus dari disk.[/dim]\n")
 
 
 
@@ -1156,22 +1160,18 @@ class CLIStudio:
                     )
 
             elif action == "archive" and selected_item:
-
-                ans, _ = interactive_action_confirm(
-
+                confirmed = interactive_confirm(
                     f"Arsipkan '{selected_item.filename}' ke .archive/?",
-
+                    default=True,
+                    yes_label="Ya, arsipkan",
+                    no_label="Batal",
                     console=self.console,
-
                 )
-
-                if ans == "yes":
-
+                if confirmed:
                     self.vault_manager.archive_file(selected_item.filename)
-
                     if selected_item.stem in self.active_documents:
-
                         self.active_documents.remove(selected_item.stem)
+                    self.console.print(f"[bold green][✓] File '{selected_item.filename}' berhasil diarsipkan ke .archive/.[/bold green]\n")
 
             elif action == "restore":
 
@@ -1793,22 +1793,18 @@ class CLIStudio:
                 self.chat_manager.update_session_status(selected_sess.id, "closed")
 
             elif action == "delete" and selected_sess:
-
-                ans, _ = interactive_action_confirm(
-
+                confirmed = interactive_confirm(
                     f"Hapus permanen riwayat chat '{selected_sess.name}'?",
-
+                    default=True,
+                    yes_label="Ya, hapus riwayat chat",
+                    no_label="Batal",
                     console=self.console,
-
                 )
-
-                if ans == "yes":
-
+                if confirmed:
                     self.chat_manager.delete_session(selected_sess.id)
-
                     if self.active_chat_session and self.active_chat_session.id == selected_sess.id:
-
                         self.active_chat_session = None
+                    self.console.print(f"[bold green][✓] Riwayat chat '{selected_sess.name}' berhasil dihapus.[/bold green]\n")
 
 
 

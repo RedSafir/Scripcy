@@ -508,6 +508,115 @@ def interactive_skill_selector(
         c.show_cursor(True)
 
 
+
+def interactive_confirm(
+    prompt_text: str,
+    default: bool = True,
+    yes_label: str = "Ya, lanjutkan",
+    no_label: str = "Batal",
+    console: Console | None = None,
+) -> bool:
+    """Prompt user with a clean, focused 2-option confirmation dialog (Yes / No).
+
+    Used for standard direct user actions (e.g. deleting a project, archiving a file,
+    deleting a chat session) without unnecessary AI framing or write-in prompts.
+    """
+    c = console or Console()
+
+    # Enable ANSI Virtual Terminal processing on Windows
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            kernel32 = ctypes.windll.kernel32
+            kernel32.SetConsoleMode(kernel32.GetStdHandle(-11), 7)
+        except Exception:
+            pass
+
+    # Non-interactive fallback
+    if not sys.stdin.isatty():
+        c.print(f"[bold cyan]✦ Konfirmasi:[/bold cyan] [bold bright_white]{prompt_text}[/bold bright_white]")
+        try:
+            suffix = "(Y/n)" if default else "(y/N)"
+            line = c.input(f"  {yes_label} / {no_label} {suffix}: ").strip().lower()
+            if not line:
+                return default
+            if line in ("y", "yes", "ya", "ok", "1"):
+                return True
+            return False
+        except Exception:
+            return default
+
+    options = [
+        (yes_label, True),
+        (no_label, False),
+    ]
+    cursor_idx = 0 if default else 1
+    prev_lines_drawn = 0
+
+    c.show_cursor(False)
+    try:
+        while True:
+            lines_out: list[Text] = []
+            header = Text("✦ Konfirmasi: ", style="bold cyan")
+            header.append(prompt_text, style="bold bright_white")
+            lines_out.append(header)
+
+            for idx, (label, val) in enumerate(options):
+                is_cursor = idx == cursor_idx
+                item_text = Text()
+                if is_cursor:
+                    item_text.append("  > ", style="bold cyan")
+                    marker_style = "bold green" if val else "bold yellow"
+                    item_text.append("[x] ", style=marker_style)
+                    item_text.append(label, style="bold bright_white")
+                else:
+                    item_text.append("    ", style="dim")
+                    item_text.append("[ ] ", style="dim")
+                    item_text.append(label, style="dim white")
+                lines_out.append(item_text)
+
+            footer = Text("  Navigasi: ", style="dim")
+            footer.append("↑/↓", style="bold cyan")
+            footer.append(" Pilih  ", style="dim")
+            footer.append("Enter", style="bold green")
+            footer.append(" Konfirmasi  ", style="dim")
+            footer.append("Esc/n", style="bold yellow")
+            footer.append(" Batal", style="dim")
+            lines_out.append(footer)
+
+            with c.capture() as capture:
+                for line in lines_out:
+                    c.print(line)
+            rendered_lines = len(capture.get().splitlines())
+
+            if prev_lines_drawn > 0:
+                _clear_lines(prev_lines_drawn, c)
+
+            for line in lines_out:
+                c.print(line)
+            sys.stdout.flush()
+            prev_lines_drawn = rendered_lines
+
+            key = _read_key()
+            if key in ("ESC", "n", "N", "q", "Q"):
+                if prev_lines_drawn > 0:
+                    _clear_lines(prev_lines_drawn, c)
+                return False
+            elif key in ("y", "Y"):
+                if prev_lines_drawn > 0:
+                    _clear_lines(prev_lines_drawn, c)
+                return True
+            elif key == "ENTER":
+                choice = options[cursor_idx][1]
+                if prev_lines_drawn > 0:
+                    _clear_lines(prev_lines_drawn, c)
+                return choice
+            elif key in ("UP", "LEFT", "DOWN", "RIGHT", "TAB"):
+                cursor_idx = (cursor_idx + 1) % len(options)
+    finally:
+        c.show_cursor(True)
+
+
 def interactive_action_confirm(action_text: str, console: Console | None = None) -> tuple[str, str | None]:
     """Prompt user with 3 options: Execute, Write-in advice/feedback, or Skip."""
     c = console or Console()

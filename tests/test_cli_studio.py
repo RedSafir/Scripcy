@@ -1047,6 +1047,42 @@ class TestAgenticUXAndFormatting:
         # Ensure c.clear() was NEVER called (prevents screen jumps and lost history)
         mock_clear.assert_not_called()
 
+    def test_interactive_confirm_yes_and_no(self, test_console: Console) -> None:
+        from scrpcy.ui.interactive import interactive_confirm
+
+        with patch("sys.stdin.isatty", return_value=True):
+            # Test default Enter on Yes
+            with patch("scrpcy.ui.interactive._read_key", side_effect=["ENTER"]):
+                assert interactive_confirm("Hapus project?", default=True, console=test_console) is True
+
+            # Test direct 'y' key
+            with patch("scrpcy.ui.interactive._read_key", side_effect=["y"]):
+                assert interactive_confirm("Hapus project?", default=False, console=test_console) is True
+
+            # Test direct 'n' key
+            with patch("scrpcy.ui.interactive._read_key", side_effect=["n"]):
+                assert interactive_confirm("Hapus project?", default=True, console=test_console) is False
+
+            # Test ESC key
+            with patch("scrpcy.ui.interactive._read_key", side_effect=["ESC"]):
+                assert interactive_confirm("Hapus project?", default=True, console=test_console) is False
+
+    def test_interactive_project_browser_delete_deregisters_project(self, cli_studio: CLIStudio) -> None:
+        proj_a = cli_studio.project_manager.create_project(name="to_delete_proj")
+        assert cli_studio.project_manager.get_project("to_delete_proj") is not None
+
+        # Simulate browser selecting 'delete' on proj_a, then 'back'
+        browser_calls = [
+            ("delete", 0, proj_a),
+            ("back", 0, None),
+        ]
+        with patch("scrpcy.cli_studio.interactive_item_browser", side_effect=browser_calls):
+            with patch("scrpcy.cli_studio.interactive_confirm", return_value=True):
+                cli_studio.run_interactive_dashboard_projects()
+
+        # Project should now be completely removed from registry
+        assert cli_studio.project_manager.get_project("to_delete_proj") is None
+
     def test_cmd_search_zero_results_triggers_ai_recovery(self, cli_studio: CLIStudio) -> None:
         async def mock_empty_search(*args: Any, **kwargs: Any):
             return []
