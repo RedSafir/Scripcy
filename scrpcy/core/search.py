@@ -212,6 +212,134 @@ class PaperSearcher:
 
         return results
 
+    async def get_paper_citations(
+        self,
+        paper_id_or_doi: str,
+        limit: int = 15,
+    ) -> list[SearchResult]:
+        """Fetch papers citing the specified seed paper via Semantic Scholar Graph API."""
+        client = await self._get_client()
+        clean_id = paper_id_or_doi.strip()
+        encoded = f"DOI:{clean_id}" if ("10." in clean_id and not clean_id.startswith("DOI:")) else clean_id
+        url = f"https://api.semanticscholar.org/graph/v1/paper/{encoded}/citations"
+        params = {
+            "limit": limit,
+            "fields": "citingPaper.paperId,citingPaper.title,citingPaper.abstract,citingPaper.year,citingPaper.authors,citingPaper.externalIds,citingPaper.openAccessPdf",
+        }
+        headers = {}
+        if self.api_key:
+            headers["x-api-key"] = self.api_key
+
+        try:
+            response = await client.get(url, params=params, headers=headers)
+        except Exception:
+            return []
+
+        if response.status_code >= 400:
+            return []
+
+        try:
+            data = response.json().get("data", [])
+        except Exception:
+            return []
+
+        results: list[SearchResult] = []
+        for entry in data:
+            item = entry.get("citingPaper") or {}
+            title = (item.get("title") or "").strip()
+            if not title:
+                continue
+            authors = [
+                a.get("name", "").strip()
+                for a in item.get("authors", [])
+                if a.get("name") and a.get("name").strip()
+            ]
+            ext_ids = item.get("externalIds") or {}
+            doi = ext_ids.get("DOI")
+            arxiv_id = ext_ids.get("ArXiv")
+            open_access = item.get("openAccessPdf") or {}
+            pdf_url = open_access.get("url") if isinstance(open_access, dict) else None
+            if not pdf_url and arxiv_id:
+                pdf_url = f"https://arxiv.org/pdf/{arxiv_id}.pdf"
+
+            res = SearchResult(
+                title=title,
+                authors=authors,
+                abstract=item.get("abstract"),
+                year=item.get("year"),
+                doi=doi,
+                pdf_url=pdf_url,
+                source_api="semantic_scholar_citations",
+                paper_id=item.get("paperId"),
+            )
+            res.ensure_cite_key()
+            results.append(res)
+        return results
+
+    async def get_paper_references(
+        self,
+        paper_id_or_doi: str,
+        limit: int = 15,
+    ) -> list[SearchResult]:
+        """Fetch papers referenced by the specified seed paper via Semantic Scholar Graph API."""
+        client = await self._get_client()
+        clean_id = paper_id_or_doi.strip()
+        encoded = f"DOI:{clean_id}" if ("10." in clean_id and not clean_id.startswith("DOI:")) else clean_id
+        url = f"https://api.semanticscholar.org/graph/v1/paper/{encoded}/references"
+        params = {
+            "limit": limit,
+            "fields": "citedPaper.paperId,citedPaper.title,citedPaper.abstract,citedPaper.year,citedPaper.authors,citedPaper.externalIds,citedPaper.openAccessPdf",
+        }
+        headers = {}
+        if self.api_key:
+            headers["x-api-key"] = self.api_key
+
+        try:
+            response = await client.get(url, params=params, headers=headers)
+        except Exception:
+            return []
+
+        if response.status_code >= 400:
+            return []
+
+        try:
+            data = response.json().get("data", [])
+        except Exception:
+            return []
+
+        results: list[SearchResult] = []
+        for entry in data:
+            item = entry.get("citedPaper") or {}
+            title = (item.get("title") or "").strip()
+            if not title:
+                continue
+            authors = [
+                a.get("name", "").strip()
+                for a in item.get("authors", [])
+                if a.get("name") and a.get("name").strip()
+            ]
+            ext_ids = item.get("externalIds") or {}
+            doi = ext_ids.get("DOI")
+            arxiv_id = ext_ids.get("ArXiv")
+            open_access = item.get("openAccessPdf") or {}
+            pdf_url = open_access.get("url") if isinstance(open_access, dict) else None
+            if not pdf_url and arxiv_id:
+                pdf_url = f"https://arxiv.org/pdf/{arxiv_id}.pdf"
+
+            res = SearchResult(
+                title=title,
+                authors=authors,
+                abstract=item.get("abstract"),
+                year=item.get("year"),
+                doi=doi,
+                pdf_url=pdf_url,
+                source_api="semantic_scholar_references",
+                paper_id=item.get("paperId"),
+            )
+            res.ensure_cite_key()
+            results.append(res)
+        return results
+
     async def search_arxiv(
         self,
         query: str,

@@ -32,6 +32,8 @@ from scrpcy.core.skills import SkillsLoader
 from scrpcy.core.tasks import TaskInfo, TaskManager
 from scrpcy.core.tracker import TokenTracker
 from scrpcy.core.vault import VaultItem, VaultManager
+from scrpcy.core.verifier import FactChecker, VerificationReport
+from scrpcy.core.critic import DevilsAdvocate, CritiqueReport
 from scrpcy.core.workspace import WorkspaceManager
 
 # Safe UTF-8 console output for Windows terminal and quiet litellm output
@@ -123,6 +125,8 @@ class CLIStudio:
         self.task_manager.add_completion_callback(self._on_background_task_completed)
         self.gdrive_manager = GoogleDriveManager()
         self.vault_manager: VaultManager | None = None
+        self.fact_checker: FactChecker | None = None
+        self.devils_advocate: DevilsAdvocate | None = None
         self.chat_manager: ChatManager | None = None
         self.sub_mode: str | None = None
         self.active_chat_session: ChatSession | None = None
@@ -169,6 +173,8 @@ class CLIStudio:
         if hasattr(self, "task_manager") and self.task_manager:
             self.task_manager.set_db_path(self.workspace.root_dir / "tasks.db")
         self.sub_mode = None
+        self.fact_checker = FactChecker(engine=self.engine)
+        self.devils_advocate = DevilsAdvocate(engine=self.engine)
         self.active_documents.clear()
         self._sync_vault_cache()
 
@@ -5444,6 +5450,51 @@ class CLIStudio:
                     turn += 1
                     continue
                 else:
+                    # Run FactChecker & Devil's Advocate verification
+                    if not internal_match:
+                        verifier = self.fact_checker or FactChecker(engine=self.engine)
+                        v_report = verifier.verify_synthesis(turn_response, evidence)
+
+                        critic = self.devils_advocate or DevilsAdvocate(engine=self.engine)
+                        c_report = critic.critique(query, turn_response)
+
+                        # If ungrounded claims detected, prompt model to ground or prune
+                        if v_report.hallucination_warning and turn < max_agent_turns - 1:
+                            self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Memverifikasi Fakta[/bold bright_white] [yellow]{v_report.hallucination_warning}[/yellow]")
+                            unsupported_claims = [c.claim for c in v_report.claims if c.status == "unsupported"]
+                            if unsupported_claims:
+                                current_query = (
+                                    f"### VERIFIKASI FAKTA (CLAIM GROUNDING AUDIT):\n"
+                                    f"Beberapa klaim berikut tidak ditemukan dasarnya pada literatur vault:\n"
+                                    + "\n".join(f"- {c}" for c in unsupported_claims) +
+                                    f"\n\nPertanyaan riset asli: \"{query}\"\n"
+                                    f"Instruksi: Pangkas atau sesuaikan klaim di atas agar 100% didukung oleh bukti teks dokumen vault."
+                                )
+                                turn += 1
+                                continue
+
+                        # If Devil's Advocate spots outdated references or weak arguments, trigger reference mapping
+                        if c_report.needs_citation_mapping and turn < max_agent_turns - 1:
+                            stems = self._get_cached_stems()
+                            if stems and self.scout:
+                                self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Devil's Advocate[/bold bright_white] [yellow]Skor {c_report.score}/10: {c_report.critique_summary}[/yellow]")
+                                self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Reference Mapping[/bold bright_white] [cyan]Menelusuri jaringan sitasi dokumen vault...[/cyan]")
+                                try:
+                                    mapped_papers = asyncio.run(self.scout.map_vault_citation_network(stems, limit=2))
+                                    if mapped_papers:
+                                        lines_map = [f"- {p.title} ({p.year or 'n.d.'}) [{p.relevance_reason}]" for p in mapped_papers]
+                                        current_query = (
+                                            f"### HASIL REFERENCE MAPPING (JARINGAN SITASI VAULT):\n"
+                                            f"Paper terhubung yang ditemukan:\n" + "\n".join(lines_map) +
+                                            f"\n\nCatatan Devil's Advocate: {', '.join(c_report.weaknesses)}\n"
+                                            f"Pertanyaan riset asli: \"{query}\"\n"
+                                            f"Instruksi: Perkuat argumen sintesis dengan mengintegrasikan konteks literatur di atas dan jawab potensi sanggahan."
+                                        )
+                                        turn += 1
+                                        continue
+                                except Exception:
+                                    pass
+
                     final_response = turn_response
                     break
 
@@ -5459,8 +5510,13 @@ class CLIStudio:
             output_tokens = estimate_tokens(final_response)
             total_tokens = input_tokens + output_tokens
             style_name = self.config.citation.style.upper()
+            v_check = (self.fact_checker or FactChecker(engine=self.engine)).verify_synthesis(final_response, evidence)
+            c_check = (self.devils_advocate or DevilsAdvocate(engine=self.engine)).critique(query, final_response)
+            grounding_badge = f"Grounding: {int(v_check.grounding_score * 100)}%"
+            critic_badge = f"Critic: {c_check.score}/10"
+
             self.console.print(
-                f"[dim]── Tokens: {input_tokens:,} in · {output_tokens:,} out · {total_tokens:,} total ({model_label}) • {elapsed:.1f}s • {style_name} style ──[/dim]\n"
+                f"[dim]── Tokens: {input_tokens:,} in · {output_tokens:,} out · {total_tokens:,} total ({model_label}) • {grounding_badge} • {critic_badge} • {elapsed:.1f}s • {style_name} style ──[/dim]\n"
             )
 
             if self.chat_manager:

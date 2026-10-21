@@ -571,6 +571,77 @@ class LiteratureScout:
         self.workspace.save_to_cache(cache_file, full_content)
         return target_md
 
+
+    async def traverse_citation_network(
+        self,
+        seed_identifier: str,
+        direction: str = "both",
+        limit: int = 10,
+    ) -> list[ScoutResult]:
+        """Traverse the citation graph forwards (citations) and/or backwards (references)."""
+        candidates: list[SearchResult] = []
+        if direction in ("citations", "forward", "both"):
+            try:
+                cites = await self.searcher.get_paper_citations(seed_identifier, limit=limit)
+                candidates.extend(cites)
+            except Exception:
+                pass
+        if direction in ("references", "backward", "both"):
+            try:
+                refs = await self.searcher.get_paper_references(seed_identifier, limit=limit)
+                candidates.extend(refs)
+            except Exception:
+                pass
+
+        results: list[ScoutResult] = []
+        seen_titles = set()
+        for c in candidates:
+            if not c.title or c.title.lower() in seen_titles:
+                continue
+            seen_titles.add(c.title.lower())
+            reason = "Forward citation (newer work citing seed paper)" if "citations" in c.source_api else "Backward reference (foundational work cited by seed paper)"
+            res = ScoutResult(
+                title=c.title,
+                authors=c.authors,
+                year=c.year,
+                doi=c.doi,
+                abstract=c.abstract,
+                pdf_url=c.pdf_url,
+                has_pdf=c.has_pdf,
+                source="citation_graph",
+                relevance_reason=reason,
+            )
+            res.ensure_cite_key()
+            results.append(res)
+
+        return results[:limit]
+
+    async def map_vault_citation_network(
+        self,
+        vault_stems: list[str],
+        direction: str = "both",
+        limit: int = 10,
+    ) -> list[ScoutResult]:
+        """Map citation network starting from existing vault papers to discover connected literature."""
+        if not vault_stems:
+            return []
+
+        all_candidates: list[ScoutResult] = []
+        seen = {s.lower() for s in vault_stems}
+
+        seeds = vault_stems[:3]
+        for stem in seeds:
+            clean_seed = stem.replace("_", " ").strip()
+            network = await self.traverse_citation_network(clean_seed, direction=direction, limit=limit)
+            for paper in network:
+                t_slug = re.sub(r"[^\w]", "", paper.title.lower())
+                if t_slug and t_slug not in seen:
+                    seen.add(t_slug)
+                    all_candidates.append(paper)
+
+        all_candidates.sort(key=lambda p: (1 if p.has_pdf else 0, p.year or 0), reverse=True)
+        return all_candidates[:limit]
+
     async def auto_scout_and_ingest(
         self,
         query: str,

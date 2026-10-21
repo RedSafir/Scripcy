@@ -44,6 +44,8 @@ You have direct access to the local project workbench and can interact with tool
    - `/vault list` : Inspect all papers currently ingested in the project vault (IDs, citation keys, titles, authors, publication year).
    - `/vault read <# or citekey>` or `/vault view <# or citekey>` : Read the complete parsed text, sections, and tables of a paper in the vault.
    - `/vault remove <# or citekey>` or `/vault archive <#>` : Soft-archive an irrelevant, outdated, or conflicting paper into .archive/ and exclude it from active context.
+   - `/search "<keywords>"` : Autonomous scholarly search across academic repositories.
+   - `/docx <filename.docx>` : Export formatted synthesis into Microsoft Word document in drafts/.
    *When to use Read*:
    If the user asks about specific mechanisms, methodology, formulas, empirical results, or comparisons across papers, and the initial context excerpt is insufficient, call `/vault read <# or citekey>`.
    Scrpcy will automatically fetch the document, display "Membaca" to the user, and supply the document content to you so you can analyze it thoroughly before formulating your final response.
