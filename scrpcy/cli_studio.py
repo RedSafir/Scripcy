@@ -2647,10 +2647,11 @@ class CLIStudio:
         else:
             return
 
-        try:
-            self.chat_manager.add_message(session_id, "system", note)
-        except Exception:
-            pass
+        if task_type not in ("chat", "agent"):
+            try:
+                self.chat_manager.add_message(session_id, "system", note)
+            except Exception:
+                pass
 
         # If user is currently active inside this exact chat session, display visual notification pill cleanly on main thread
         if self.sub_mode == "chat" and self.active_chat_session and self.active_chat_session.id == session_id:
@@ -2659,9 +2660,14 @@ class CLIStudio:
                     if task_type in ("chat", "agent"):
                         self.console.print(f"\n[bold cyan]●[/bold cyan] [bold bright_white]Tugas Latar Belakang Selesai:[/bold bright_white] [cyan]{task_name}[/cyan]")
                         msgs = self.chat_manager.get_messages(session_id) if self.chat_manager else []
-                        if msgs and msgs[-1].role == "assistant":
+                        latest_assistant_msg = None
+                        for m in reversed(msgs):
+                            if m.role == "assistant":
+                                latest_assistant_msg = m
+                                break
+                        if latest_assistant_msg:
                             self.console.print(f"\n[bold cyan]✦ Respons AI ({self.active_skill_name}):[/bold cyan]\n")
-                            render_academic_markdown(msgs[-1].content, console=self.console)
+                            render_academic_markdown(latest_assistant_msg.content, console=self.console)
                             self.console.print()
                     else:
                         self.console.print(f"\n[bold cyan]●[/bold cyan] [bold bright_white]Tugas Latar Belakang Selesai:[/bold bright_white] [cyan]{task_name}[/cyan] [dim]({summary or 'Selesai'})[/dim]")
@@ -2795,28 +2801,28 @@ class CLIStudio:
         tasks_batch_str = "\n".join(tasks_batch_lines) if tasks_batch_lines else f"- {task_id} ({task_name}): {summary}"
 
         eval_prompt = (
-            f"[EVALUASI HASIL TUGAS LATAR BELAKANG TERPADU (1 RESPONS FINAL)]\n"
-            f"Tugas Latar Belakang yang Telah Selesai:\n"
+            f"[EVALUASI HASIL AKUISISI LITERATUR ILMIAH TERPADU]\n"
+            f"Dokumen/Literatur Baru yang Telah Diunduh/Diindeks:\n"
             f"{tasks_batch_str}\n\n"
-            f"Status Pembaruan: {task_name} ({task_id}) selesai.\n\n"
             f"Konteks Riset Sesi ({session.name}):\n"
-            f"Pertanyaan/Fokus Riset: \"{last_user_query or session.name}\"\n\n"
-            f"Dokumen di Vault Saat Ini:\n"
+            f"Fokus Riset/Pertanyaan Pengguna: \"{last_user_query or session.name}\"\n\n"
+            f"Daftar Dokumen di Vault Saat Ini:\n"
             f"{vault_str}\n\n"
-            f"Instruksi Evaluasi Mandiri (Agent Loop):\n"
-            f"1. Periksa apakah dokumen yang diperoleh relevan, atau apakah ada indikasi salah jurnal, isi korup, atau paywalled.\n"
-            f"2. Evaluasi apakah literatur yang ada saat ini sudah cukup untuk menjawab fokus riset pengguna atau masih kurang.\n"
+            f"Instruksi Evaluasi Mandiri Akademis (Agent Loop):\n"
+            f"1. Evaluasi kualitas dan relevansi dokumen yang diperoleh terhadap fokus riset pengguna (periksa apakah ada paper yang salah topik, paywalled/hanya abstrak, atau korup).\n"
+            f"2. Analisis kecukupan literatur: Apakah literatur di vault saat ini sudah cukup untuk menjawab fokus riset pengguna atau masih memiliki celah (research gap).\n"
             f"3. Berikan sinyal evaluasi internal:\n"
-            f"   - [STATUS: OK] jika semua terpenuhi.\n"
-            f"   - [STATUS: PERLU TINDAKAN] jika ada dokumen yang perlu dihapus/ditambah.\n"
-            f"4. Berikan tanggapan dan feedback yang terstruktur, ringkas, dan jelas kepada pengguna:\n"
-            f"   - Rangkum apa yang telah dilakukan sistem di latar belakang.\n"
-            f"   - Berikan hasil evaluasi terhadap dokumen.\n"
-            f"   - Jelaskan rekomendasi riset berikutnya secara akademis dalam bahasa alami.\n"
+            f"   - [STATUS: OK] jika seluruh literatur relevan dan memadai.\n"
+            f"   - [STATUS: PERLU TINDAKAN] jika ada dokumen yang perlu diarsipkan atau literatur tambahan yang perlu dicari.\n"
+            f"4. Format Tanggapan untuk Pengguna:\n"
+            f"   - DILARANG KERAS membuat bagian 'Ringkasan Progres Sistem' atau menyebutkan nomor tugas teknis internal (seperti task-1, task-2, background process).\n"
+            f"   - DILARANG menulis meta-laporan operasional sistem (seperti 'Sistem telah menyelesaikan rangkaian penelusuran...'). Pengguna adalah akademisi/peneliti, bukan administrator sistem.\n"
+            f"   - Langsung sampaikan substansi ilmiah: ulas relevansi literatur yang baru didapat, sintesis temuan pentingnya, dan bagaimana paper tersebut berkontribusi terhadap topik riset pengguna.\n"
+            f"   - Jelaskan rekomendasi riset dan fokus analisis berikutnya secara alami dan berbobot ilmiah.\n"
             f"   - ATURAN KRUSIAL ANTARMUKA:\n"
             f"     * Pengguna berinteraksi melalui chat percakapan dan TIDAK BISA menjalankan perintah CLI slash.\n"
-            f"     * DILARANG KERAS menyuruh pengguna menjalankan perintah (misal JANGAN PERNAH tulis 'Silakan jalankan perintah berikut: /vault remove...', 'Ketik /scout...').\n"
-            f"     * Jika ada tindakan lanjutan (seperti membuang dokumen irelevan atau mencari literatur), CUKUP letakkan perintah tersebut di dalam blok kode ```scrpcy di akhir respons. Sistem Scrpcy yang akan mengeksekusinya secara interaktif melalui konfirmasi 1-klik bagi pengguna.\n"
+            f"     * DILARANG KERAS menyuruh pengguna menjalankan perintah (misal JANGAN PERNAH tulis 'Silakan jalankan perintah: /vault remove...', 'Ketik /scout...').\n"
+            f"     * Jika ada tindakan pembersihan dokumen atau penelusuran lebih lanjut, CUKUP cantumkan perintah aksi di dalam blok kode ```scrpcy di akhir respons. Sistem Scrpcy yang akan mengeksekusinya secara otomatis melalui konfirmasi 1-klik bagi pengguna.\n"
         )
 
         model_name = self.get_active_project_model()

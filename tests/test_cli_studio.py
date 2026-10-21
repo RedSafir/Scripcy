@@ -1322,6 +1322,9 @@ class TestAgenticUXAndFormatting:
         cli_studio.sub_mode = "chat"
         cli_studio.active_chat_session = sess
 
+        # Add assistant response to session history as background worker does
+        cli_studio.chat_manager.add_message(sess.id, "assistant", "Bumi adalah planet ketiga dari Matahari.")
+
         chat_task = TaskInfo(
             id="task-999",
             name="Chat: jelaskan konsep dasar ML",
@@ -1335,12 +1338,16 @@ class TestAgenticUXAndFormatting:
         cli_studio._on_background_task_completed(chat_task)
         assert len(cli_studio._pending_ui_events) >= 1
 
-        # Flushing executes the queued function cleanly on the main thread
+        # Flushing executes the queued function cleanly on the main thread and renders AI answer
         cleared = [False]
-        did_flush = cli_studio._flush_pending_ui_events(clear_prompt_fn=lambda: cleared.__setitem__(0, True))
+        with cli_studio.console.capture() as capture:
+            did_flush = cli_studio._flush_pending_ui_events(clear_prompt_fn=lambda: cleared.__setitem__(0, True))
         assert did_flush is True
         assert cleared[0] is True
         assert len(cli_studio._pending_ui_events) == 0
+        captured_text = capture.get()
+        assert "Bumi adalah planet ketiga dari Matahari." in captured_text
+        assert "Respons AI" in captured_text
 
     def test_interactive_input_prompt_renders_status_line(self, test_console: Console) -> None:
         from scrpcy.ui.interactive import interactive_input_prompt
