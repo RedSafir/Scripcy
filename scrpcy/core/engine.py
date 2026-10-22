@@ -408,6 +408,9 @@ class LLMEngine:
             kwargs["api_key"] = api_key
         if api_base:
             kwargs["api_base"] = api_base
+        max_output_tokens = getattr(self.config, "max_output_tokens", 8192)
+        if max_output_tokens:
+            kwargs["max_tokens"] = max_output_tokens
 
         accumulated_output: list[str] = []
         input_tokens_est = estimate_tokens(user_content + skill.system_prompt)

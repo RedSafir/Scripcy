@@ -8,7 +8,7 @@ import re
 from typing import Any
 from pydantic import BaseModel, Field
 
-from scrpcy.core.engine import LLMEngine
+from scrpcy.core.engine import LLMEngine, estimate_tokens
 
 
 def _clean_json_payload(raw: str) -> str:
@@ -31,6 +31,8 @@ class CritiqueReport(BaseModel):
     recommended_topics: list[str] = Field(default_factory=list, description="Key missing topics or questions to explore.")
     directed_search_queries: list[str] = Field(default_factory=list, description="Targeted academic search queries to fill evidence gaps.")
     critique_summary: str = Field(default="", description="Concise reviewer assessment.")
+    input_tokens: int = Field(default=0, description="Estimated input tokens consumed during critique.")
+    output_tokens: int = Field(default=0, description="Estimated output tokens consumed during critique.")
 
 
 class DevilsAdvocate:
@@ -194,6 +196,9 @@ class DevilsAdvocate:
 
             needs_scout = score < 7 or heuristic.needs_citation_mapping
 
+            c_in = estimate_tokens(query) + estimate_tokens(answer[:3000]) + 150
+            c_out = estimate_tokens(content)
+
             return CritiqueReport(
                 score=score,
                 passed=score >= 7 and not heuristic.recency_alert,
@@ -204,6 +209,8 @@ class DevilsAdvocate:
                 recommended_topics=ai_topics,
                 directed_search_queries=ai_directed if isinstance(ai_directed, list) else heuristic.directed_search_queries,
                 critique_summary=ai_summary,
+                input_tokens=c_in,
+                output_tokens=c_out,
             )
         except Exception:
             return heuristic

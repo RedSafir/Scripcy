@@ -5208,8 +5208,9 @@ class CLIStudio:
             s_table.add_row("Include DOI", str(self.config.citation.include_doi))
             s_table.add_row("Max Evidence", f"{self.config.citation.max_evidence_chunks} chunks")
             s_table.add_row("Max Agent Turns", f"{getattr(self.config, 'max_agent_turns', 15)} turns")
+            s_table.add_row("Max Output Tokens", f"{getattr(self.config, 'max_output_tokens', 8192)} tokens")
             self.console.print(s_table)
-            self.console.print("[dim]Commands: settings set-citation <apa|ieee> | settings set-turns <1-50> | settings set-workspace <path>[/dim]\n")
+            self.console.print("[dim]Commands: settings set-citation <apa|ieee> | settings set-turns <1-50> | settings set-max-tokens <512-65536> | settings set-workspace <path>[/dim]\n")
             return
 
         if sub in ("set-citation", "citation", "style"):
@@ -5247,6 +5248,22 @@ class CLIStudio:
                 self.console.print(f"[bold green][✓] Max agent turns set to:[/bold green] [bold cyan]{val}[/bold cyan]\n")
             except ValueError:
                 self.console.print("[yellow]Invalid turns value. Enter an integer between 1 and 50.[/yellow]\n")
+        elif sub in ("set-max-tokens", "max-tokens", "max_tokens"):
+            if len(parts) < 2:
+                self.console.print("[yellow]Usage: settings set-max-tokens <512-65536>[/yellow]\n")
+                return
+            try:
+                val = int(parts[1].strip())
+                if not (512 <= val <= 65536):
+                    self.console.print("[yellow]Max output tokens must be between 512 and 65536.[/yellow]\n")
+                    return
+                self.config_manager.update(max_output_tokens=val)
+                self.config = self.config_manager.config
+                if getattr(self, "engine", None):
+                    self.engine.config = self.config
+                self.console.print(f"[bold green][✓] Max output tokens set to:[/bold green] [bold cyan]{val}[/bold cyan]\n")
+            except ValueError:
+                self.console.print("[yellow]Invalid value. Enter an integer between 512 and 65536.[/yellow]\n")
         else:
             self.console.print("[yellow]Usage: settings [show | set-citation <apa|ieee> | set-turns <1-50> | set-workspace <path>][/yellow]\n")
 
@@ -6020,6 +6037,9 @@ class CLIStudio:
         best_grounding: float = -1.0
         best_critic: int = -1
         best_composite: float = -1.0
+        accumulated_input_tokens = 0
+        accumulated_output_tokens = 0
+        total_turns_completed = 0
         current_query = initial_query_override if "initial_query_override" in locals() and initial_query_override else query
         citation_guide = self._format_vault_citation_guide()
         if citation_guide:
@@ -6160,6 +6180,13 @@ class CLIStudio:
                             return {"type": "ungrounded", "report": v_rep, "response": p_resp}
                         if c_rep.needs_citation_mapping:
                             return {"type": "needs_citation_mapping", "report": c_rep, "response": p_resp}
+
+                    # Accumulate token metrics for this turn
+                    stream_in_est = estimate_tokens(current_query) + sum(c.token_estimate or estimate_tokens(c.text) for c in (evidence or [])) + 250
+                    nonlocal accumulated_input_tokens, accumulated_output_tokens, total_turns_completed
+                    accumulated_input_tokens += stream_in_est + getattr(v_rep, "input_tokens", 0) + getattr(c_rep, "input_tokens", 0)
+                    accumulated_output_tokens += out_tok + getattr(v_rep, "output_tokens", 0) + getattr(c_rep, "output_tokens", 0)
+                    total_turns_completed = turn + 1
 
                     # 5. Automatic Bibliography
                     final_text = p_resp
@@ -6441,10 +6468,12 @@ class CLIStudio:
             render_academic_markdown(final_response, console=self.console)
             self.console.print()
 
-            # 4. Accurate token consumption telemetry
+            # 4. Accurate cumulative token consumption telemetry across all turns
             evidence_tokens = sum(c.token_estimate or estimate_tokens(c.text) for c in evidence)
-            input_tokens = estimate_tokens(query) + 250 + evidence_tokens
-            output_tokens = estimate_tokens(final_response)
+            fallback_in = estimate_tokens(query) + 250 + evidence_tokens
+            fallback_out = estimate_tokens(final_response)
+            input_tokens = max(accumulated_input_tokens, fallback_in)
+            output_tokens = max(accumulated_output_tokens, fallback_out)
             total_tokens = input_tokens + output_tokens
             style_name = self.config.citation.style.upper()
 
@@ -6453,7 +6482,8 @@ class CLIStudio:
             c_score = last_c_report.score if last_c_report else 8
             grounding_badge = f"Grounding: {int(v_score * 100)}%"
             critic_badge = f"Critic: {c_score}/10"
-            turns_badge = f"{turn + 1} turn" if (turn + 1) == 1 else f"{turn + 1} turns"
+            actual_turns = max(total_turns_completed, turn + 1)
+            turns_badge = f"{actual_turns} turn" if actual_turns == 1 else f"{actual_turns} turns"
 
             # Permanent telemetry footer stored in chat database for persistent retrieval
             footer_badge_md = (

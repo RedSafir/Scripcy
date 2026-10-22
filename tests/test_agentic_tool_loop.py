@@ -958,3 +958,51 @@ def test_factchecker_claim_caching_and_lexical_prefilter():
     checker.clear_cache()
     assert len(checker._claim_cache) == 0
 
+def test_max_output_tokens_and_cumulative_token_telemetry(
+    temp_workspace: WorkspaceManager,
+    tmp_path: Path,
+):
+    """Verify max_output_tokens is passed to engine, configurable in settings, and cumulative tokens accumulate across turns."""
+    from pydantic import ValidationError
+    import pytest
+
+    # 1. Config defaults and constraints
+    cfg = ScrpcyConfig()
+    assert cfg.max_output_tokens == 8192
+
+    with pytest.raises(ValidationError):
+        ScrpcyConfig(max_output_tokens=100)
+
+    # 2. Settings command updates max_output_tokens
+    console = Console(file=io.StringIO(), force_terminal=True, color_system=None)
+    pm = ProjectManager(registry_file=tmp_path / "reg.json")
+    proj = pm.create_project("thesis", temp_workspace.root_dir)
+
+    captured_kwargs = {}
+    async def mock_acompletion(**kwargs: Any):
+        nonlocal captured_kwargs
+        captured_kwargs = kwargs
+        yield MockStreamChunk("Sintesis lengkap dengan anggaran token besar tanpa terpotong.")
+
+    engine = LLMEngine(config=cfg, acompletion_fn=mock_acompletion)
+    studio = CLIStudio(
+        workspace=temp_workspace,
+        config=cfg,
+        console=console,
+        project_manager=pm,
+        engine=engine,
+    )
+    studio.open_project(proj)
+
+    studio.cmd_settings("set-max-tokens 16384")
+    assert studio.config.max_output_tokens == 16384
+
+    # 3. Stream query passes max_tokens
+    studio.config.api_keys["gemini"] = "mock_key"
+    studio.handle_chat("Apa dampak kebakaran gambut?")
+
+    assert captured_kwargs.get("max_tokens") == 16384
+    out = studio.console.file.getvalue()
+    assert "Tokens:" in out
+    assert "turn" in out
+

@@ -7,7 +7,7 @@ import re
 from typing import Any
 from pydantic import BaseModel, Field
 
-from scrpcy.core.engine import EvidenceChunk, LLMEngine
+from scrpcy.core.engine import EvidenceChunk, LLMEngine, estimate_tokens
 
 
 def _clean_json_payload(raw: str) -> str:
@@ -38,6 +38,8 @@ class VerificationReport(BaseModel):
     claims: list[ClaimVerification] = Field(default_factory=list, description="Detailed list of claim verifications.")
     hallucination_warning: str | None = Field(default=None, description="Warning message if hallucinations detected.")
     audited_text: str = Field(default="", description="Clean response text with ungrounded claims addressed.")
+    input_tokens: int = Field(default=0, description="Estimated input tokens consumed during verification.")
+    output_tokens: int = Field(default=0, description="Estimated output tokens consumed during verification.")
 
 
 class FactChecker:
@@ -73,16 +75,16 @@ class FactChecker:
         self,
         claims: list[str],
         evidence_chunks: list[EvidenceChunk],
-    ) -> list[ClaimVerification] | None:
+    ) -> tuple[list[ClaimVerification] | None, int, int]:
         """Verify claims against evidence using LLM semantic entailment check (multilingual)."""
         if not claims or not evidence_chunks or not self.engine:
-            return None
+            return None, 0, 0
 
         try:
             model_name = self.engine.config.default_model
             api_key = self.engine.config.get_api_key_for_model(model_name)
             if not api_key or api_key.startswith("mock") or getattr(self.engine, "_acompletion_fn", None) is not None:
-                return None
+                return None, 0, 0
 
             evidence_text = "\n\n".join(f"[{c.source}]: {c.text}" for c in evidence_chunks)
             claims_text = "\n".join(f"{i+1}. {c}" for i, c in enumerate(claims))
@@ -146,9 +148,11 @@ class FactChecker:
                         confidence=0.8,
                         reason="Default grounded assertion.",
                     ))
-            return results
+            in_tok = estimate_tokens(evidence_text) + estimate_tokens(claims_text) + 150
+            out_tok = estimate_tokens(content)
+            return results, in_tok, out_tok
         except Exception:
-            return None
+            return None, 0, 0
 
     def verify_claims_lexical(self, claims: list[str], evidence_chunks: list[EvidenceChunk]) -> list[ClaimVerification]:
         """Fast rule-based / lexical overlap check of claims against evidence chunks."""
@@ -263,8 +267,10 @@ class FactChecker:
                 llm_candidate_claims.append(v.claim)
 
         # 3. LLM Semantic Entailment: ONLY call 9Router for unresolved/ambiguous claims
+        fc_in_tokens = 0
+        fc_out_tokens = 0
         if llm_candidate_claims:
-            llm_results = self.verify_claims_llm(llm_candidate_claims, evidence_chunks)
+            llm_results, fc_in_tokens, fc_out_tokens = self.verify_claims_llm(llm_candidate_claims, evidence_chunks)
             if llm_results:
                 for v in llm_results:
                     verifications_map[v.claim] = v
@@ -300,4 +306,6 @@ class FactChecker:
             claims=verifications,
             hallucination_warning=warning,
             audited_text=text,
+            input_tokens=fc_in_tokens,
+            output_tokens=fc_out_tokens,
         )
