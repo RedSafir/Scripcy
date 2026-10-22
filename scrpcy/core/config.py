@@ -101,6 +101,12 @@ class ScrpcyConfig(BaseModel):
         le=50,
         description="Maximum agent loop turns for synthesis, verification, and citation loops.",
     )
+    max_refinement_turns: int = Field(
+        default=8,
+        ge=2,
+        le=25,
+        description="Maximum iterative refinement rounds for FactChecker and Devil's Advocate loops.",
+    )
     max_output_tokens: int = Field(
         default=8192,
         ge=512,

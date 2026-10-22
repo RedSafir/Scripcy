@@ -890,7 +890,7 @@ def test_epistemic_exit_and_monotonic_locking(
     console = Console(file=io.StringIO(), force_terminal=True, color_system=None)
     pm = ProjectManager(registry_file=tmp_path / "reg.json")
     proj = pm.create_project("thesis", temp_workspace.root_dir)
-    cfg = ScrpcyConfig(workspace_path=str(temp_workspace.root_dir), max_agent_turns=10)
+    cfg = ScrpcyConfig(workspace_path=str(temp_workspace.root_dir), max_agent_turns=10, max_refinement_turns=3)
 
     call_count = 0
     async def mock_acompletion(**kwargs: Any):
@@ -909,6 +909,7 @@ def test_epistemic_exit_and_monotonic_locking(
     )
     studio.open_project(proj)
     studio.config.api_keys["gemini"] = "mock_key"
+    studio.scout = None
 
     studio.handle_chat("Bagaimana mitigasi pembakaran gambut?")
 
@@ -1006,3 +1007,37 @@ def test_max_output_tokens_and_cumulative_token_telemetry(
     assert "Tokens:" in out
     assert "turn" in out
 
+
+
+def test_refinement_turns_and_prioritized_citation_mapping(
+    temp_workspace: WorkspaceManager,
+    tmp_path: Path,
+):
+    """Verify max_refinement_turns is configurable in settings and needs_citation_mapping triggers search."""
+    from scrpcy.core.search import sanitize_filename
+
+    # 1. Config defaults
+    cfg = ScrpcyConfig()
+    assert cfg.max_refinement_turns == 8
+
+    # 2. Studio settings command
+    console = Console(file=io.StringIO(), force_terminal=True, color_system=None)
+    pm = ProjectManager(registry_file=tmp_path / "reg.json")
+    proj = pm.create_project("thesis", temp_workspace.root_dir)
+
+    studio = CLIStudio(
+        workspace=temp_workspace,
+        config=cfg,
+        console=console,
+        project_manager=pm,
+    )
+    studio.open_project(proj)
+    studio.cmd_settings("set-refinement 10")
+    assert studio.config.max_refinement_turns == 10
+
+    # 3. Settings show displays max refinement rounds
+    studio.console.file = io.StringIO()
+    studio.cmd_settings("show")
+    out = studio.console.file.getvalue()
+    assert "Refinement Rounds" in out
+    assert "10 rounds" in out

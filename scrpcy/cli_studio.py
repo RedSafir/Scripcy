@@ -5208,9 +5208,10 @@ class CLIStudio:
             s_table.add_row("Include DOI", str(self.config.citation.include_doi))
             s_table.add_row("Max Evidence", f"{self.config.citation.max_evidence_chunks} chunks")
             s_table.add_row("Max Agent Turns", f"{getattr(self.config, 'max_agent_turns', 15)} turns")
+            s_table.add_row("Refinement Rounds", f"{getattr(self.config, 'max_refinement_turns', 8)} rounds")
             s_table.add_row("Max Output Tokens", f"{getattr(self.config, 'max_output_tokens', 8192)} tokens")
             self.console.print(s_table)
-            self.console.print("[dim]Commands: settings set-citation <apa|ieee> | settings set-turns <1-50> | settings set-max-tokens <512-65536> | settings set-workspace <path>[/dim]\n")
+            self.console.print("[dim]Commands: settings set-citation <apa|ieee> | settings set-turns <1-50> | settings set-refinement <2-25> | settings set-max-tokens <512-65536> | settings set-workspace <path>[/dim]\n")
             return
 
         if sub in ("set-citation", "citation", "style"):
@@ -5264,6 +5265,22 @@ class CLIStudio:
                 self.console.print(f"[bold green][✓] Max output tokens set to:[/bold green] [bold cyan]{val}[/bold cyan]\n")
             except ValueError:
                 self.console.print("[yellow]Invalid value. Enter an integer between 512 and 65536.[/yellow]\n")
+        elif sub in ("set-refinement", "set-refinement-rounds", "refinement"):
+            if len(parts) < 2:
+                self.console.print("[yellow]Usage: settings set-refinement <2-25>[/yellow]\n")
+                return
+            try:
+                val = int(parts[1].strip())
+                if not (2 <= val <= 25):
+                    self.console.print("[yellow]Refinement rounds must be between 2 and 25.[/yellow]\n")
+                    return
+                self.config_manager.update(max_refinement_turns=val)
+                self.config = self.config_manager.config
+                if getattr(self, "engine", None):
+                    self.engine.config = self.config
+                self.console.print(f"[bold green][✓] Max refinement rounds set to:[/bold green] [bold cyan]{val}[/bold cyan]\n")
+            except ValueError:
+                self.console.print("[yellow]Invalid value. Enter an integer between 2 and 25.[/yellow]\n")
         else:
             self.console.print("[yellow]Usage: settings [show | set-citation <apa|ieee> | set-turns <1-50> | set-workspace <path>][/yellow]\n")
 
@@ -6030,9 +6047,9 @@ class CLIStudio:
 
         start_time = time.time()
         max_agent_turns = getattr(self.config, "max_agent_turns", 15)
+        max_refinement_turns = getattr(self.config, "max_refinement_turns", min(8, max_agent_turns - 2))
         turn = 0
         refinement_turns = 0
-        MAX_REFINEMENT_TURNS = 3
         locked_supported_claims: list[str] = []
         best_draft: str = ""
         best_grounding: float = -1.0
@@ -6168,7 +6185,7 @@ class CLIStudio:
                     # Check if ungrounded claims or citation mapping triggers another turn
                     needs_refine = (bool(v_rep.hallucination_warning) or bool(c_rep.needs_citation_mapping)) and turn < max_agent_turns - 1
                     if needs_refine:
-                        if refinement_turns >= MAX_REFINEMENT_TURNS:
+                        if refinement_turns >= max_refinement_turns:
                             return {
                                 "type": "epistemic_exit",
                                 "best_draft": best_draft or p_resp,
@@ -6177,10 +6194,22 @@ class CLIStudio:
                                 "best_grounding": best_grounding,
                                 "best_critic": best_critic,
                             }
-                        if v_rep.hallucination_warning:
-                            return {"type": "ungrounded", "report": v_rep, "response": p_resp}
+                        # Priority: If Devil's Advocate flags missing citations or knowledge gaps,
+                        # run citation mapping & scout search to ingest new literature!
                         if c_rep.needs_citation_mapping:
-                            return {"type": "needs_citation_mapping", "report": c_rep, "response": p_resp}
+                            return {
+                                "type": "needs_citation_mapping",
+                                "report": c_rep,
+                                "v_report": v_rep,
+                                "response": p_resp,
+                            }
+                        if v_rep.hallucination_warning:
+                            return {
+                                "type": "ungrounded",
+                                "report": v_rep,
+                                "c_report": c_rep,
+                                "response": p_resp,
+                            }
 
                     # Accumulate token metrics for this turn
                     stream_in_est = estimate_tokens(current_query) + sum(c.token_estimate or estimate_tokens(c.text) for c in (evidence or [])) + 250
@@ -6326,17 +6355,28 @@ class CLIStudio:
                     newly_ingested_stems = []
 
                     # 1. Directed Gap Search via Typed Critique Queries
-                    directed_queries = getattr(c_rep, "directed_search_queries", [])
+                    directed_queries = list(getattr(c_rep, "directed_search_queries", []))
+                    v_rep = turn_result.get("v_report")
+                    if v_rep and getattr(v_rep, "claims", None):
+                        unsupported = [c.claim for c in v_rep.claims if c.status == "unsupported"]
+                        for u_cl in unsupported[:2]:
+                            clean_words = [w for w in re.findall(r"\b\w{4,}\b", u_cl) if w.lower() not in ("yang", "pada", "dari", "untuk", "dengan", "dalam", "adalah", "bahwa", "tidak")]
+                            if len(clean_words) >= 2:
+                                gap_q = " ".join(clean_words[:5])
+                                if gap_q not in directed_queries:
+                                    directed_queries.append(gap_q)
+
                     if directed_queries and self.scout:
-                        target_gap_q = directed_queries[0]
-                        self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Directed Gap Search[/bold bright_white] [cyan]Menelusuri literatur spesifik penambal celah: '{target_gap_q}'...[/cyan]")
-                        try:
-                            sq = ScoutQuery(keywords=target_gap_q, limit=2)
-                            candidates = asyncio.run(self.scout.search_multi_source(sq, limit=2))
-                            if candidates:
-                                mapped_papers = list(candidates)
-                        except Exception:
-                            mapped_papers = []
+                        for target_gap_q in directed_queries[:2]:
+                            self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Directed Gap Search[/bold bright_white] [cyan]Menelusuri literatur spesifik penambal celah: '{target_gap_q}'...[/cyan]")
+                            try:
+                                sq = ScoutQuery(keywords=target_gap_q, limit=2)
+                                candidates = asyncio.run(self.scout.search_multi_source(sq, limit=2))
+                                if candidates:
+                                    existing_titles = {p.title for p in mapped_papers}
+                                    mapped_papers.extend([p for p in candidates if p.title not in existing_titles])
+                            except Exception:
+                                pass
 
                     # 2. Reference Mapping (Vault citation network)
                     if stems and self.scout:
@@ -6445,11 +6485,23 @@ class CLIStudio:
                             "Pernyataan-pernyataan berikut telah terverifikasi valid terhadap dokumen vault. Pertahankan:\n"
                             + "\n".join(f"- {c}" for c in locked_supported_claims[:6]) + "\n\n"
                         )
+
+                    unsupported_sec = ""
+                    if v_rep and getattr(v_rep, "claims", None):
+                        unsupported = [c.claim for c in v_rep.claims if c.status == "unsupported"]
+                        if unsupported:
+                            unsupported_sec = (
+                                "### KLAIM YANG MEMBUTUHKAN BUKTI DARI LITERATUR BARU:\n"
+                                "Klaim berikut sebelumnya belum memiliki bukti di vault. Manfaatkan literatur baru yang baru diindeks di atas untuk memverifikasi dan memperkuatnya:\n"
+                                + "\n".join(f"- {c}" for c in unsupported[:5]) + "\n\n"
+                            )
+
                     current_query = (
                         f"{citation_guide}\n\n"
                         f"{locked_sec}"
                         f"{extra_ref}### EVALUASI DEVIL'S ADVOCATE (SKOR {c_rep.score}/10):\n"
                         f"Catatan kelemahan: {weaknesses_str}{counter_str}{recency_str}\n\n"
+                        f"{unsupported_sec}"
                         f"Pertanyaan riset asli: \"{query}\"\n"
                         f"Instruksi: Pertahankan seluruh klaim terverifikasi di atas. Mentailor ulang sintesis untuk mengatasi catatan kelemahan di atas dengan memanfaatkan bukti literatur baru yang telah diindeks di vault, sertakan sitasi in-text APA pada setiap klaim, dan berikan jawaban yang komprehensif serta mantap (100% yakin)."
                     )
