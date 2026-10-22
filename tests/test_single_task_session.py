@@ -98,3 +98,63 @@ def test_ai_task_continuation_fallback(temp_studio: CLIStudio) -> None:
 
     res_over_60 = temp_studio._ask_ai_task_continuation("Scout Paper", "Idle...", elapsed=65.0)
     assert res_over_60 == "ABORT"
+
+
+def test_primary_path_task_listed_in_process_manager(temp_studio: CLIStudio) -> None:
+    session = temp_studio.chat_manager.create_session("test_session")
+    temp_studio.active_chat_session = session
+
+    # Task submitted in primary path
+    task = temp_studio.task_manager.submit(
+        name="Deep Scout: Karhutla",
+        task_type="scout",
+        target_fn=lambda task_id: "Scout finished with 2 papers",
+        session_id=session.id,
+    )
+
+    # Must be immediately registered and discoverable in process manager
+    all_tasks = temp_studio.task_manager.list_tasks()
+    found = any(t.id == task.id and t.name == "Deep Scout: Karhutla" for t in all_tasks)
+    assert found, "Primary task must be listed in process manager"
+
+    # Test that /process and /proc are recognized without throwing
+    with patch.object(temp_studio, "render_processing_summary") as mock_proc:
+        temp_studio.handle_chat_submode_interaction("/process")
+        assert temp_studio.sub_mode == "processing"
+        mock_proc.assert_called_once()
+
+    temp_studio.sub_mode = "chat"
+    with patch.object(temp_studio, "render_processing_summary") as mock_proc2:
+        temp_studio.handle_chat_submode_interaction("/proc")
+        assert temp_studio.sub_mode == "processing"
+        mock_proc2.assert_called_once()
+
+
+def test_no_duplicate_eval_response_on_task_completion(temp_studio: CLIStudio) -> None:
+    session = temp_studio.chat_manager.create_session("test_session")
+    temp_studio.active_chat_session = session
+
+    # Simulate scout task finishing
+    from scrpcy.core.tasks import TaskInfo
+    task = TaskInfo(
+        id="task-scout-99",
+        name="Deep Scout Simulation",
+        task_type="scout",
+        session_id=session.id,
+        status="completed",
+        result_summary="Downloaded 3 papers",
+    )
+    temp_studio.task_manager._tasks[task.id] = task
+
+    # Trigger background completion callback
+    temp_studio._on_background_task_completed(task)
+
+    # Ensure NO duplicate assistant message was added
+    messages = temp_studio.chat_manager.get_messages(session.id)
+    assistant_msgs = [m for m in messages if m.role == "assistant"]
+    assert len(assistant_msgs) == 0, "No duplicate AI evaluation message should be added"
+
+    # Ensure system note exists for transparency
+    system_msgs = [m for m in messages if m.role == "system"]
+    assert len(system_msgs) == 1
+    assert "PROSES LATAR BELAKANG SELESAI" in system_msgs[0].content

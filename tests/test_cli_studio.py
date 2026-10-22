@@ -1298,29 +1298,21 @@ class TestAgenticUXAndFormatting:
                 assert choice == "back"
 
 
-    def test_orchestrator_barrier_single_response_on_concurrent_tasks(self, cli_studio: CLIStudio) -> None:
+    def test_background_task_completion_records_note_without_redundant_ai_eval(self, cli_studio: CLIStudio) -> None:
         from scrpcy.core.tasks import TaskInfo
         sess = cli_studio.chat_manager.create_session("Riset Karhutla")
         t1 = TaskInfo(id="task-901", name="Scout Karhutla Ekonomi", task_type="scout", session_id=sess.id, status="completed", result_summary="Added 3 papers")
-        t2 = TaskInfo(id="task-902", name="Scout Karhutla Kesehatan", task_type="scout", session_id=sess.id, status="running")
         cli_studio.task_manager._tasks[t1.id] = t1
-        cli_studio.task_manager._tasks[t2.id] = t2
 
         eval_calls: list[str] = []
-        with patch.object(cli_studio, "_ask_ai_orchestrator_barrier", return_value={"decision": "PROCEED", "reason": "Hasil cukup"}):
-            with patch.object(cli_studio, "_run_task_ai_evaluation", side_effect=lambda task, s_id: eval_calls.append(task.id)):
-                # Task 1 completes while Task 2 is running
-                cli_studio._on_background_task_completed(t1)
-                assert len(eval_calls) == 1
-                assert eval_calls[0] == t1.id
+        with patch.object(cli_studio, "_run_task_ai_evaluation", side_effect=lambda task, s_id: eval_calls.append(task.id)):
+            cli_studio._on_background_task_completed(t1)
+            # Must NOT trigger redundant AI evaluation
+            assert len(eval_calls) == 0
 
-                # Task 2 completes later
-                t2.status = "completed"
-                t2.result_summary = "Added 2 papers"
-                cli_studio._on_background_task_completed(t2)
-
-                # Total evaluations must STILL BE EXACTLY 1!
-                assert len(eval_calls) == 1
+        # System note must be recorded in session history
+        msgs = cli_studio.chat_manager.get_messages(sess.id)
+        assert any("PROSES LATAR BELAKANG SELESAI" in m.content for m in msgs)
 
     def test_interactive_input_prompt_on_idle_clears_and_rerenders(self, test_console: Console) -> None:
         from scrpcy.ui.interactive import interactive_input_prompt

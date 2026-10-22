@@ -2382,7 +2382,7 @@ class CLIStudio:
                 self.render_mode_divider()
                 self.sub_mode = "vault"
                 self.render_vault_landing()
-        elif cmd in ("/processing", "/proc", "/p"):
+        elif cmd in ("/processing", "/process", "/proc", "/p"):
             if args:
                 self.handle_processing_interaction(args)
             else:
@@ -2835,145 +2835,13 @@ class CLIStudio:
                 if t.status in ("completed", "cancelled"):
                     self._evaluated_task_ids.add(t.id)
 
-            # Autonomous Agent Loop: only run vault evaluation for literature acquisition / curation tasks
-            # Chat tasks synthesize and answer in the chat session directly without redundant vault auditing
-            if task_type in ("download", "scout", "curate", "convert", "gdrive", "vault_add"):
-                try:
-                    self._run_task_ai_evaluation(task, session_id)
-                except Exception:
-                    pass
+            # In MVP single-task architecture, literature acquisition tasks do not trigger
+            # unrequested secondary AI evaluations. The primary session turn performs synthesis.
+            pass
 
     def _run_task_ai_evaluation(self, task: Any, session_id: str) -> None:
-        """Autonomous Agent Loop: Evaluate background task results and formulate user briefing."""
-        if not self.engine or not self.chat_manager:
-            return
-
-        session = self.chat_manager.get_session(session_id)
-        if not session:
-            return
-
-        task_status = getattr(task, "status", "")
-        task_name = getattr(task, "name", "Task")
-        task_id = getattr(task, "id", "")
-        task_type = getattr(task, "task_type", "")
-        summary = getattr(task, "result_summary", "")
-        error_msg = getattr(task, "error", "")
-
-        # Current documents in vault
-        stems = self._get_cached_stems()
-        vault_summary_lines = []
-        for idx, stem in enumerate(stems[:10], 1):
-            meta = self._get_doc_metadata(stem) if hasattr(self, "_get_doc_metadata") else None
-            title = meta.title if meta and meta.title else stem.replace("_", " ")
-            year = meta.year if meta and meta.year else ""
-            vault_summary_lines.append(f"{idx}. [{stem}] {title} ({year})")
-        vault_str = "\n".join(vault_summary_lines) if vault_summary_lines else "(Vault kosong)"
-
-        # Session context / recent query
-        messages = self.chat_manager.get_messages(session_id)
-        last_user_query = ""
-        for m in reversed(messages):
-            if m.role == "user":
-                last_user_query = m.content
-                break
-
-        # Collect all completed tasks in this session batch for 1 unified response
-        all_completed = [
-            t for t in self.task_manager.list_tasks_for_session(session_id)
-            if t.status == "completed" and t.task_type != "evaluation"
-        ]
-        tasks_batch_lines = []
-        for t in all_completed[:6]:
-            tasks_batch_lines.append(f"- {t.id} ({t.name}): {t.result_summary or 'Selesai'}")
-        tasks_batch_str = "\n".join(tasks_batch_lines) if tasks_batch_lines else f"- {task_id} ({task_name}): {summary}"
-
-        eval_prompt = (
-            f"[EVALUASI HASIL AKUISISI LITERATUR ILMIAH TERPADU]\n"
-            f"Dokumen/Literatur Baru yang Telah Diunduh/Diindeks:\n"
-            f"{tasks_batch_str}\n\n"
-            f"Konteks Riset Sesi ({session.name}):\n"
-            f"Fokus Riset/Pertanyaan Pengguna: \"{last_user_query or session.name}\"\n\n"
-            f"Daftar Dokumen di Vault Saat Ini:\n"
-            f"{vault_str}\n\n"
-            f"Instruksi Evaluasi Mandiri Akademis (Agent Loop):\n"
-            f"1. Evaluasi kualitas dan relevansi dokumen yang diperoleh terhadap fokus riset pengguna.\n"
-            f"2. Analisis kecukupan literatur: Apakah literatur di vault saat ini sudah cukup untuk menjawab fokus riset pengguna.\n"
-            f"3. Berikan sintesis ilmiah komprehensif dari paper yang baru diunduh dengan sitasi in-text APA.\n"
-            f"4. ATURAN KRUSIAL ANTARMUKA:\n"
-            f"   - Pengguna berinteraksi melalui antarmuka chat murni dan TIDAK BISA menjalankan perintah CLI slash.\n"
-            f"   - DILARANG KERAS menyuruh pengguna mengetikkan perintah slash (misal JANGAN PERNAH tulis '/scout...', '/vault read...', 'Ketik /scout...').\n"
-            f"   - Jika literatur sudah memadai ([STATUS: OK]), berikan sintesis yang mantap (100% yakin) tanpa meminta penelusuran lebih lanjut.\n"
-            f"   - Saran riset masa depan harus ditulis murni sebagai narasi/konsep ilmiah akademis, BUKAN sebagai sintaks perintah.\n"
-            f"   - DILARANG mencantumkan perintah /scout atau /vault read di akhir respons.\n"
-        )
-
-        model_name = self.get_active_project_model()
-        api_key = self.config.get_api_key_for_model(model_name)
-        if not api_key:
-            return
-
-        try:
-            if self.sub_mode == "chat" and self.active_chat_session and self.active_chat_session.id == session_id:
-                self._enqueue_ui_event(
-                    lambda: self.console.print("[bold cyan]●[/bold cyan] [bold bright_white]Berpikir[/bold bright_white] [dim]Mengevaluasi hasil proses dengan AI...[/dim]\n")
-                )
-
-            history_msgs = [{"role": m.role, "content": m.content} for m in messages[-6:]]
-            tokens: list[str] = []
-
-            async def _run_eval() -> None:
-                async for tok in self.engine.stream_query(
-                    query=eval_prompt,
-                    documents=[],
-                    skill_name=self.active_skill_name,
-                    model=model_name,
-                    max_evidence_chunks=0,
-                    history=history_msgs,
-                ):
-                    tokens.append(tok)
-
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            try:
-                loop.run_until_complete(_run_eval())
-            finally:
-                loop.close()
-
-            ai_briefing = "".join(tokens).strip()
-            if ai_briefing:
-                ai_briefing = self._sanitize_final_response(ai_briefing)
-                if self.vault_manager:
-                    ai_briefing = append_vault_bibliography(
-                        text=ai_briefing,
-                        evidence=[],
-                        vault_manager=self.vault_manager,
-                        style=self.config.citation.style,
-                        active_documents=self.active_documents,
-                    )
-                self.chat_manager.add_message(session_id, "assistant", ai_briefing)
-                # Queue any suggested actions to be handled cleanly on the main thread
-                pattern = re.compile(r"```scrpcy\r?\n(.*?)\r?\n```", re.DOTALL | re.IGNORECASE)
-                matches = pattern.findall(ai_briefing)
-                if matches:
-                    banned_roots = ("/vault read", "vault read", "/vault view", "vault view", "/vault list", "vault list", "/read", "read", "/scout", "scout", "/findpaper", "findpaper", "/search", "search")
-                    raw_actions = [
-                        cmd.strip() for m in matches for cmd in m.splitlines()
-                        if cmd.strip() and not cmd.strip().startswith("#")
-                        and not any(cmd.strip().lower().startswith(b) for b in banned_roots)
-                    ]
-                    if raw_actions:
-                        if not hasattr(self, "_pending_session_actions"):
-                            self._pending_session_actions = {}
-                        self._pending_session_actions.setdefault(session_id, []).extend(raw_actions)
-
-                if self.sub_mode == "chat" and self.active_chat_session and self.active_chat_session.id == session_id:
-                    def _render_eval() -> None:
-                        self.console.print(f"\n[bold cyan]✦ Evaluasi AI ({self.active_skill_name}):[/bold cyan]\n")
-                        render_academic_markdown(ai_briefing, console=self.console)
-                        self.console.print()
-                    self._enqueue_ui_event(_render_eval)
-        except Exception as exc:
-            self.task_manager.log(task_id, f"AI evaluation error: {exc}")
+        """Deprecated: Evaluasi otomatis background dinonaktifkan agar tidak menghasilkan respons ganda."""
+        return
 
     def submit_chat_background(self, query: str) -> None:
         """Submit a research query to run completely in background task manager."""
