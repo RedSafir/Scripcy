@@ -6188,6 +6188,13 @@ class CLIStudio:
                         best_grounding = v_rep.grounding_score
                         best_critic = c_rep.score
 
+                    # Accumulate token metrics for this turn (across ALL turns including refinement iterations)
+                    stream_in_est = estimate_tokens(current_query) + sum(c.token_estimate or estimate_tokens(c.text) for c in (evidence or [])) + 250
+                    nonlocal accumulated_input_tokens, accumulated_output_tokens, total_turns_completed
+                    accumulated_input_tokens += stream_in_est + getattr(v_rep, "input_tokens", 0) + getattr(c_rep, "input_tokens", 0)
+                    accumulated_output_tokens += out_tok + getattr(v_rep, "output_tokens", 0) + getattr(c_rep, "output_tokens", 0)
+                    total_turns_completed = turn + 1
+
                     # Check if ungrounded claims or citation mapping triggers another turn
                     needs_refine = (bool(v_rep.hallucination_warning) or bool(c_rep.needs_citation_mapping)) and turn < max_agent_turns - 1
                     if needs_refine:
@@ -6216,13 +6223,6 @@ class CLIStudio:
                                 "c_report": c_rep,
                                 "response": p_resp,
                             }
-
-                    # Accumulate token metrics for this turn
-                    stream_in_est = estimate_tokens(current_query) + sum(c.token_estimate or estimate_tokens(c.text) for c in (evidence or [])) + 250
-                    nonlocal accumulated_input_tokens, accumulated_output_tokens, total_turns_completed
-                    accumulated_input_tokens += stream_in_est + getattr(v_rep, "input_tokens", 0) + getattr(c_rep, "input_tokens", 0)
-                    accumulated_output_tokens += out_tok + getattr(v_rep, "output_tokens", 0) + getattr(c_rep, "output_tokens", 0)
-                    total_turns_completed = turn + 1
 
                     # 5. Automatic Bibliography
                     final_text = p_resp
