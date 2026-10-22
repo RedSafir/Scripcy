@@ -5927,7 +5927,7 @@ class CLIStudio:
                 while not t.done():
                     now = time.time()
                     need_redraw = False
-                    if now - last_spin >= 0.08:
+                    if now - last_spin >= 0.12:
                         frame_idx = (frame_idx + 1) % len(SPINNER_FRAMES)
                         last_spin = now
                         need_redraw = True
@@ -5993,21 +5993,33 @@ class CLIStudio:
                             f"\033[90m{divider}\033[0m",
                             f"\033[90m{footer}\033[0m",
                         ]
+                        # True zero-flicker in-place line overwriting:
+                        # Move cursor up to start of block without erasing the bottom buffer,
+                        # then overwrite each line using line-erase (\x1b[2K)
                         if prev_lines_drawn > 0:
-                            _clear_lines(prev_lines_drawn, self.console)
-                        sys.stdout.write("\n".join(lines) + "\n")
+                            sys.stdout.write(f"\x1b[{prev_lines_drawn}A\r")
+                        for line in lines:
+                            sys.stdout.write(f"\x1b[2K{line}\n")
                         sys.stdout.flush()
                         prev_lines_drawn = len(lines)
 
-                    await asyncio.sleep(0.03)
+                    await asyncio.sleep(0.04)
 
                 if prev_lines_drawn > 0:
-                    _clear_lines(prev_lines_drawn, self.console)
+                    sys.stdout.write(f"\x1b[{prev_lines_drawn}A\r")
+                    for _ in range(prev_lines_drawn):
+                        sys.stdout.write("\x1b[2K\n")
+                    sys.stdout.write(f"\x1b[{prev_lines_drawn}A\r")
+                    sys.stdout.flush()
                 return await t
 
             except BaseException as exc:
                 if prev_lines_drawn > 0:
-                    _clear_lines(prev_lines_drawn, self.console)
+                    sys.stdout.write(f"\x1b[{prev_lines_drawn}A\r")
+                    for _ in range(prev_lines_drawn):
+                        sys.stdout.write("\x1b[2K\n")
+                    sys.stdout.write(f"\x1b[{prev_lines_drawn}A\r")
+                    sys.stdout.flush()
                 if isinstance(exc, SessionDetachSignal):
                     raise
                 if not t.done():
@@ -6142,9 +6154,11 @@ class CLIStudio:
 
                 async def _wait_for_scout_task() -> str:
                     start_t = time.time()
-                    soft_timeout = 35.0
+                    soft_timeout = 60.0
                     ai_consulted = False
-                    max_wait = 90.0
+                    max_wait = 300.0
+                    last_progress_text = ""
+                    last_progress_change_t = start_t
 
                     while True:
                         t_info = self.task_manager.get_task(task.id)
@@ -6159,10 +6173,15 @@ class CLIStudio:
 
                         elapsed = time.time() - start_t
                         curr_desc = t_info.progress or "Menelusuri & mengunduh paper..."
+                        if curr_desc != last_progress_text:
+                            last_progress_text = curr_desc
+                            last_progress_change_t = time.time()
+
                         scout_progress.set(f"{curr_desc} ({elapsed:.0f}s)")
 
-                        # Frugal AI diagnostic if exceeding soft timeout (35s)
-                        if elapsed >= soft_timeout and not ai_consulted:
+                        # Frugal AI diagnostic if exceeding soft timeout AND progress is stagnant (> 30s)
+                        stagnant_sec = time.time() - last_progress_change_t
+                        if elapsed >= soft_timeout and stagnant_sec >= 30.0 and not ai_consulted:
                             ai_consulted = True
                             decision = self._ask_ai_task_continuation(
                                 task_name=task.name,
@@ -6170,12 +6189,15 @@ class CLIStudio:
                                 elapsed=elapsed,
                             )
                             if decision == "EXTEND":
-                                soft_timeout += 40.0
-                                scout_progress.set("AI Evaluator: Mengonfirmasi proses aktif, memperpanjang batas waktu (+40s)...")
+                                soft_timeout += 60.0
+                                scout_progress.set("AI Evaluator: Mengonfirmasi proses aktif, memperpanjang batas waktu (+60s)...")
                             else:
-                                scout_progress.set("AI Evaluator: Menghentikan tugas unduhan (terindikasi lambat/macet)...")
+                                scout_progress.set("AI Evaluator: Menghentikan tugas unduhan (terindikasi macet)...")
                                 self.task_manager.cancel_task(task.id)
                                 return "cancelled"
+                        elif elapsed >= soft_timeout and stagnant_sec < 30.0:
+                            # Still actively downloading or parsing papers: auto-extend
+                            soft_timeout += 45.0
 
                         if elapsed >= max_wait:
                             self.task_manager.cancel_task(task.id)
@@ -6203,6 +6225,11 @@ class CLIStudio:
                     self.task_manager.cancel_task(task.id)
                     self.console.print("[dim]● Pencarian literatur dibatalkan oleh pengguna.[/dim]\n")
                     res_status = "cancelled"
+
+                if res_status == "completed":
+                    self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Mencari[/bold bright_white] [green]Penelusuran & pengunduhan literatur selesai.[/green]")
+                elif res_status in ("cancelled", "timeout") or (isinstance(res_status, str) and res_status.startswith("failed")):
+                    self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Mencari[/bold bright_white] [yellow]Penelusuran dihentikan ({res_status}). Menggunakan dokumen yang tersedia di vault...[/yellow]")
 
                 # Synchronize vault cache with freshly downloaded papers
                 if self.vault_manager:
