@@ -62,7 +62,7 @@ class DevilsAdvocate:
 
         return False, None
 
-    def critique_heuristic(self, query: str, answer: str) -> CritiqueReport:
+    def critique_heuristic(self, query: str, answer: str, intent: str | None = None) -> CritiqueReport:
         """Rule-based adversarial critique when LLM engine is unavailable."""
         years = self.extract_citation_years(answer)
         is_outdated, recency_msg = self.check_recency(years)
@@ -86,7 +86,7 @@ class DevilsAdvocate:
             score -= 2
 
         # 3. Check for balance and nuances (e.g. limitations, challenges)
-        nuance_keywords = ["namun", "tetapi", "meskipun", "kendala", "tantangan", "limitasi", "however", "although", "limitation"]
+        nuance_keywords = ["namun", "tetapi", "meskipun", "kendala", "tantangan", "limitasi", "kontra", "sanggahan", "tegangan", "kritik", "kelemahan", "however", "although", "limitation"]
         has_nuance = any(k in answer.lower() for k in nuance_keywords)
         if not has_nuance:
             weaknesses.append("Argumen cenderung satu arah (belum menyajikan limitasi atau kondisi batas).")
@@ -123,9 +123,9 @@ class DevilsAdvocate:
             critique_summary=summary,
         )
 
-    def critique(self, query: str, answer: str) -> CritiqueReport:
+    def critique(self, query: str, answer: str, intent: str | None = None) -> CritiqueReport:
         """Execute adversarial critique using LLM if available, falling back to heuristics."""
-        heuristic = self.critique_heuristic(query, answer)
+        heuristic = self.critique_heuristic(query, answer, intent=intent)
         if not self.engine:
             return heuristic
 
@@ -136,9 +136,18 @@ class DevilsAdvocate:
             if not api_key or api_key.startswith("mock") or getattr(self.engine, "_acompletion_fn", None) is not None:
                 return heuristic
 
+            intent_note = ""
+            if intent and ("argument" in str(intent).lower()):
+                intent_note = (
+                    "\nNOTE: The user specifically requested an ARGUMENT EXPLORATION / DIALECTICAL MATRIX "
+                    "(thesis, pro arguments, contra arguments, and gaps), NOT a monolithic multi-chapter review. "
+                    "Grade on dialetical balance, evidentiary backing, and clarity. DO NOT penalize for conciseness.\n"
+                )
+
             system_prompt = (
                 "You are an elite academic peer-reviewer and Devil's Advocate. "
                 "Critically evaluate the research answer against the research question.\n"
+                + intent_note +
                 "Scrutinize:\n"
                 "1. Logical gaps, ungrounded claims, or confirmation bias.\n"
                 "2. Whether counter-arguments, tradeoffs, or limitations are missing.\n"
@@ -168,7 +177,7 @@ class DevilsAdvocate:
                 "model": effective_model,
                 "messages": [
                     {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": f"RESEARCH QUESTION: {query}\n\nPROPOSED ANSWER:\n{answer[:3000]}"},
+                    {"role": "user", "content": f"RESEARCH QUESTION: {query}\n\nPROPOSED ANSWER:\n{answer[:8000]}"},
                 ],
                 "api_key": api_key,
                 "temperature": 0.2,
@@ -196,7 +205,7 @@ class DevilsAdvocate:
 
             needs_scout = score < 7 or heuristic.needs_citation_mapping
 
-            c_in = estimate_tokens(query) + estimate_tokens(answer[:3000]) + 150
+            c_in = estimate_tokens(query) + estimate_tokens(answer[:8000]) + 150
             c_out = estimate_tokens(content)
 
             return CritiqueReport(
