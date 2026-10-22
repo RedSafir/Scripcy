@@ -60,10 +60,13 @@ init_windows_terminal()
 
 
 def _clear_lines(num_lines: int, console: Console | None = None) -> None:
-    """Cross-platform zero-flicker line clear: erases N lines upward without stacking."""
+    """Cross-platform zero-flicker line clear: erases N lines upward without blanking below."""
     if num_lines <= 0:
         return
-    sys.stdout.write(f"\x1b[{num_lines}A\r\x1b[J")
+    sys.stdout.write(f"\x1b[{num_lines}A\r")
+    for _ in range(num_lines):
+        sys.stdout.write("\x1b[2K\n")
+    sys.stdout.write(f"\x1b[{num_lines}A\r")
     sys.stdout.flush()
 
 
@@ -1543,18 +1546,27 @@ def interactive_menu(
             lines.append(Text(footer_hint, style="dim"))
 
             # Exact terminal line count via capture
+            # Differential rendering: only rewrite to stdout if content actually changed
             with c.capture() as capture:
                 for item in lines:
                     c.print(item)
-            rendered_lines = len(capture.get().splitlines())
+            rendered_lines_list = capture.get().splitlines()
+            cur_rendered_text = "\n".join(rendered_lines_list)
 
-            if prev_lines_drawn > 0:
-                _clear_lines(prev_lines_drawn, c)
-
-            for item in lines:
-                c.print(item)
-            sys.stdout.flush()
-            prev_lines_drawn = rendered_lines
+            if cur_rendered_text != last_rendered_text or prev_lines_drawn == 0:
+                last_rendered_text = cur_rendered_text
+                # Move cursor up to the start of previous block
+                if prev_lines_drawn > 0:
+                    sys.stdout.write(f"\x1b[{prev_lines_drawn}A\r")
+                # Overwrite line by line with line-clear (\x1b[2K) to eliminate blank flickering
+                for r_line in rendered_lines_list:
+                    sys.stdout.write(f"\x1b[2K{r_line}\n")
+                if len(rendered_lines_list) < prev_lines_drawn:
+                    for _ in range(prev_lines_drawn - len(rendered_lines_list)):
+                        sys.stdout.write("\x1b[2K\n")
+                    sys.stdout.write(f"\x1b[{prev_lines_drawn - len(rendered_lines_list)}A\r")
+                sys.stdout.flush()
+                prev_lines_drawn = len(rendered_lines_list)
 
             key = _read_key()
             if key == "UP":
@@ -1774,6 +1786,7 @@ def interactive_detail_viewer(
     auto_scroll = True
     scroll_top = 0
     prev_lines_drawn = 0
+    last_rendered_text = ""
 
     c.show_cursor(False)
     try:
