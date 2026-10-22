@@ -917,3 +917,44 @@ def test_epistemic_exit_and_monotonic_locking(
     # Loop must not burn all 10 turns; must exit early via Epistemic Convergence
     assert call_count <= 4
 
+def test_factchecker_claim_caching_and_lexical_prefilter():
+    """Verify FactChecker caches supported claims and uses 0-token lexical pre-filter for direct matches."""
+    from scrpcy.core.verifier import FactChecker, ClaimVerification
+    from scrpcy.core.engine import EvidenceChunk
+
+    evidence = [
+        EvidenceChunk(
+            chunk_id="c1",
+            source="smith2020",
+            text="Peatland drainage in Central Kalimantan severely elevates the risk of smoldering fires.",
+            token_estimate=15,
+        )
+    ]
+
+    llm_called = False
+    class MockEngine:
+        config = ScrpcyConfig()
+        async def acompletion_fn(self, **kwargs):
+            pass
+
+    checker = FactChecker(engine=MockEngine())
+
+    # 1. Direct lexical match should be resolved immediately (supported)
+    text1 = "Peatland drainage in Central Kalimantan elevates risk of smoldering fires."
+    rep1 = checker.verify_synthesis(text1, evidence)
+    assert rep1.grounding_score >= 0.70
+    assert rep1.supported_claims >= 1
+
+    # Check that it is stored in cache
+    norm_c = list(checker._claim_cache.keys())[0]
+    assert "peatland drainage" in norm_c
+
+    # 2. In second call with the same claim, cache is hit (verified immediately)
+    text2 = "Peatland drainage in Central Kalimantan elevates risk of smoldering fires."
+    rep2 = checker.verify_synthesis(text2, evidence)
+    assert rep2.grounding_score == rep1.grounding_score
+
+    # 3. clear_cache empties the cache
+    checker.clear_cache()
+    assert len(checker._claim_cache) == 0
+

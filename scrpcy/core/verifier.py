@@ -45,6 +45,11 @@ class FactChecker:
 
     def __init__(self, engine: LLMEngine | None = None) -> None:
         self.engine = engine
+        self._claim_cache: dict[str, ClaimVerification] = {}
+
+    def clear_cache(self) -> None:
+        """Clear cached claim verifications."""
+        self._claim_cache.clear()
 
     def extract_atomic_claims(self, text: str) -> list[str]:
         """Split synthesis text into salient atomic factual sentences."""
@@ -230,10 +235,52 @@ class FactChecker:
                 audited_text=text,
             )
 
-        # Try LLM entailment verification first (handles multilingual text)
-        verifications = self.verify_claims_llm(claims, evidence_chunks)
-        if not verifications:
-            verifications = self.verify_claims_lexical(claims, evidence_chunks)
+        verifications_map: dict[str, ClaimVerification] = {}
+        unresolved_claims: list[str] = []
+
+        # 1. Claim Cache Check: Reuse already verified claims across turns (0 tokens)
+        for claim in claims:
+            norm_c = re.sub(r"\s+", " ", claim.strip().lower())
+            if norm_c in self._claim_cache:
+                cached_v = self._claim_cache[norm_c]
+                if cached_v.status in ("supported", "weak"):
+                    verifications_map[claim] = cached_v
+                    continue
+            unresolved_claims.append(claim)
+
+        # 2. Tiered Lexical Pre-Filter: Fast keyword/n-gram match against vault (0 tokens)
+        lexical_results = self.verify_claims_lexical(unresolved_claims, evidence_chunks)
+        llm_candidate_claims: list[str] = []
+
+        for v in lexical_results:
+            # If strong direct lexical match found (confidence >= 0.70), accept immediately without LLM!
+            if v.status == "supported" and v.confidence >= 0.70:
+                verifications_map[v.claim] = v
+                norm_c = re.sub(r"\s+", " ", v.claim.strip().lower())
+                self._claim_cache[norm_c] = v
+            else:
+                # Ambiguous or unsupported: candidate for deep multilingual LLM entailment
+                llm_candidate_claims.append(v.claim)
+
+        # 3. LLM Semantic Entailment: ONLY call 9Router for unresolved/ambiguous claims
+        if llm_candidate_claims:
+            llm_results = self.verify_claims_llm(llm_candidate_claims, evidence_chunks)
+            if llm_results:
+                for v in llm_results:
+                    verifications_map[v.claim] = v
+                    norm_c = re.sub(r"\s+", " ", v.claim.strip().lower())
+                    if v.status in ("supported", "weak"):
+                        self._claim_cache[norm_c] = v
+            else:
+                # Fallback to lexical results if LLM is unavailable
+                for v in lexical_results:
+                    if v.claim in llm_candidate_claims:
+                        verifications_map[v.claim] = v
+
+        verifications: list[ClaimVerification] = [
+            verifications_map.get(c, ClaimVerification(claim=c, status="unsupported", confidence=0.0, reason="Unverified claim."))
+            for c in claims
+        ]
 
         supported_count = sum(1 for v in verifications if v.status == "supported")
         weak_count = sum(1 for v in verifications if v.status == "weak")
