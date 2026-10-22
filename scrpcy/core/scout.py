@@ -528,14 +528,17 @@ class LiteratureScout:
         )
         meta.ensure_cite_key()
 
-        try:
-            import pymupdf
-            import pymupdf4llm
+        def _parse_pdf_body() -> str:
+            try:
+                import pymupdf
+                import pymupdf4llm
 
-            with pymupdf.open(target_pdf) as doc:
-                clean_body_markdown = pymupdf4llm.to_markdown(doc)
-        except Exception:
-            clean_body_markdown = f"# {paper.title}\n\nAbstract:\n{paper.abstract or ''}\n"
+                with pymupdf.open(target_pdf) as doc:
+                    return pymupdf4llm.to_markdown(doc)
+            except Exception:
+                return f"# {paper.title}\n\nAbstract:\n{paper.abstract or ''}\n"
+
+        clean_body_markdown = await asyncio.to_thread(_parse_pdf_body)
 
         cache_file = f"{safe_stem}.md"
         self.workspace.save_to_cache(
@@ -663,7 +666,7 @@ class LiteratureScout:
     ) -> list[str]:
         """Automatically discover, filter (preferring OA PDF, fallback to abstract), and ingest papers for a topic."""
         try:
-            sq = self.extract_search_criteria(query, engine=engine)
+            sq = await asyncio.to_thread(self.extract_search_criteria, query, engine=engine)
         except Exception:
             sq = ScoutQuery(keywords=query, is_oa_only=False)
 
@@ -671,7 +674,7 @@ class LiteratureScout:
         if not candidates:
             return []
 
-        curated = self.curate_and_rank(query, candidates, engine=engine)
+        curated = await asyncio.to_thread(self.curate_and_rank, query, candidates, engine=engine)
         if not curated:
             return []
 

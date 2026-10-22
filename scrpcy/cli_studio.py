@@ -5802,11 +5802,16 @@ class CLIStudio:
                         divider, footer = _get_layout()
                         buf_str = "".join(typed_buffer)
                         frame = SPINNER_FRAMES[frame_idx]
+                        prompt_line = (
+                            f"\033[1;36m{prompt_lbl}\033[0m\033[1;37m{buf_str}\033[0m\033[1;37m█\033[0m"
+                            if buf_str
+                            else f"\033[1;36m{prompt_lbl}\033[0m\033[2;37m[Sedang memproses... Tekan Esc atau ketik /detach untuk latar belakang]\033[0m"
+                        )
                         lines = [
                             f"\033[36m{frame}\033[0m {cur_desc_val}",
                             "",
                             f"\033[90m{divider}\033[0m",
-                            f"\033[1;36m{prompt_lbl}\033[0m\033[1;37m{buf_str}\033[0m\033[1;37m█\033[0m",
+                            prompt_line,
                             f"\033[90m{divider}\033[0m",
                             f"\033[90m{footer}\033[0m",
                         ]
@@ -5950,7 +5955,7 @@ class CLIStudio:
                                 target_topic,
                                 **scout_kwargs,
                             ),
-                            timeout=20.0,
+                            timeout=35.0,
                         )
 
                     prompt_str = f"{self.current_project.name}/chat/{session.name}> " if (self.sub_mode == "chat" and session and self.current_project) else (f"{self.current_project.name}> " if self.current_project else "> ")
