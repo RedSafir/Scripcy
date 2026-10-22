@@ -3197,6 +3197,55 @@ class CLIStudio:
         self.task_manager.log(task_id, summary)
         return summary
 
+    def _ask_ai_task_continuation(self, task_name: str, progress: str, elapsed: float) -> str:
+        """Ultra-frugal AI check (~50 tokens) to decide whether to extend or abort a prolonged task."""
+        if not self.engine:
+            return "EXTEND" if elapsed < 60.0 else "ABORT"
+
+        try:
+            model_name = self.get_active_project_model()
+            api_key = self.config.get_api_key_for_model(model_name)
+            if not api_key or api_key.startswith("mock") or getattr(self.engine, "_acompletion_fn", None) is not None:
+                return "EXTEND" if elapsed < 60.0 else "ABORT"
+
+            effective_model = model_name
+            api_base = None
+            if model_name.startswith("9router/"):
+                submodel = model_name.split("/", 1)[1]
+                effective_model = f"openai/{submodel}"
+                api_base = "http://localhost:20128/v1"
+
+            import json
+            import litellm
+            kwargs: dict[str, Any] = {
+                "model": effective_model,
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": "You are a concise runtime task scheduler. Return JSON: {\"decision\": \"EXTEND\" | \"ABORT\"}",
+                    },
+                    {
+                        "role": "user",
+                        "content": f"Task: {task_name}\nLast Progress: '{progress}'\nElapsed: {elapsed:.0f}s.\nIf progress shows downloading/parsing in action, reply EXTEND. If idle/no candidates, reply ABORT.",
+                    },
+                ],
+                "api_key": api_key,
+                "temperature": 0.0,
+                "max_tokens": 30,
+                "response_format": {"type": "json_object"},
+                "timeout": 8,
+            }
+            if api_base:
+                kwargs["api_base"] = api_base
+
+            resp = litellm.completion(**kwargs)
+            raw = resp.choices[0].message.content or "{}"
+            data = json.loads(raw.strip())
+            dec = str(data.get("decision", "EXTEND")).upper().strip()
+            return "ABORT" if "ABORT" in dec else "EXTEND"
+        except Exception:
+            return "EXTEND" if elapsed < 60.0 else "ABORT"
+
     def cmd_return_dashboard(self) -> None:
         """Disconnect from active project and return to dashboard."""
         self.render_mode_divider()
@@ -4277,6 +4326,18 @@ class CLIStudio:
                 if not arg:
                     self.console.print("[yellow]Gunakan: /bg <pertanyaan atau perintah>[/yellow]\n")
                     return
+                # MVP single active process per session check
+                if self.active_chat_session and self.task_manager:
+                    running_tasks = [t for t in self.task_manager.list_tasks_for_session(self.active_chat_session.id) if t.status == "running"]
+                    if running_tasks:
+                        t = running_tasks[0]
+                        self.console.print(
+                            f"\n[bold yellow][!] Sesi '{self.active_chat_session.name}' sudah memiliki 1 proses aktif:[/bold yellow] "
+                            f"[bold cyan]{t.name}[/bold cyan] [dim]({t.id})[/dim]\n"
+                            f"  [dim]• Sesuai arsitektur MVP, setiap sesi dibatasi tepat 1 proses aktif.\n"
+                            f"  • Tunggu proses selesai atau ketik /cancel untuk membatalkan.[/dim]\n"
+                        )
+                        return
                 self.submit_chat_background(arg)
                 return
             elif cmd in ("/cancel", "/stop"):
@@ -4353,6 +4414,21 @@ class CLIStudio:
             else:
                 self.handle_project_command(clean)
             return
+
+        # MVP Single Process Busy Guard:
+        # If this session already has an active running task, guard against new prompt submission
+        if self.active_chat_session and self.task_manager:
+            running_tasks = [t for t in self.task_manager.list_tasks_for_session(self.active_chat_session.id) if t.status == "running"]
+            if running_tasks:
+                active_t = running_tasks[0]
+                self.console.print(
+                    f"\n[bold yellow][!] Sesi '{self.active_chat_session.name}' sedang menjalankan 1 proses aktif:[/bold yellow] "
+                    f"[bold cyan]{active_t.name}[/bold cyan] [dim]({active_t.id})[/dim]\n"
+                    f"  [dim]• Status: {active_t.progress or 'Sedang memproses...'} (Tunggu hingga selesai)\n"
+                    f"  • Ketik /cancel untuk membatalkan proses.\n"
+                    f"  • Ketik /detach atau /back untuk beralih ke sesi/menu lain.[/dim]\n"
+                )
+                return
 
         # Any input without leading "/" in chat mode is strictly treated as an AI conversation prompt
         self.handle_chat(clean)
@@ -5949,79 +6025,93 @@ class CLIStudio:
                     if not sys.stdin.isatty():
                         self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]{action}[/bold bright_white] [cyan]{label}[/cyan]")
 
-                new_stems: list[str] = []
-                timed_out = False
+                task = self.task_manager.submit(
+                    name=f"Deep Research Scout: {target_topic}",
+                    task_type="scout",
+                    target_fn=self._background_scout_worker,
+                    query=target_topic,
+                    topic_query=target_topic,
+                    session_id=session.id if session else None,
+                )
+
+                async def _wait_for_scout_task() -> str:
+                    start_t = time.time()
+                    soft_timeout = 35.0
+                    ai_consulted = False
+                    max_wait = 90.0
+
+                    while True:
+                        t_info = self.task_manager.get_task(task.id)
+                        if not t_info or t_info.status in ("completed", "failed", "cancelled"):
+                            if t_info and t_info.status == "completed":
+                                return str(t_info.result or "completed")
+                            elif t_info and t_info.status == "cancelled":
+                                return "cancelled"
+                            else:
+                                err = t_info.error if t_info else "Task terminated"
+                                return f"failed: {err}"
+
+                        elapsed = time.time() - start_t
+                        curr_desc = t_info.progress or "Menelusuri & mengunduh paper..."
+                        scout_progress.set(f"{curr_desc} ({elapsed:.0f}s)")
+
+                        # Frugal AI diagnostic if exceeding soft timeout (35s)
+                        if elapsed >= soft_timeout and not ai_consulted:
+                            ai_consulted = True
+                            decision = self._ask_ai_task_continuation(
+                                task_name=task.name,
+                                progress=t_info.progress or "",
+                                elapsed=elapsed,
+                            )
+                            if decision == "EXTEND":
+                                soft_timeout += 40.0
+                                scout_progress.set("AI Evaluator: Mengonfirmasi proses aktif, memperpanjang batas waktu (+40s)...")
+                            else:
+                                scout_progress.set("AI Evaluator: Menghentikan tugas unduhan (terindikasi lambat/macet)...")
+                                self.task_manager.cancel_task(task.id)
+                                return "cancelled"
+
+                        if elapsed >= max_wait:
+                            self.task_manager.cancel_task(task.id)
+                            return "timeout"
+
+                        await asyncio.sleep(0.5)
+
+                prompt_str = f"{self.current_project.name}/chat/{session.name}> " if (self.sub_mode == "chat" and session and self.current_project) else (f"{self.current_project.name}> " if self.current_project else "> ")
                 try:
-                    async def _run_scout_with_timeout() -> list[str]:
-                        import inspect
-                        sig = inspect.signature(self.scout.auto_scout_and_ingest)
-                        scout_kwargs: dict[str, Any] = {
-                            "max_papers": 2,
-                            "on_status": on_scout_status,
-                        }
-                        if "engine" in sig.parameters or any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()):
-                            scout_kwargs["engine"] = self.engine
-
-                        return await asyncio.wait_for(
-                            self.scout.auto_scout_and_ingest(
-                                target_topic,
-                                **scout_kwargs,
-                            ),
-                            timeout=35.0,
-                        )
-
-                    prompt_str = f"{self.current_project.name}/chat/{session.name}> " if (self.sub_mode == "chat" and session and self.current_project) else (f"{self.current_project.name}> " if self.current_project else "> ")
-                    new_stems = self._run_agent_turn_interactive(
-                        coro=_run_scout_with_timeout(),
+                    res_status = self._run_agent_turn_interactive(
+                        coro=_wait_for_scout_task(),
                         step_desc=scout_progress,
                         prompt_lbl=prompt_str,
                         model_label=model_label,
                         effort=effort,
                     )
-                except (asyncio.TimeoutError, TimeoutError):
-                    timed_out = True
-                except Exception as exc:
-                    if hasattr(self, "logger") and self.logger:
-                        self.logger.log_error(session.id if session else None, "AUTO_SCOUT", exc)
-                    self.console.print(f"[dim]● Pencarian repositori gagal: {exc}. Melanjutkan...[/dim]\n")
+                except SessionDetachSignal:
+                    self.console.print(f"\n[bold cyan]● Sesi '{session.name if session else ''}' di-detach ke latar belakang.[/bold cyan]")
+                    self.console.print(f"  [dim]Tugas '{task.name}' ({task.id}) tetap berjalan di background (Ketik /proc untuk pantau).[/dim]\n")
+                    if session and self.chat_manager:
+                        self.chat_manager.update_session_status(session.id, "detached")
+                    self.sub_mode = "chat_hub"
+                    return
+                except (asyncio.CancelledError, KeyboardInterrupt):
+                    self.task_manager.cancel_task(task.id)
+                    self.console.print("[dim]● Pencarian literatur dibatalkan oleh pengguna.[/dim]\n")
+                    res_status = "cancelled"
 
-                if timed_out:
-                    task = self.task_manager.submit(
-                        name=f"Deep Research Scout: {target_topic}",
-                        task_type="scout",
-                        target_fn=self._background_scout_worker,
-                        query=target_topic,
-                        topic_query=target_topic,
-                        session_id=session.id if session else None,
-                    )
-                    self.console.print("[bold yellow][!] Unduhan repositori membutuhkan waktu > 20 detik.[/bold yellow]")
-                    self.console.print(f"[bold green][✓] Proses dialihkan ke background:[/bold green] [bold cyan]{task.id}[/bold cyan] [dim](Ketik /proc untuk pantau)[/dim]\n")
-                    initial_query_override = (
-                        f"{query}\n\n"
-                        f"[CATATAN SISTEM SCRPCY: Proses penelusuran & pengunduhan literatur untuk topik '{target_topic}' "
-                        f"memerlukan waktu lebih dari 20 detik dan dialihkan ke latar belakang (Task ID: {task.id}).\n"
-                        f"Instruksi untuk AI: Beritahu pengguna secara ringkas bahwa unduhan sedang diproses di background. "
-                        f"Berikan sintesis awal atau fondasi konseptual terbaik berdasarkan pengetahuan yang ada saat ini. "
-                        f"Secara proaktif sarankan fokus konseptual atau hipotesis apa yang bisa dikaji sekarang sementara tugas unduhan selesai di background (JANGAN menyuruh pengguna mengetikkan perintah slash).]"
-                    )
-                elif new_stems:
-                    if self.vault_manager:
-                        self.vault_manager.reload_vault(force=False)
-                    self._sync_vault_cache()
-                    for s in new_stems:
-                        self.active_documents.add(s)
+                # Synchronize vault cache with freshly downloaded papers
+                if self.vault_manager:
+                    self.vault_manager.reload_vault(force=False)
+                self._sync_vault_cache()
 
-                    active_paths = [self.workspace.get_cache_path(f"{s}.md") for s in self.active_documents]
-                    existing_paths = [p for p in active_paths if p.exists()]
-                    evidence = self.engine.evidence_synthesizer.retrieve_evidence(
-                        query=query,
-                        documents=existing_paths,
-                        max_chunks=self.config.citation.max_evidence_chunks,
-                    )
-                    self.console.print(f"[bold green][✓] Berhasil mengindeks {len(new_stems)} dokumen baru ke vault.[/bold green]")
-                    for s in new_stems:
-                        self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Membaca[/bold bright_white] [cyan]cache/{s}.md[/cyan] [dim](Dokumen siap)[/dim]")
-                    self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Menganalisis[/bold bright_white] [dim]Menyintesis temuan paper baru ke dalam jawaban komprehensif...[/dim]\n")
+                active_paths = [self.workspace.get_cache_path(f"{s}.md") for s in self.active_documents]
+                existing_paths = [p for p in active_paths if p.exists()]
+                evidence = self.engine.evidence_synthesizer.retrieve_evidence(
+                    query=query,
+                    documents=existing_paths,
+                    max_chunks=self.config.citation.max_evidence_chunks,
+                )
+                if evidence:
+                    self.console.print(f"[bold green][✓] Berhasil memuat bukti literatur dari dokumen vault yang baru diunduh.[/bold green]")
 
         # 1. Action Indicator: Membaca (jika sudah ada bukti)
         if evidence:
