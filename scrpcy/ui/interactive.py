@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import collections
 import sys
 import time
 from typing import Any, Callable
@@ -10,6 +11,8 @@ from rich.console import Console
 from rich.markup import escape
 from rich.table import Table
 from rich.text import Text
+
+_KEY_BUFFER: collections.deque[str] = collections.deque()
 
 
 def init_windows_terminal() -> None:
@@ -63,19 +66,70 @@ def _clear_lines(num_lines: int, console: Console | None = None) -> None:
     """Cross-platform zero-flicker line clear: erases N lines upward without blanking below."""
     if num_lines <= 0:
         return
-    sys.stdout.write(f"\x1b[{num_lines}A\r")
+    out = [f"\x1b[{num_lines}A\r"]
     for _ in range(num_lines):
-        sys.stdout.write("\x1b[2K\n")
-    sys.stdout.write(f"\x1b[{num_lines}A\r")
+        out.append("\x1b[2K\n")
+    out.append(f"\x1b[{num_lines}A\r")
+    sys.stdout.write("".join(out))
     sys.stdout.flush()
+
+
+def _render_diff_inplace(
+    console: Console,
+    lines: list[Any],
+    last_rendered_text: str,
+    prev_lines_drawn: int,
+) -> tuple[str, int]:
+    """Seamless Differential In-Place Terminal Rendering.
+
+    Overwrites the previous terminal output line-by-line without blanking or clearing
+    the screen below (no `\\x1b[J`), completely eliminating flicker. Performs dirty-checking:
+    if rendered output matches `last_rendered_text`, performs zero I/O writes.
+
+    Returns:
+        tuple[str, int]: (new_rendered_text, new_lines_drawn_count)
+    """
+    with console.capture() as capture:
+        for item in lines:
+            console.print(item)
+    raw_str = capture.get()
+    rendered_lines = raw_str.splitlines()
+    cur_text = "\n".join(rendered_lines)
+
+    # 1. State Dirty Checking: if identical, do zero I/O
+    if cur_text == last_rendered_text and prev_lines_drawn > 0:
+        return last_rendered_text, prev_lines_drawn
+
+    # 2. In-Place Overwriting:
+    out = []
+    if prev_lines_drawn > 0:
+        out.append(f"\x1b[{prev_lines_drawn}A\r")
+
+    for line in rendered_lines:
+        out.append(f"\x1b[2K{line}\n")
+
+    if len(rendered_lines) < prev_lines_drawn:
+        excess = prev_lines_drawn - len(rendered_lines)
+        for _ in range(excess):
+            out.append("\x1b[2K\n")
+        out.append(f"\x1b[{excess}A\r")
+
+    sys.stdout.write("".join(out))
+    sys.stdout.flush()
+
+    return cur_text, len(rendered_lines)
 
 
 def _read_key(timeout: float | None = None) -> str | None:
     """Read a single keypress or escape sequence cross-platform."""
+    if _KEY_BUFFER:
+        return _KEY_BUFFER.popleft()
+
     if timeout is not None:
-        import time
         start = time.monotonic()
         while time.monotonic() - start < timeout:
+            if _KEY_BUFFER:
+                return _KEY_BUFFER.popleft()
             k = _poll_key()
             if k is not None:
                 return k
@@ -144,6 +198,9 @@ def _read_key(timeout: float | None = None) -> str | None:
 
 def _poll_key() -> str | None:
     """Non-blocking read of a single keypress, returns None if no key pressed."""
+    if _KEY_BUFFER:
+        return _KEY_BUFFER.popleft()
+
     if sys.platform == "win32":
         import msvcrt
         if not msvcrt.kbhit():
@@ -235,6 +292,7 @@ def interactive_model_selector(
     # Hide cursor during rendering if possible
     c.show_cursor(False)
     prev_lines_drawn = 0
+    last_rendered_text = ""
     try:
         while True:
             filtered = get_filtered()
@@ -288,9 +346,6 @@ def interactive_model_selector(
             lines.append(Text(""))
 
             # Effort slider
-            # Effort  ◀ ────●────●────◎────▶
-            #              low   medium  high
-            #         Deepest reasoning for complex problems – slower but strongest
             active_effort = EFFORT_LEVELS[effort_idx]
             bullet_low = "◎" if active_effort == "low" else "●"
             bullet_med = "◎" if active_effort == "medium" else "●"
@@ -332,19 +387,10 @@ def interactive_model_selector(
             lines.append(footer)
             lines.append(Text(""))
 
-            # Redraw in place without scrolling
-            with c.capture() as capture:
-                for line in lines:
-                    c.print(line)
-            rendered_lines = len(capture.get().splitlines())
-
-            if prev_lines_drawn > 0:
-                _clear_lines(prev_lines_drawn, c)
-
-            for line in lines:
-                c.print(line)
-            sys.stdout.flush()
-            prev_lines_drawn = rendered_lines
+            # In-place differential redraw
+            last_rendered_text, prev_lines_drawn = _render_diff_inplace(
+                c, lines, last_rendered_text, prev_lines_drawn
+            )
 
             # Wait for key
             key = _read_key()
@@ -413,6 +459,7 @@ def interactive_skill_selector(
 
     c.show_cursor(False)
     prev_lines_drawn = 0
+    last_rendered_text = ""
     try:
         while True:
             filtered = get_filtered()
@@ -471,19 +518,10 @@ def interactive_skill_selector(
             lines.append(footer)
             lines.append(Text(""))
 
-            # Redraw in place without scrolling
-            with c.capture() as capture:
-                for line in lines:
-                    c.print(line)
-            rendered_lines = len(capture.get().splitlines())
-
-            if prev_lines_drawn > 0:
-                _clear_lines(prev_lines_drawn, c)
-
-            for line in lines:
-                c.print(line)
-            sys.stdout.flush()
-            prev_lines_drawn = rendered_lines
+            # In-place differential redraw
+            last_rendered_text, prev_lines_drawn = _render_diff_inplace(
+                c, lines, last_rendered_text, prev_lines_drawn
+            )
 
             key = _read_key()
 
@@ -555,6 +593,7 @@ def interactive_confirm(
     ]
     cursor_idx = 0 if default else 1
     prev_lines_drawn = 0
+    last_rendered_text = ""
 
     c.show_cursor(False)
     try:
@@ -587,18 +626,9 @@ def interactive_confirm(
             footer.append(" Batal", style="dim")
             lines_out.append(footer)
 
-            with c.capture() as capture:
-                for line in lines_out:
-                    c.print(line)
-            rendered_lines = len(capture.get().splitlines())
-
-            if prev_lines_drawn > 0:
-                _clear_lines(prev_lines_drawn, c)
-
-            for line in lines_out:
-                c.print(line)
-            sys.stdout.flush()
-            prev_lines_drawn = rendered_lines
+            last_rendered_text, prev_lines_drawn = _render_diff_inplace(
+                c, lines_out, last_rendered_text, prev_lines_drawn
+            )
 
             key = _read_key()
             if key in ("ESC", "n", "N", "q", "Q"):
@@ -654,6 +684,7 @@ def interactive_action_confirm(action_text: str, console: Console | None = None)
     ]
     cursor_idx = 0
     prev_lines_drawn = 0
+    last_rendered_text = ""
 
     c.show_cursor(False)
     try:
@@ -686,19 +717,9 @@ def interactive_action_confirm(action_text: str, console: Console | None = None)
             footer.append(" Batal", style="dim")
             lines_out.append(footer)
 
-            # Clean redraw: erase previous lines completely
-            with c.capture() as capture:
-                for line in lines_out:
-                    c.print(line)
-            rendered_lines = len(capture.get().splitlines())
-
-            if prev_lines_drawn > 0:
-                _clear_lines(prev_lines_drawn, c)
-
-            for line in lines_out:
-                c.print(line)
-            sys.stdout.flush()
-            prev_lines_drawn = rendered_lines
+            last_rendered_text, prev_lines_drawn = _render_diff_inplace(
+                c, lines_out, last_rendered_text, prev_lines_drawn
+            )
 
             key = _read_key()
             if key in ("ESC", "n", "N", "q", "Q"):
@@ -767,6 +788,7 @@ def interactive_token_warning_confirm(
 
     cursor_idx = 0
     prev_lines_drawn = 0
+    last_rendered_text = ""
 
     c.show_cursor(False)
     try:
@@ -806,19 +828,9 @@ def interactive_token_warning_confirm(
             footer.append(" Batal", style="dim")
             lines.append(footer)
 
-            # Redraw in place without c.clear()
-            with c.capture() as capture:
-                for line in lines:
-                    c.print(line)
-            rendered_lines = len(capture.get().splitlines())
-
-            if prev_lines_drawn > 0:
-                _clear_lines(prev_lines_drawn, c)
-
-            for line in lines:
-                c.print(line)
-            sys.stdout.flush()
-            prev_lines_drawn = rendered_lines
+            last_rendered_text, prev_lines_drawn = _render_diff_inplace(
+                c, lines, last_rendered_text, prev_lines_drawn
+            )
 
             key = _read_key()
             if key in ("ESC", "q", "Q"):
@@ -1007,6 +1019,7 @@ def interactive_help_view(
     cursor_idx = 0
     c.show_cursor(False)
     prev_lines_drawn = 0
+    last_rendered_text = ""
     try:
         while True:
             cursor_idx = max(0, min(cursor_idx, len(commands_list) - 1))
@@ -1040,19 +1053,10 @@ def interactive_help_view(
             footer.append(right_status, style="dim")
             lines.append(footer)
 
-            # Redraw in place without scrolling
-            with c.capture() as capture:
-                for line in lines:
-                    c.print(line)
-            rendered_lines = len(capture.get().splitlines())
-
-            if prev_lines_drawn > 0:
-                _clear_lines(prev_lines_drawn, c)
-
-            for line in lines:
-                c.print(line)
-            sys.stdout.flush()
-            prev_lines_drawn = rendered_lines
+            # In-place differential redraw
+            last_rendered_text, prev_lines_drawn = _render_diff_inplace(
+                c, lines, last_rendered_text, prev_lines_drawn
+            )
 
             key = _read_key()
             if key in ("ESC", "q", "Q", "ENTER"):
@@ -1079,6 +1083,7 @@ def interactive_input_prompt(
     current_skill: str = "scrpcy_manual",
     on_idle: Callable[[Callable[[], None]], bool] | None = None,
     status_line_callback: Callable[[], str | None] | None = None,
+    initial_buffer: str = "",
 ) -> str:
     """Prompt user with live slash command autocomplete and interactive help."""
     c = console or Console(force_terminal=True)
@@ -1104,9 +1109,10 @@ def interactive_input_prompt(
     else:
         commands_list = SLASH_COMMANDS_DASHBOARD
 
-    buffer = ""
+    buffer = initial_buffer or ""
     suggestion_cursor = 0
     prev_lines_drawn = 0
+    last_rendered_text = ""
 
     def get_suggestions(buf: str) -> list[tuple[str, str]]:
         clean = buf.strip()
@@ -1126,7 +1132,6 @@ def interactive_input_prompt(
         return [item for item in commands_list if item[0].lower().startswith(q) or q in item[0].lower()]
 
     c.show_cursor(False)
-    prev_lines_drawn = 0
     try:
         while True:
             # Check if user entered help shortcut "?"
@@ -1134,6 +1139,7 @@ def interactive_input_prompt(
                 if prev_lines_drawn > 0:
                     _clear_lines(prev_lines_drawn, c)
                     prev_lines_drawn = 0
+                    last_rendered_text = ""
                 interactive_help_view(
                     console=c,
                     current_model=current_model,
@@ -1218,19 +1224,10 @@ def interactive_input_prompt(
             s_footer.append(right_st, style="dim")
             lines_to_render.append(s_footer)
 
-            # Redraw in place
-            with c.capture() as capture:
-                for line in lines_to_render:
-                    c.print(line)
-            rendered_lines = len(capture.get().splitlines())
-
-            if prev_lines_drawn > 0:
-                _clear_lines(prev_lines_drawn, c)
-
-            for line in lines_to_render:
-                c.print(line)
-            sys.stdout.flush()
-            prev_lines_drawn = rendered_lines
+            # In-place differential redraw
+            last_rendered_text, prev_lines_drawn = _render_diff_inplace(
+                c, lines_to_render, last_rendered_text, prev_lines_drawn
+            )
 
             # Read keystroke (with idle callback if provided)
             if on_idle is not None:
@@ -1241,10 +1238,11 @@ def interactive_input_prompt(
                     if key is not None:
                         break
                     def _clear_prompt_fn() -> None:
-                        nonlocal prev_lines_drawn
+                        nonlocal prev_lines_drawn, last_rendered_text
                         if prev_lines_drawn > 0:
                             _clear_lines(prev_lines_drawn, c)
                             prev_lines_drawn = 0
+                            last_rendered_text = ""
 
                     if on_idle(_clear_prompt_fn):
                         # Something was printed by idle handler; break out to redraw prompt
@@ -1331,6 +1329,42 @@ def interactive_input_prompt(
 
             elif len(key) == 1 and key.isprintable():
                 buffer += key
+                if sys.platform == "win32":
+                    import msvcrt
+                    while msvcrt.kbhit():
+                        ch = msvcrt.getwch()
+                        if ch in ("\x00", "\xe0"):
+                            code = msvcrt.getwch()
+                            if code == "H":
+                                _KEY_BUFFER.append("UP")
+                            elif code == "P":
+                                _KEY_BUFFER.append("DOWN")
+                            elif code == "K":
+                                _KEY_BUFFER.append("LEFT")
+                            elif code == "M":
+                                _KEY_BUFFER.append("RIGHT")
+                            else:
+                                _KEY_BUFFER.append("SPECIAL")
+                            break
+                        elif ch in ("\r", "\n"):
+                            _KEY_BUFFER.append("ENTER")
+                            break
+                        elif ch == "\t":
+                            _KEY_BUFFER.append("TAB")
+                            break
+                        elif ch == "\x1b":
+                            _KEY_BUFFER.append("ESC")
+                            break
+                        elif ch in ("\x08", "\x7f"):
+                            _KEY_BUFFER.append("BACKSPACE")
+                            break
+                        elif ch == "\x03":
+                            _KEY_BUFFER.append("\x03")
+                            break
+                        elif ch.isprintable():
+                            buffer += ch
+                        else:
+                            break
                 suggestion_cursor = 0
     finally:
         c.show_cursor(True)
@@ -1393,6 +1427,7 @@ def interactive_carousel_table(
 
     input_buffer = ""
     prev_lines_drawn = 0
+    last_rendered_text = ""
     c.show_cursor(False)
     try:
         while True:
@@ -1442,26 +1477,15 @@ def interactive_carousel_table(
             prompt_t.append(input_buffer, style="bold bright_white")
             prompt_t.append("█", style="blink bold white")
 
-            # Render to buffer and count exact lines
-            with c.capture() as capture:
-                c.print()
-                c.print(header_text)
-                c.print(table)
-                c.print(nav_bar)
-                if help_t:
-                    c.print(help_t)
-                c.print(prompt_t)
+            lines_to_render = [header_text, table, nav_bar]
+            if help_t:
+                lines_to_render.append(help_t)
+            lines_to_render.append(prompt_t)
 
-            rendered = capture.get()
-            lines_count = len(rendered.splitlines())
-
-            # Redraw in place without scrolling
-            if prev_lines_drawn > 0:
-                _clear_lines(prev_lines_drawn, c)
-
-            sys.stdout.write(rendered)
-            sys.stdout.flush()
-            prev_lines_drawn = lines_count
+            # In-place differential redraw
+            last_rendered_text, prev_lines_drawn = _render_diff_inplace(
+                c, lines_to_render, last_rendered_text, prev_lines_drawn
+            )
 
             # Wait for key
             key = _read_key()
@@ -1495,6 +1519,37 @@ def interactive_carousel_table(
                         _clear_lines(prev_lines_drawn, c)
                     return ""
                 input_buffer += key
+                if sys.platform == "win32":
+                    import msvcrt
+                    while msvcrt.kbhit():
+                        ch = msvcrt.getwch()
+                        if ch in ("\x00", "\xe0"):
+                            code = msvcrt.getwch()
+                            if code == "K":
+                                _KEY_BUFFER.append("LEFT")
+                            elif code == "M":
+                                _KEY_BUFFER.append("RIGHT")
+                            elif code == "H":
+                                _KEY_BUFFER.append("UP")
+                            elif code == "P":
+                                _KEY_BUFFER.append("DOWN")
+                            break
+                        elif ch in ("\r", "\n"):
+                            _KEY_BUFFER.append("ENTER")
+                            break
+                        elif ch == "\x1b":
+                            _KEY_BUFFER.append("ESC")
+                            break
+                        elif ch in ("\x08", "\x7f"):
+                            _KEY_BUFFER.append("BACKSPACE")
+                            break
+                        elif ch == "\x03":
+                            _KEY_BUFFER.append("\x03")
+                            break
+                        elif ch.isprintable():
+                            input_buffer += ch
+                        else:
+                            break
     finally:
         c.show_cursor(True)
 
@@ -1520,6 +1575,7 @@ def interactive_menu(
 
     cursor = max(0, min(cursor_idx, len(options) - 1))
     prev_lines_drawn = 0
+    last_rendered_text = ""
     c.show_cursor(False)
     try:
         while True:
@@ -1545,28 +1601,10 @@ def interactive_menu(
             # STRICTLY NO HORIZONTAL LINE PER DESIGN.MD AND USER SPECIFICATION
             lines.append(Text(footer_hint, style="dim"))
 
-            # Exact terminal line count via capture
-            # Differential rendering: only rewrite to stdout if content actually changed
-            with c.capture() as capture:
-                for item in lines:
-                    c.print(item)
-            rendered_lines_list = capture.get().splitlines()
-            cur_rendered_text = "\n".join(rendered_lines_list)
-
-            if cur_rendered_text != last_rendered_text or prev_lines_drawn == 0:
-                last_rendered_text = cur_rendered_text
-                # Move cursor up to the start of previous block
-                if prev_lines_drawn > 0:
-                    sys.stdout.write(f"\x1b[{prev_lines_drawn}A\r")
-                # Overwrite line by line with line-clear (\x1b[2K) to eliminate blank flickering
-                for r_line in rendered_lines_list:
-                    sys.stdout.write(f"\x1b[2K{r_line}\n")
-                if len(rendered_lines_list) < prev_lines_drawn:
-                    for _ in range(prev_lines_drawn - len(rendered_lines_list)):
-                        sys.stdout.write("\x1b[2K\n")
-                    sys.stdout.write(f"\x1b[{prev_lines_drawn - len(rendered_lines_list)}A\r")
-                sys.stdout.flush()
-                prev_lines_drawn = len(rendered_lines_list)
+            # Differential in-place redraw
+            last_rendered_text, prev_lines_drawn = _render_diff_inplace(
+                c, lines, last_rendered_text, prev_lines_drawn
+            )
 
             key = _read_key()
             if key == "UP":
@@ -1617,6 +1655,7 @@ def interactive_item_browser(
     current_slide = 0
     cursor_idx = 0
     prev_lines_drawn = 0
+    last_rendered_text = ""
 
     c.show_cursor(False)
     try:
@@ -1652,18 +1691,9 @@ def interactive_item_browser(
                 action_bar.append("Back", style="dim")
                 lines.append(action_bar)
 
-                with c.capture() as capture:
-                    for item in lines:
-                        c.print(item)
-                rendered_lines = len(capture.get().splitlines())
-
-                if prev_lines_drawn > 0:
-                    _clear_lines(prev_lines_drawn, c)
-
-                for item in lines:
-                    c.print(item)
-                sys.stdout.flush()
-                prev_lines_drawn = rendered_lines
+                last_rendered_text, prev_lines_drawn = _render_diff_inplace(
+                    c, lines, last_rendered_text, prev_lines_drawn
+                )
 
                 key = _read_key()
                 if key in ("ESC", "\x03", "q", "Q", "ENTER", "back", "Back"):
@@ -1711,18 +1741,9 @@ def interactive_item_browser(
 
             lines.append(action_bar)
 
-            with c.capture() as capture:
-                for item in lines:
-                    c.print(item)
-            rendered_lines = len(capture.get().splitlines())
-
-            if prev_lines_drawn > 0:
-                _clear_lines(prev_lines_drawn, c)
-
-            for item in lines:
-                c.print(item)
-            sys.stdout.flush()
-            prev_lines_drawn = rendered_lines
+            last_rendered_text, prev_lines_drawn = _render_diff_inplace(
+                c, lines, last_rendered_text, prev_lines_drawn
+            )
 
             key = _read_key()
             if key == "UP":
@@ -1838,18 +1859,9 @@ def interactive_detail_viewer(
 
             lines.append(action_bar)
 
-            with c.capture() as capture:
-                for item in lines:
-                    c.print(item)
-            rendered_lines = len(capture.get().splitlines())
-
-            if prev_lines_drawn > 0:
-                _clear_lines(prev_lines_drawn, c)
-
-            for item in lines:
-                c.print(item)
-            sys.stdout.flush()
-            prev_lines_drawn = rendered_lines
+            last_rendered_text, prev_lines_drawn = _render_diff_inplace(
+                c, lines, last_rendered_text, prev_lines_drawn
+            )
 
             if lines_provider:
                 # Poll keys non-blocking with 0.25s cadence

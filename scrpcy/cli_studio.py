@@ -154,6 +154,7 @@ class CLIStudio:
         self._has_printed_banner: bool = False
         self._ui_events_lock = threading.Lock()
         self._pending_ui_events: list[Callable[[], None]] = []
+        self._pending_user_input: str = ""
 
         self.current_project: ProjectInfo | None = None
         self.workspace: WorkspaceManager | None = None
@@ -353,6 +354,9 @@ class CLIStudio:
                         return f"[bold cyan]{frame}[/bold cyan] [bold bright_white]{t.name}[/bold bright_white] [dim]({t.progress or 'Sedang memproses di background...'})[/dim]"
                     return f"[bold cyan]{frame}[/bold cyan] [bold bright_white]{len(active_tasks)} proses latar belakang aktif...[/bold bright_white]"
 
+                init_buf = self._pending_user_input
+                self._pending_user_input = ""
+
                 raw_input = interactive_input_prompt(
                     console=self.console,
                     prompt_label=prompt_lbl,
@@ -365,6 +369,7 @@ class CLIStudio:
                     current_skill=self.active_skill_name,
                     on_idle=self._flush_pending_ui_events,
                     status_line_callback=_get_project_status_indicator,
+                    initial_buffer=init_buf,
                 ).strip()
 
                 if not raw_input:
@@ -1928,31 +1933,22 @@ class CLIStudio:
             ctx_lbl = f"{self.current_project.name} • {session.name}"
 
             try:
+                init_buf = self._pending_user_input
+                self._pending_user_input = ""
 
                 raw_input = interactive_input_prompt(
-
                     console=self.console,
-
                     prompt_label=prompt_lbl,
-
                     is_project_mode=True,
-
                     is_chat_mode=True,
-
                     mode="chat",
-
                     context_label=ctx_lbl,
-
                     current_model=model_name,
-
                     current_effort=eff,
-
                     current_skill=self.active_skill_name,
-
                     on_idle=self._flush_pending_ui_events,
-
                     status_line_callback=_get_chat_status_indicator,
-
+                    initial_buffer=init_buf,
                 ).strip()
 
             except (KeyboardInterrupt, EOFError):
@@ -5895,22 +5891,15 @@ class CLIStudio:
 
         SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 
-        # Flush any stale keystrokes before starting the wait loop
-        if sys.platform == "win32":
-            import msvcrt
-            while msvcrt.kbhit():
-                try:
-                    msvcrt.getwch()
-                except Exception:
-                    break
-
         async def _interactive_loop() -> Any:
             t = asyncio.create_task(coro)
-            typed_buffer: list[str] = []
+            typed_buffer: list[str] = list(self._pending_user_input) if self._pending_user_input else []
+            self._pending_user_input = ""
             frame_idx = 0
             last_spin = time.time()
             prev_lines_drawn = 0
             last_desc_str = ""
+            last_frame_text = ""
 
             def _get_layout() -> tuple[str, str]:
                 cur_width = self.console.width or shutil.get_terminal_size((80, 24)).columns
@@ -5993,33 +5982,43 @@ class CLIStudio:
                             f"\033[90m{divider}\033[0m",
                             f"\033[90m{footer}\033[0m",
                         ]
-                        # True zero-flicker in-place line overwriting:
-                        # Move cursor up to start of block without erasing the bottom buffer,
-                        # then overwrite each line using line-erase (\x1b[2K)
-                        if prev_lines_drawn > 0:
-                            sys.stdout.write(f"\x1b[{prev_lines_drawn}A\r")
-                        for line in lines:
-                            sys.stdout.write(f"\x1b[2K{line}\n")
-                        sys.stdout.flush()
-                        prev_lines_drawn = len(lines)
+                        cur_frame_text = "\n".join(lines)
+                        if cur_frame_text != last_frame_text or prev_lines_drawn == 0:
+                            last_frame_text = cur_frame_text
+                            out = []
+                            if prev_lines_drawn > 0:
+                                out.append(f"\x1b[{prev_lines_drawn}A\r")
+                            for line in lines:
+                                out.append(f"\x1b[2K{line}\n")
+                            sys.stdout.write("".join(out))
+                            sys.stdout.flush()
+                            prev_lines_drawn = len(lines)
 
                     await asyncio.sleep(0.04)
 
                 if prev_lines_drawn > 0:
-                    sys.stdout.write(f"\x1b[{prev_lines_drawn}A\r")
+                    out = [f"\x1b[{prev_lines_drawn}A\r"]
                     for _ in range(prev_lines_drawn):
-                        sys.stdout.write("\x1b[2K\n")
-                    sys.stdout.write(f"\x1b[{prev_lines_drawn}A\r")
+                        out.append("\x1b[2K\n")
+                    out.append(f"\x1b[{prev_lines_drawn}A\r")
+                    sys.stdout.write("".join(out))
                     sys.stdout.flush()
+                    prev_lines_drawn = 0
+
+                if typed_buffer:
+                    self._pending_user_input = "".join(typed_buffer)
+
                 return await t
 
             except BaseException as exc:
                 if prev_lines_drawn > 0:
-                    sys.stdout.write(f"\x1b[{prev_lines_drawn}A\r")
+                    out = [f"\x1b[{prev_lines_drawn}A\r"]
                     for _ in range(prev_lines_drawn):
-                        sys.stdout.write("\x1b[2K\n")
-                    sys.stdout.write(f"\x1b[{prev_lines_drawn}A\r")
+                        out.append("\x1b[2K\n")
+                    out.append(f"\x1b[{prev_lines_drawn}A\r")
+                    sys.stdout.write("".join(out))
                     sys.stdout.flush()
+                    prev_lines_drawn = 0
                 if isinstance(exc, SessionDetachSignal):
                     raise
                 if not t.done():
