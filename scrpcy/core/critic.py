@@ -62,7 +62,7 @@ class DevilsAdvocate:
 
         return False, None
 
-    def critique_heuristic(self, query: str, answer: str, intent: str | None = None) -> CritiqueReport:
+    def critique_heuristic(self, query: str, answer: str, intent: str | None = None, contract: Any | None = None) -> CritiqueReport:
         """Rule-based adversarial critique when LLM engine is unavailable."""
         years = self.extract_citation_years(answer)
         is_outdated, recency_msg = self.check_recency(years)
@@ -77,10 +77,12 @@ class DevilsAdvocate:
             weaknesses.append(recency_msg)
             score -= 2
 
-        # 2. Evidence density check
+        # 2. Evidence density check (conditioned on contract scope)
         paragraphs = [p for p in answer.split("\n\n") if len(p.strip().split()) > 15]
         cited_paragraphs = [p for p in paragraphs if "[" in p and "]" in p]
-        if paragraphs and (len(cited_paragraphs) / len(paragraphs)) < 0.4:
+        is_concise_contract = contract and getattr(contract, "max_words", 1000) <= 650
+        min_density = 0.25 if is_concise_contract else 0.40
+        if paragraphs and (len(cited_paragraphs) / len(paragraphs)) < min_density:
             weaknesses.append("Sebagian paragraf substantif tidak memiliki rujukan sitasi langsung.")
             counter_args.append("Klaim tanpa sitasi dapat diperdebatkan validitas empirisnya.")
             score -= 2
@@ -123,9 +125,9 @@ class DevilsAdvocate:
             critique_summary=summary,
         )
 
-    def critique(self, query: str, answer: str, intent: str | None = None) -> CritiqueReport:
+    def critique(self, query: str, answer: str, intent: str | None = None, contract: Any | None = None) -> CritiqueReport:
         """Execute adversarial critique using LLM if available, falling back to heuristics."""
-        heuristic = self.critique_heuristic(query, answer, intent=intent)
+        heuristic = self.critique_heuristic(query, answer, intent=intent, contract=contract)
         if not self.engine:
             return heuristic
 
@@ -136,9 +138,31 @@ class DevilsAdvocate:
             if not api_key or api_key.startswith("mock") or getattr(self.engine, "_acompletion_fn", None) is not None:
                 return heuristic
 
-            intent_note = ""
-            if intent and ("argument" in str(intent).lower()):
-                intent_note = (
+            contract_note = ""
+            if contract:
+                p_goal = getattr(contract, "primary_goal", "")
+                in_s = ", ".join(getattr(contract, "in_scope", []))
+                out_s = ", ".join(getattr(contract, "out_of_scope", []))
+                fmt_r = getattr(contract, "format_requirements", "")
+                min_w = getattr(contract, "min_words", 300)
+                max_w = getattr(contract, "max_words", 750)
+                dods = "\n".join(f"  * {d}" for d in getattr(contract, "definition_of_done", []))
+
+                contract_note = (
+                    f"\nDYNAMIC TASK CONTRACT & DEFINITION OF DONE:\n"
+                    f"- Primary Goal: {p_goal}\n"
+                    f"- In-Scope Topics: {in_s}\n"
+                    f"- Out-of-Scope (DO NOT PENALIZE FOR OMISSION): {out_s}\n"
+                    f"- Target Format & Word Budget: {fmt_r} (~{min_w}-{max_w} words)\n"
+                    f"- Definition of Done (DoD) Checklist:\n{dods}\n\n"
+                    "EVALUATION INSTRUCTIONS (DUAL-LENS ADAPTIVE CRITIC):\n"
+                    "1. LENS 1 (CONTRACT COMPLIANCE): Evaluate whether the answer fulfills the DoD checklist and format constraints. "
+                    "DO NOT demand textbook background or out-of-scope topics if the user requested a concise or specific format.\n"
+                    "2. LENS 2 (IN-SCOPE SCIENTIFIC RIGOR): Rigorously audit claims WITHIN the in-scope topics. "
+                    "Check for faulty logic, unsupported assertions, or ungrounded conclusions.\n"
+                )
+            elif intent and ("argument" in str(intent).lower()):
+                contract_note = (
                     "\nNOTE: The user specifically requested an ARGUMENT EXPLORATION / DIALECTICAL MATRIX "
                     "(thesis, pro arguments, contra arguments, and gaps), NOT a monolithic multi-chapter review. "
                     "Grade on dialetical balance, evidentiary backing, and clarity. DO NOT penalize for conciseness.\n"
@@ -147,7 +171,7 @@ class DevilsAdvocate:
             system_prompt = (
                 "You are an elite academic peer-reviewer and Devil's Advocate. "
                 "Critically evaluate the research answer against the research question.\n"
-                + intent_note +
+                + contract_note +
                 "Scrutinize:\n"
                 "1. Logical gaps, ungrounded claims, or confirmation bias.\n"
                 "2. Whether counter-arguments, tradeoffs, or limitations are missing.\n"

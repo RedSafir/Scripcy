@@ -35,6 +35,7 @@ from scrpcy.core.vault import VaultItem, VaultManager
 from scrpcy.core.verifier import FactChecker, VerificationReport
 from scrpcy.core.critic import DevilsAdvocate, CritiqueReport
 from scrpcy.core.intent import IntentRouter, ResearchIntent, IntentAnalysisResult
+from scrpcy.core.contracts import TaskContract, TaskContractExtractor, AdaptiveCriticVerdict
 from scrpcy.core.polisher import AcademicPolisher, PolishResult
 from scrpcy.core.logger import StudioLogger, get_studio_logger
 from scrpcy.core.references import append_vault_bibliography
@@ -162,6 +163,7 @@ class CLIStudio:
         self.engine: LLMEngine | None = None
         self.scout: LiteratureScout | None = None
         self.intent_router: IntentRouter | None = None
+        self.contract_extractor: TaskContractExtractor | None = None
 
         # If a workspace was explicitly provided, bind it
         if workspace:
@@ -201,6 +203,7 @@ class CLIStudio:
         self.fact_checker = FactChecker(engine=self.engine)
         self.devils_advocate = DevilsAdvocate(engine=self.engine)
         self.intent_router = IntentRouter(engine=self.engine)
+        self.contract_extractor = TaskContractExtractor(engine=self.engine)
         self.polisher = AcademicPolisher(engine=self.engine)
         self.active_documents.clear()
         self._sync_vault_cache()
@@ -5883,36 +5886,14 @@ class CLIStudio:
         active_paths = [self.workspace.get_cache_path(f"{s}.md") for s in self.active_documents]
         existing_paths = [p for p in active_paths if p.exists()]
 
-        # Intent Analysis & Ambiguity Disambiguation Gate
-        router = self.intent_router or IntentRouter(engine=self.engine)
-        intent_res = router.analyze(query)
+        # Dynamic Task Contract Extraction (Goal, Scope, Format, & Definition of Done)
+        contract_extractor = self.contract_extractor or TaskContractExtractor(engine=self.engine)
+        task_contract = contract_extractor.extract(query)
 
-        # Interactive clarification prompt if input is ambiguous and in interactive terminal
-        if intent_res.needs_clarification and sys.stdin.isatty():
-            self.console.print(f"\n[bold cyan][?][/bold cyan] [bold bright_white]{intent_res.clarification_prompt}[/bold bright_white]")
-            for opt_i, opt_text in enumerate(intent_res.clarification_options, 1):
-                self.console.print(f"  [cyan]{opt_i}.[/cyan] {opt_text}")
-            try:
-                c_pick = self.console.input("[bold cyan]Pilih opsi [1-3, default 1]: [/bold cyan]").strip()
-                if c_pick == "1":
-                    intent_res.intent = ResearchIntent.ARGUMENT_EXPLORATION
-                    intent_res.target_skill_name = "argument_matrix"
-                elif c_pick == "2":
-                    intent_res.intent = ResearchIntent.LITERATURE_REVIEW
-                    intent_res.target_skill_name = "scrpcy_manual"
-                elif c_pick == "3":
-                    intent_res.intent = ResearchIntent.FACT_VERIFICATION
-                    intent_res.target_skill_name = "scrpcy_manual"
-            except (KeyboardInterrupt, EOFError):
-                self.console.print()
-
-        # Display recognized intent indicator
-        if intent_res.intent == ResearchIntent.ARGUMENT_EXPLORATION:
-            self.console.print("[bold cyan]●[/bold cyan] [bold bright_white]Mendeteksi Niat:[/bold bright_white] [cyan]Eksplorasi Argumen Riset (Matriks Dialektika Pro/Kontra)[/cyan]")
-        elif intent_res.intent == ResearchIntent.LITERATURE_REVIEW:
-            self.console.print("[bold cyan]●[/bold cyan] [bold bright_white]Mendeteksi Niat:[/bold bright_white] [cyan]Tinjauan Pustaka Terstruktur (Section-by-Section Synthesis)[/cyan]")
-        elif intent_res.intent == ResearchIntent.FACT_VERIFICATION:
-            self.console.print("[bold cyan]●[/bold cyan] [bold bright_white]Mendeteksi Niat:[/bold bright_white] [cyan]Verifikasi Data & Fakta Empiris[/cyan]")
+        self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Kontrak Tugas:[/bold bright_white] [cyan]{task_contract.primary_goal}[/cyan]")
+        self.console.print(f"  [dim]• Format: {task_contract.format_requirements} (Target: ~{task_contract.min_words}-{task_contract.max_words} kata)[/dim]")
+        if task_contract.out_of_scope:
+            self.console.print(f"  [dim]• Batasan: Eksklusi {', '.join(task_contract.out_of_scope)}[/dim]")
 
         evidence = self.engine.evidence_synthesizer.retrieve_evidence(
             query=query,
@@ -6102,6 +6083,19 @@ class CLIStudio:
         citation_guide = self._format_vault_citation_guide()
         if citation_guide:
             current_query = f"{citation_guide}\n\n{current_query}"
+
+        # Inject dynamic Task Contract directive to guide synthesis
+        dod_str = "\n".join(f"  * {d}" for d in task_contract.definition_of_done)
+        contract_directive = (
+            f"\n\n[PANDUAN KONTRAK PENYELESAIAN TUGAS]:\n"
+            f"- Sasaran Utama: {task_contract.primary_goal}\n"
+            f"- Format Output: {task_contract.format_requirements}\n"
+            f"- Alokasi Panjang: {task_contract.min_words} - {task_contract.max_words} kata (Patuhi batas ini agar tidak terpotong).\n"
+            f"- Batasan Negatif (Out-of-Scope): DILARANG menyertakan {', '.join(task_contract.out_of_scope)}.\n"
+            f"- Definition of Done (Checklist yang Wajib Dipenuhi):\n{dod_str}\n"
+            f"Patuhi seluruh instruksi di atas secara presisi."
+        )
+        current_query = f"{current_query}{contract_directive}"
         current_docs = list(existing_paths)
         final_response = ""
         last_turn_tokens: list[str] = []
@@ -6131,14 +6125,10 @@ class CLIStudio:
                     if hasattr(self, "logger") and self.logger:
                         self.logger.log_llm_stream_start(session_id, turn, model_name, str(progress))
 
-                    effective_skill_name = self.active_skill_name
-                    if self.active_skill_name == "scrpcy_manual" and intent_res.intent == ResearchIntent.ARGUMENT_EXPLORATION:
-                        effective_skill_name = "argument_matrix"
-
                     async for token in self.engine.stream_query(
                         query=current_query,
                         documents=current_docs,
-                        skill_name=effective_skill_name,
+                        skill_name=self.active_skill_name,
                         model=model_name,
                         max_evidence_chunks=self.config.citation.max_evidence_chunks if current_docs else 0,
                         history=history_msgs,
@@ -6199,7 +6189,7 @@ class CLIStudio:
                     progress.set("Menjalankan evaluasi kritis (Devil's Advocate)...")
                     t_cr_s = time.time()
                     critic = self.devils_advocate or DevilsAdvocate(engine=self.engine)
-                    c_rep = await asyncio.to_thread(critic.critique, query, p_resp, intent_res.intent.value)
+                    c_rep = await asyncio.to_thread(critic.critique, query, p_resp, contract=task_contract)
                     if hasattr(self, "logger") and self.logger:
                         self.logger.log_critic_result(
                             session_id=session_id,
@@ -6236,7 +6226,7 @@ class CLIStudio:
                     # Check if ungrounded claims or citation mapping triggers another turn
                     needs_refine = (bool(v_rep.hallucination_warning) or bool(c_rep.needs_citation_mapping)) and turn < max_agent_turns - 1
                     if needs_refine:
-                        max_refine_for_intent = 1 if intent_res.intent in (ResearchIntent.ARGUMENT_EXPLORATION, ResearchIntent.FACT_VERIFICATION) else max_refinement_turns
+                        max_refine_for_intent = 1 if getattr(task_contract, 'max_words', 1000) <= 750 else max_refinement_turns
                         if refinement_turns >= max_refine_for_intent:
                             return {
                                 "type": "epistemic_exit",
