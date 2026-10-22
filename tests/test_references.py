@@ -115,7 +115,7 @@ class TestVaultBibliographyAppender:
         original_text = "Dinamika kebakaran sangat dipengaruhi kondisi hidrologis [Smith2021]."
         enriched = append_vault_bibliography(original_text, vault_manager=vm, style="apa")
 
-        assert "### 📚 Referensi Vault (APA):" in enriched
+        assert "### 📚 Daftar Pustaka:" in enriched
         assert "Smith, J. (2021)." in enriched
         assert "[File: smith2021.pdf]" in enriched
 
@@ -162,11 +162,42 @@ class TestVaultBibliographyAppender:
         vm = VaultManager(workspace=temp_workspace)
         text_with_ref = (
             "Sintesis ilmiah.\n\n"
-            "### Referensi:\n1. Referensi sudah ada sebelumnya."
+            "---"
+            "\n### 📚 Daftar Pustaka:\n1. **[1]** Entry valid."
         )
         result = append_vault_bibliography(text_with_ref, vault_manager=vm, style="apa")
         # Should not append a second reference header
         assert result == text_with_ref
+
+    def test_strip_manual_bibliography_replaces_with_vault_bibliography(
+        self,
+        temp_workspace: WorkspaceManager,
+    ) -> None:
+        doc_content = (
+            "---\n"
+            "title: Peatland Smoldering Dynamics\n"
+            "authors:\n"
+            "  - Susan Page\n"
+            "year: 2020\n"
+            "cite_key: Page2020\n"
+            "---\n"
+            "# Content\nPeat fires.\n"
+        )
+        pdf = temp_workspace.vault_dir / "page2020.pdf"
+        pdf.write_bytes(b"%PDF-mock")
+        temp_workspace.save_to_cache("page2020.md", doc_content)
+        vm = VaultManager(workspace=temp_workspace)
+
+        manual_llm_text = (
+            "Kebakaran gambut tropis memicu kabut asap (Page, 2020).\n\n"
+            "### Referensi:\n"
+            "1. Page, S. (2020). Hallucinated manual entry."
+        )
+        enriched = append_vault_bibliography(manual_llm_text, vault_manager=vm, style="apa")
+        assert "Hallucinated manual entry" not in enriched
+        assert "### 📚 Daftar Pustaka:" in enriched
+        assert "Page, S. (2020)." in enriched
+        assert "[File: page2020.pdf]" in enriched
 
     def test_chat_integration_appends_bibliography_automatically(
         self,
@@ -222,7 +253,7 @@ class TestVaultBibliographyAppender:
 
         output = studio.console.file.getvalue()
         # Verify that transparent bibliography was automatically appended to the chat
-        assert "📚 Referensi Vault (APA):" in output
+        assert "📚 Daftar Pustaka:" in output
         assert "Page, S. (2023)." in output
         assert "[File: page2023.pdf]" in output
 
@@ -231,5 +262,5 @@ class TestVaultBibliographyAppender:
         msgs = studio.chat_manager.get_messages(sess.id)
         assistant_msgs = [m for m in msgs if m.role == "assistant"]
         assert len(assistant_msgs) > 0
-        assert "### 📚 Referensi Vault (APA):" in assistant_msgs[-1].content
+        assert "### 📚 Daftar Pustaka:" in assistant_msgs[-1].content
         assert "[File: page2023.pdf]" in assistant_msgs[-1].content

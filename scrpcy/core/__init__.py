@@ -31,6 +31,7 @@ from scrpcy.core.project import ProjectInfo, ProjectManager
 from scrpcy.core.references import (
     append_vault_bibliography,
     resolve_vault_reference_entries,
+    strip_manual_bibliography,
 )
 from scrpcy.core.scout import LiteratureScout, ScoutQuery, ScoutResult
 from scrpcy.core.search import PaperSearcher, SearchResult, sanitize_filename
@@ -58,6 +59,7 @@ __all__ = [
     "AcademicPolisher",
     "append_vault_bibliography",
     "resolve_vault_reference_entries",
+    "strip_manual_bibliography",
     "ProjectInfo",
     "ProjectManager",
     "ScoutQuery",

@@ -5526,10 +5526,11 @@ class CLIStudio:
         lines.extend([
             "",
             "ATURAN SITASI & INTEGRITAS REFERENSI:",
-            "1. Anda WAJIB menyertakan sitasi in-text APA pada SETIAP klaim faktual, metodologi, dan data angka.",
+            "1. Anda WAJIB menyertakan sitasi in-text APA (e.g. (NamaPenulis, Tahun) atau (NamaPenulis et al., Tahun)) pada SETIAP klaim faktual, metodologi, dan data angka.",
             "2. HANYA gunakan referensi dari dokumen vault di atas. Dilarang mengutip referensi fiktif.",
-            "3. Jawaban harus lengkap, komprehensif, dan mantap (100% yakin). JANGAN menyuruh pengguna melakukan pencarian atau menjalankan perintah.",
-            "4. Setelah jawaban akhir disajikan, DILARANG KERAS mencantumkan perintah slash (/scout, /vault read, dll).",
+            "3. DILARANG MENULIS DAFTAR PUSTAKA ATAU REFERENSI DI AKHIR JAWABAN. Berhentilah setelah kesimpulan/rekomendasi. Sistem Scrpcy otomatis menyusun dan menambahkan Daftar Pustaka terverifikasi dari metadata vault di akhir respon.",
+            "4. Jawaban harus lengkap, komprehensif, dan mantap (100% yakin). JANGAN menyuruh pengguna melakukan pencarian atau menjalankan perintah.",
+            "5. Setelah jawaban akhir disajikan, DILARANG KERAS mencantumkan perintah slash (/scout, /vault read, dll).",
         ])
         return "\n".join(lines)
 
