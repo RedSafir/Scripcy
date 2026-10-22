@@ -612,3 +612,173 @@ def test_format_vault_citation_guide_injects_metadata(
     assert "brown_2020" in guide or "Brown" in guide
     assert "Sitasi in-text APA:" in guide
 
+
+def test_permanent_grounding_and_critic_badges_in_chat_history(
+    temp_workspace: WorkspaceManager,
+    tmp_path: Path,
+) -> None:
+    """Ensure grounding and critic badges are permanently saved in chat history and re-displayed upon session re-entry."""
+    (temp_workspace.vault_dir / "vaswani_2024.pdf").write_bytes(b"%PDF-1.4 mock")
+    temp_workspace.save_to_cache(
+        "vaswani_2024.md",
+        "---\ntitle: Modern Attention Networks\nauthors:\n  - Vaswani\nyear: 2024\ncite_key: Vaswani2024\n---\n# Content\nSelf-attention is key.",
+    )
+
+    console = Console(file=io.StringIO(), force_terminal=True, color_system=None)
+    pm = ProjectManager(registry_file=tmp_path / "reg.json")
+    proj = pm.create_project("thesis", temp_workspace.root_dir)
+    cfg = ScrpcyConfig(workspace_path=str(temp_workspace.root_dir))
+
+    async def mock_acompletion(**kwargs: Any):
+        yield MockStreamChunk("Berdasarkan (Vaswani, 2024), transformer mengandalkan mekanisme self-attention namun memiliki keterbatasan memori.")
+
+    engine = LLMEngine(config=cfg, acompletion_fn=mock_acompletion)
+    studio = CLIStudio(
+        workspace=temp_workspace,
+        config=cfg,
+        console=console,
+        project_manager=pm,
+        engine=engine,
+    )
+    studio.open_project(proj)
+    studio.config.api_keys["gemini"] = "mock_key"
+
+    sess = studio.chat_manager.create_session("research_eval")
+    studio.active_chat_session = sess
+
+    studio.handle_chat("Jelaskan cara kerja self-attention.")
+
+    # 1. Check messages in SQLite chats.db
+    messages = studio.chat_manager.get_messages(sess.id)
+    assert len(messages) >= 2
+    assistant_msg = messages[-1]
+    assert assistant_msg.role == "assistant"
+    assert "Grounding:" in assistant_msg.content
+    assert "Critic:" in assistant_msg.content
+    assert "Tokens:" in assistant_msg.content
+
+    # 2. Simulate exiting and re-entering session
+    reloaded_studio = CLIStudio(
+        workspace=temp_workspace,
+        config=cfg,
+        console=Console(file=io.StringIO(), force_terminal=True, color_system=None),
+        project_manager=pm,
+        engine=engine,
+    )
+    reloaded_studio.open_project(proj)
+    reloaded_msgs = reloaded_studio.chat_manager.get_messages(sess.id)
+    assert len(reloaded_msgs) >= 2
+    reloaded_assist = reloaded_msgs[-1]
+    assert "Grounding:" in reloaded_assist.content
+    assert "Critic:" in reloaded_assist.content
+
+
+def test_ask_ai_paywall_action_abstract_vs_alternative(
+    temp_workspace: WorkspaceManager,
+    tmp_path: Path,
+) -> None:
+    """Verify _ask_ai_paywall_action queries LLM and parses JSON decision."""
+    console = Console(file=io.StringIO(), force_terminal=True, color_system=None)
+    cfg = ScrpcyConfig(workspace_path=str(temp_workspace.root_dir))
+
+    call_count = 0
+    async def mock_acompletion(**kwargs: Any):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            yield MockStreamChunk('```json\n{"decision": "ABSTRACT_ENOUGH", "reason": "Abstrak memuat data penting"}\n```')
+        else:
+            yield MockStreamChunk('```json\n{"decision": "FIND_ALTERNATIVE", "reason": "Perlu data empiris lengkap"}\n```')
+
+    engine = LLMEngine(config=cfg, acompletion_fn=mock_acompletion)
+    studio = CLIStudio(workspace=temp_workspace, config=cfg, console=console, engine=engine)
+    studio.config.api_keys["gemini"] = "mock_key"
+
+    paper = ScoutResult(
+        title="Impacts of Peatland Wildfire",
+        authors=["John Doe"],
+        year=2023,
+        abstract="This paper studies soil subsidence after fires.",
+        source="semantic_scholar",
+    )
+
+    res1 = studio._ask_ai_paywall_action(paper, "Bagaimana dampak kebakaran gambut?")
+    assert res1["decision"] == "ABSTRACT_ENOUGH"
+    assert "Abstrak memuat data" in res1["reason"]
+
+    res2 = studio._ask_ai_paywall_action(paper, "Bagaimana dampak kebakaran gambut?")
+    assert res2["decision"] == "FIND_ALTERNATIVE"
+    assert "data empiris lengkap" in res2["reason"]
+
+
+def test_citation_mapping_autodownload_and_paywall_ingest(
+    temp_workspace: WorkspaceManager,
+    tmp_path: Path,
+) -> None:
+    """When Devil's Advocate triggers needs_citation_mapping, mapped papers are auto-downloaded, paywalls evaluated, and evidence refreshed."""
+    from scrpcy.core.search import sanitize_filename
+    from scrpcy.core.critic import CritiqueReport
+
+    (temp_workspace.vault_dir / "seed_paper.pdf").write_bytes(b"%PDF-1.4 mock")
+    temp_workspace.save_to_cache(
+        "seed_paper.md",
+        "---\ntitle: Canal Blocking Seed Study\nauthors:\n  - Seed Author\nyear: 2018\ncite_key: Seed2018\n---\n# Seed\nCanal blocking is implemented in Central Kalimantan to restore peatland hydrology.",
+    )
+
+    console = Console(file=io.StringIO(), force_terminal=True, color_system=None)
+    pm = ProjectManager(registry_file=tmp_path / "reg.json")
+    proj = pm.create_project("thesis", temp_workspace.root_dir)
+    cfg = ScrpcyConfig(workspace_path=str(temp_workspace.root_dir))
+
+    call_count = 0
+    async def mock_acompletion(**kwargs: Any):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            # Grounded in seed paper (year 2018 is outdated > 6 years so critic flags needs_citation_mapping)
+            yield MockStreamChunk("Berdasarkan (Seed Author, 2018), sekat kanal memulihkan hidrologi gambut di Kalimantan Tengah.")
+        elif call_count == 2:
+            # Paywall AI decision: abstract is enough!
+            yield MockStreamChunk('```json\n{"decision": "ABSTRACT_ENOUGH", "reason": "Abstrak memuat data regulasi"}\n```')
+        else:
+            # Synthesizes with newly downloaded papers
+            yield MockStreamChunk("Berdasarkan (Seed Author, 2018) dan (Policy Author, 2024), regulasi sekat kanal efektif namun menghadapi limitasi pemeliharaan.")
+
+    engine = LLMEngine(config=cfg, acompletion_fn=mock_acompletion)
+    studio = CLIStudio(
+        workspace=temp_workspace,
+        config=cfg,
+        console=console,
+        project_manager=pm,
+        engine=engine,
+    )
+    studio.open_project(proj)
+    studio.config.api_keys["gemini"] = "mock_key"
+
+    paywalled_paper = ScoutResult(
+        title="Policy on Canal Blocking in Peatland",
+        authors=["Policy Author"],
+        year=2024,
+        abstract="Regulation and canal blocking policy in Central Kalimantan.",
+        source="semantic_scholar",
+        has_pdf=False,
+        pdf_url=None,
+    )
+
+    async def mock_map(stems: list[str], limit: int = 10):
+        return [paywalled_paper]
+
+    studio.scout.map_vault_citation_network = mock_map
+
+    studio.handle_chat("Bagaimana efektivitas regulasi sekat kanal di Kalimantan?")
+
+    output = studio.console.file.getvalue()
+    assert "Reference Mapping" in output
+    assert "Paywall Terdeteksi" in output
+    assert "Abstrak Memadai" in output
+
+    ingested_file = temp_workspace.vault_dir / f"{sanitize_filename(paywalled_paper.title)}.md"
+    assert ingested_file.exists()
+
+
+

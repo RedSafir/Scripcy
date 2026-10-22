@@ -27,7 +27,7 @@ from scrpcy.core.models import DocumentMetadata, ParsedDocument
 from scrpcy.core.parser import DocumentParser
 from scrpcy.core.project import ProjectInfo, ProjectManager
 from scrpcy.core.scout import LiteratureScout, ScoutQuery, ScoutResult
-from scrpcy.core.search import PaperSearcher, SearchResult
+from scrpcy.core.search import PaperSearcher, SearchResult, sanitize_filename
 from scrpcy.core.skills import SkillsLoader
 from scrpcy.core.tasks import TaskInfo, TaskManager
 from scrpcy.core.tracker import TokenTracker
@@ -2636,6 +2636,65 @@ class CLIStudio:
             }
         except Exception:
             return {"decision": "WAIT", "max_wait_seconds": 20, "reason": "Menunggu proses paralel"}
+
+    def _ask_ai_paywall_action(self, paper: Any, user_query: str) -> dict[str, str]:
+        """Ask LLM whether the official publication abstract is sufficient or if an alternative OA paper is needed."""
+        model_name = self.get_active_project_model()
+        api_key = self.config.get_api_key_for_model(model_name)
+        if not api_key:
+            return {"decision": "ABSTRACT_ENOUGH", "reason": "API key tidak tersedia, menggunakan abstrak resmi publikasi."}
+
+        title = getattr(paper, "title", "Paper")
+        year = getattr(paper, "year", "n.d.")
+        authors = getattr(paper, "authors", [])
+        authors_str = ", ".join(authors[:3]) if authors else "Anonim"
+        abstract = getattr(paper, "abstract", "") or "Abstrak tidak tersedia."
+
+        paywall_prompt = (
+            f"[EVALUASI AKSES LITERATUR ILMIAH]\n"
+            f"Fokus riset pengguna: \"{user_query}\"\n\n"
+            f"Ditemukan paper yang relevan dari jaringan sitasi vault, namun naskah lengkap (Full-Text PDF) berada di balik paywall komersial:\n"
+            f"- Judul: {title} ({year})\n"
+            f"- Penulis: {authors_str}\n"
+            f"- Abstrak Resmi:\n{abstract[:1200]}\n\n"
+            f"Tentukan apakah informasi pada abstrak resmi di atas SUDAH CUKUP untuk memperkuat argumen dan menjawab fokus riset pengguna, atau sistem sebaiknya MENCARI ALTERNATIF paper Open-Access lain yang memiliki naskah lengkap.\n"
+            f"Format jawaban HANYA JSON murni:\n"
+            f'{{\n  "decision": "ABSTRACT_ENOUGH" | "FIND_ALTERNATIVE",\n  "reason": "Alasan akademis singkat (1 kalimat)"\n}}'
+        )
+
+        try:
+            tokens: list[str] = []
+            async def _run_eval() -> None:
+                async for tok in self.engine.stream_query(
+                    query=paywall_prompt,
+                    documents=[],
+                    skill_name="general",
+                    model=model_name,
+                    max_evidence_chunks=0,
+                ):
+                    tokens.append(tok)
+
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                loop.run_until_complete(_run_eval())
+            finally:
+                loop.close()
+
+            raw_resp = "".join(tokens).strip()
+            clean_str = raw_resp
+            if "```json" in clean_str:
+                clean_str = clean_str.split("```json", 1)[1].split("```", 1)[0].strip()
+            elif "```" in clean_str:
+                clean_str = clean_str.split("```", 1)[1].split("```", 1)[0].strip()
+            import json
+            data = json.loads(clean_str)
+            return {
+                "decision": data.get("decision", "ABSTRACT_ENOUGH"),
+                "reason": data.get("reason", "Evaluasi relevansi abstrak publikasi"),
+            }
+        except Exception:
+            return {"decision": "ABSTRACT_ENOUGH", "reason": "Menggunakan abstrak resmi publikasi"}
 
     def _on_background_task_completed(self, task: Any) -> None:
         """Invoked asynchronously whenever any background task finishes."""
@@ -5910,7 +5969,7 @@ class CLIStudio:
                 self.logger.log_evidence_retrieved(session_id, query, evidence)
 
         start_time = time.time()
-        max_agent_turns = 3
+        max_agent_turns = 4
         turn = 0
         current_query = initial_query_override if "initial_query_override" in locals() and initial_query_override else query
         citation_guide = self._format_vault_citation_guide()
@@ -5950,7 +6009,7 @@ class CLIStudio:
                         documents=current_docs,
                         skill_name=self.active_skill_name,
                         model=model_name,
-                        max_evidence_chunks=self.config.citation.max_evidence_chunks if turn == 0 else 0,
+                        max_evidence_chunks=self.config.citation.max_evidence_chunks if current_docs else 0,
                         history=history_msgs,
                     ):
                         turn_tokens.append(token)
@@ -6131,6 +6190,7 @@ class CLIStudio:
                     self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Devil's Advocate[/bold bright_white] [yellow]Skor {c_rep.score}/10: {c_rep.critique_summary}[/yellow]")
                     stems = self._get_cached_stems()
                     mapped_papers = []
+                    newly_ingested_stems = []
                     if stems and self.scout:
                         self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Reference Mapping[/bold bright_white] [cyan]Menelusuri jaringan sitasi dokumen vault...[/cyan]")
                         try:
@@ -6146,20 +6206,93 @@ class CLIStudio:
                         except Exception:
                             pass
 
+                    # Auto-download mapped papers or evaluate paywall fallback
+                    if mapped_papers and self.scout:
+                        for idx, p in enumerate(mapped_papers, 1):
+                            safe_stem = sanitize_filename(p.title)
+                            downloaded = False
+                            if p.has_pdf and p.pdf_url:
+                                self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Mengunduh Sitasi Terhubung[/bold bright_white] [cyan][{idx}/{len(mapped_papers)}] {p.title[:50]}...[/cyan] [dim](Open-Access PDF)[/dim]")
+                                try:
+                                    asyncio.run(self.scout.download_scout_paper(p))
+                                    newly_ingested_stems.append(safe_stem)
+                                    downloaded = True
+                                except Exception:
+                                    downloaded = False
+
+                            if not downloaded:
+                                # Journal is paywalled or download failed
+                                self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Paywall Terdeteksi[/bold bright_white] [yellow][{idx}/{len(mapped_papers)}] {p.title[:50]}...[/yellow] [dim](Naskah berbayar)[/dim]")
+                                self.console.print(f"[dim]● Mengevaluasi kecukupan abstrak resmi dengan AI...[/dim]")
+                                decision = self._ask_ai_paywall_action(p, query)
+
+                                if decision.get("decision") == "FIND_ALTERNATIVE":
+                                    self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Mencari Alternatif Open-Access[/bold bright_white] [cyan]{p.title[:45]}...[/cyan] [dim]({decision.get('reason', '')})[/dim]")
+                                    alt_oa = []
+                                    try:
+                                        sq = ScoutQuery(keywords=f"{p.title} open access", is_oa_only=True)
+                                        alt_candidates = asyncio.run(self.scout.search_multi_source(sq, limit=5))
+                                        alt_oa = [c for c in alt_candidates if c.has_pdf and c.pdf_url]
+                                    except Exception:
+                                        pass
+
+                                    alt_downloaded = False
+                                    if alt_oa:
+                                        alt_paper = alt_oa[0]
+                                        self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Mengunduh Alternatif Open-Access[/bold bright_white] [cyan]{alt_paper.title[:50]}... (PDF)[/cyan]")
+                                        try:
+                                            asyncio.run(self.scout.download_scout_paper(alt_paper))
+                                            newly_ingested_stems.append(sanitize_filename(alt_paper.title))
+                                            alt_downloaded = True
+                                        except Exception:
+                                            alt_downloaded = False
+
+                                    if not alt_downloaded:
+                                        self.console.print(f"[dim]● Alternatif full-text tidak tersedia, mengindeks abstrak resmi publikasi.[/dim]")
+                                        self.scout.ingest_abstract_paper(p)
+                                        newly_ingested_stems.append(safe_stem)
+                                else:
+                                    self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Abstrak Memadai[/bold bright_white] [green]Mengindeks abstrak resmi paper ke vault[/green] [dim]({decision.get('reason', '')})[/dim]")
+                                    self.scout.ingest_abstract_paper(p)
+                                    newly_ingested_stems.append(safe_stem)
+
+                    if newly_ingested_stems:
+                        if self.vault_manager:
+                            self.vault_manager.reload_vault(force=False)
+                        self._sync_vault_cache()
+                        for s in newly_ingested_stems:
+                            self.active_documents.add(s)
+
+                        active_paths = [self.workspace.get_cache_path(f"{s}.md") for s in self.active_documents]
+                        existing_paths = [p for p in active_paths if p.exists()]
+                        current_docs = list(existing_paths)
+                        evidence = self.engine.evidence_synthesizer.retrieve_evidence(
+                            query=query,
+                            documents=current_docs,
+                            max_chunks=self.config.citation.max_evidence_chunks,
+                        )
+                        citation_guide = self._format_vault_citation_guide()
+                        self.console.print(f"[bold green][✓] Berhasil mengindeks {len(newly_ingested_stems)} dokumen sitasi baru ke vault.[/bold green]")
+                        for s in newly_ingested_stems:
+                            self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Membaca[/bold bright_white] [cyan]cache/{s}.md[/cyan] [dim](Siap untuk sintesis)[/dim]")
+                        self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Menganalisis[/bold bright_white] [dim]Menyintesis argumen ilmiah terpadu dengan literatur baru...[/dim]\n")
+                        max_agent_turns = max(max_agent_turns, turn + 2)
+
                     lines_map = [f"- {p.title} ({p.year or 'n.d.'}) [{p.relevance_reason}]" for p in mapped_papers]
                     extra_ref = ""
                     if lines_map:
-                        extra_ref = "### HASIL REFERENCE MAPPING (JARINGAN SITASI VAULT):\nPaper terhubung yang ditemukan:\n" + "\n".join(lines_map) + "\n\n"
+                        extra_ref = "### HASIL REFERENCE MAPPING (JARINGAN SITASI VAULT TERUNDUH):\nPaper terhubung yang baru diindeks:\n" + "\n".join(lines_map) + "\n\n"
 
                     weaknesses_str = ", ".join(c_rep.weaknesses) if c_rep.weaknesses else "Perkuat landasan argumen dan sertakan batasan metodologis."
                     counter_str = ("\nPotensi sanggahan: " + ", ".join(c_rep.counter_arguments)) if c_rep.counter_arguments else ""
                     recency_str = f"\nCatatan kebaruan: {c_rep.recency_alert}" if c_rep.recency_alert else ""
 
                     current_query = (
+                        f"{citation_guide}\n\n"
                         f"{extra_ref}### EVALUASI DEVIL'S ADVOCATE (SKOR {c_rep.score}/10):\n"
                         f"Catatan kelemahan: {weaknesses_str}{counter_str}{recency_str}\n\n"
                         f"Pertanyaan riset asli: \"{query}\"\n"
-                        f"Instruksi: Mentailor ulang sintesis untuk mengatasi catatan kelemahan di atas, mengantisipasi potensi sanggahan, dan memperkokoh argumen."
+                        f"Instruksi: Mentailor ulang sintesis untuk mengatasi catatan kelemahan di atas dengan memanfaatkan bukti literatur baru yang telah diindeks di vault, sertakan sitasi in-text APA pada setiap klaim, dan berikan jawaban yang komprehensif serta mantap (100% yakin)."
                     )
                     turn += 1
                     continue
@@ -6190,6 +6323,13 @@ class CLIStudio:
             grounding_badge = f"Grounding: {int(v_score * 100)}%"
             critic_badge = f"Critic: {c_score}/10"
 
+            # Permanent telemetry footer stored in chat database for persistent retrieval
+            footer_badge_md = (
+                f"\n\n---\n"
+                f"*[dim]Tokens: {input_tokens:,} in · {output_tokens:,} out · {total_tokens:,} total ({model_label}) • {grounding_badge} • {critic_badge} • {elapsed:.1f}s • {style_name} style[/dim]*"
+            )
+            final_response_persisted = f"{final_response}{footer_badge_md}"
+
             self.console.print(
                 f"[dim]── Tokens: {input_tokens:,} in · {output_tokens:,} out · {total_tokens:,} total ({model_label}) • {grounding_badge} • {critic_badge} • {elapsed:.1f}s • {style_name} style ──[/dim]\n"
             )
@@ -6206,10 +6346,10 @@ class CLIStudio:
                 )
 
             if self.chat_manager:
-                self.chat_manager.add_message(session.id, "assistant", final_response)
+                self.chat_manager.add_message(session.id, "assistant", final_response_persisted)
             self.conversation_history.append({
                 "query": query,
-                "response": final_response,
+                "response": final_response_persisted,
             })
 
             # 5. Suggested actions & Action Indicator: Mengubah / Menulis
