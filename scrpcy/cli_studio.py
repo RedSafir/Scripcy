@@ -34,7 +34,6 @@ from scrpcy.core.tracker import TokenTracker
 from scrpcy.core.vault import VaultItem, VaultManager
 from scrpcy.core.verifier import FactChecker, VerificationReport
 from scrpcy.core.critic import DevilsAdvocate, CritiqueReport
-from scrpcy.core.intent import IntentRouter, ResearchIntent, IntentAnalysisResult
 from scrpcy.core.contracts import TaskContract, TaskContractExtractor, AdaptiveCriticVerdict
 from scrpcy.core.polisher import AcademicPolisher, PolishResult
 from scrpcy.core.logger import StudioLogger, get_studio_logger
@@ -162,7 +161,6 @@ class CLIStudio:
         self.wordcraft: WordCraftClient | None = None
         self.engine: LLMEngine | None = None
         self.scout: LiteratureScout | None = None
-        self.intent_router: IntentRouter | None = None
         self.contract_extractor: TaskContractExtractor | None = None
 
         # If a workspace was explicitly provided, bind it
@@ -202,7 +200,6 @@ class CLIStudio:
         self.sub_mode = None
         self.fact_checker = FactChecker(engine=self.engine)
         self.devils_advocate = DevilsAdvocate(engine=self.engine)
-        self.intent_router = IntentRouter(engine=self.engine)
         self.contract_extractor = TaskContractExtractor(engine=self.engine)
         self.polisher = AcademicPolisher(engine=self.engine)
         self.active_documents.clear()
@@ -6226,8 +6223,8 @@ class CLIStudio:
                     # Check if ungrounded claims or citation mapping triggers another turn
                     needs_refine = (bool(v_rep.hallucination_warning) or bool(c_rep.needs_citation_mapping)) and turn < max_agent_turns - 1
                     if needs_refine:
-                        max_refine_for_intent = 1 if getattr(task_contract, 'max_words', 1000) <= 750 else max_refinement_turns
-                        if refinement_turns >= max_refine_for_intent:
+                        max_refine_limit = 1 if getattr(task_contract, 'max_words', 1000) <= 750 else max_refinement_turns
+                        if refinement_turns >= max_refine_limit:
                             return {
                                 "type": "epistemic_exit",
                                 "best_draft": best_draft or p_resp,
