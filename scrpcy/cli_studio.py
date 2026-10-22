@@ -2414,6 +2414,8 @@ class CLIStudio:
             self.cmd_vault_gdrive(args)
         elif cmd in ("/settings", "/setting", "/style"):
             self.cmd_settings(args)
+        elif cmd in ("/turns", "/turn"):
+            self.cmd_turns(args)
         elif cmd in ("/docx", "/export"):
             self.cmd_docx(args)
         elif cmd in ("/status", "/info"):
@@ -5205,8 +5207,9 @@ class CLIStudio:
             s_table.add_row("Citation Style", self.config.citation.style.upper())
             s_table.add_row("Include DOI", str(self.config.citation.include_doi))
             s_table.add_row("Max Evidence", f"{self.config.citation.max_evidence_chunks} chunks")
+            s_table.add_row("Max Agent Turns", f"{getattr(self.config, 'max_agent_turns', 15)} turns")
             self.console.print(s_table)
-            self.console.print("[dim]Commands: settings set-citation <apa|ieee> | settings set-workspace <path>[/dim]\n")
+            self.console.print("[dim]Commands: settings set-citation <apa|ieee> | settings set-turns <1-50> | settings set-workspace <path>[/dim]\n")
             return
 
         if sub in ("set-citation", "citation", "style"):
@@ -5230,12 +5233,47 @@ class CLIStudio:
             self.config_manager.save()
             self.config = self.config_manager.config
             self.console.print(f"[bold green][✓] Workspace path set to:[/bold green] [bold cyan]{new_path}[/bold cyan]\n")
+        elif sub in ("set-turns", "turns", "turn"):
+            if len(parts) < 2:
+                self.console.print("[yellow]Usage: settings set-turns <1-50>[/yellow]\n")
+                return
+            try:
+                val = int(parts[1].strip())
+                if not (1 <= val <= 50):
+                    self.console.print("[yellow]Turns must be between 1 and 50.[/yellow]\n")
+                    return
+                self.config_manager.update(max_agent_turns=val)
+                self.config = self.config_manager.config
+                self.console.print(f"[bold green][✓] Max agent turns set to:[/bold green] [bold cyan]{val}[/bold cyan]\n")
+            except ValueError:
+                self.console.print("[yellow]Invalid turns value. Enter an integer between 1 and 50.[/yellow]\n")
         else:
-            self.console.print("[yellow]Usage: settings [show | set-citation <apa|ieee> | set-workspace <path>][/yellow]\n")
+            self.console.print("[yellow]Usage: settings [show | set-citation <apa|ieee> | set-turns <1-50> | set-workspace <path>][/yellow]\n")
 
     def cmd_config(self, arg: str) -> None:
         """Alias for backward compatibility directing to cmd_models."""
         self.cmd_models(arg)
+
+    def cmd_turns(self, arg: str = "") -> None:
+        """View or configure the maximum agent loop turns (default 15, range 1-50)."""
+        clean = arg.strip()
+        if not clean:
+            current_turns = getattr(self.config, "max_agent_turns", 15)
+            self.console.print(f"\n[bold bright_white]Agent Loop Turn Limit:[/bold bright_white] [bold cyan]{current_turns}[/bold cyan] turn (batas maksimal loop sintesis, verifikasi, dan sitasi).")
+            self.console.print("[dim]Gunakan: /turns <angka 1-50> (contoh: /turns 15 atau /turns 20)[/dim]\n")
+            return
+
+        try:
+            val = int(clean)
+            if not (1 <= val <= 50):
+                self.console.print("[yellow]Batas turn harus bernilai antara 1 sampai 50.[/yellow]\n")
+                return
+            self.config_manager.update(max_agent_turns=val)
+            self.config = self.config_manager.config
+            self.console.print(f"[bold green][✓] Batas agent turn berhasil diatur ke:[/bold green] [bold cyan]{val} turn[/bold cyan]\n")
+        except ValueError:
+            self.console.print(f"[yellow]Nilai turn tidak valid: '{clean}'. Masukkan angka bulat (1-50).\n[/yellow]")
+
 
     def _background_docx_worker(self, task_id: str, filename: str) -> str:
         """Background worker compiling conversation synthesis into Word (.docx) manuscript."""
@@ -5969,7 +6007,7 @@ class CLIStudio:
                 self.logger.log_evidence_retrieved(session_id, query, evidence)
 
         start_time = time.time()
-        max_agent_turns = 4
+        max_agent_turns = getattr(self.config, "max_agent_turns", 15)
         turn = 0
         current_query = initial_query_override if "initial_query_override" in locals() and initial_query_override else query
         citation_guide = self._format_vault_citation_guide()

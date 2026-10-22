@@ -868,6 +868,7 @@ SLASH_COMMANDS_PROJECT: list[tuple[str, str]] = [
     ("/tokens", "Inspect project token usage statistics"),
     ("/status", "Lihat model aktif dan konsumsi token proyek saat ini"),
     ("/settings", "Manage workspace and citation settings"),
+    ("/turns", "Atur batas iterasi loop AI agent (1-50 turn)"),
     ("/web", "Launch 3-panel Web Studio in browser"),
     ("/dashboard", "Return to Dashboard mode (alias: /close, /back)"),
     ("/clear", "Clear terminal screen"),
@@ -883,6 +884,7 @@ SLASH_COMMANDS_CHAT: list[tuple[str, str]] = [
     ("/history", "Lihat riwayat percakapan sesi ini"),
     ("/clear", "Bersihkan pesan dalam sesi percakapan ini"),
     ("/export", "Ekspor percakapan sesi ini ke markdown"),
+    ("/turns", "Atur batas iterasi loop AI agent (1-50 turn)"),
     ("/help", "Buka panduan perintah chat (alias: ?)"),
 ]
 

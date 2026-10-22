@@ -780,5 +780,58 @@ def test_citation_mapping_autodownload_and_paywall_ingest(
     ingested_file = temp_workspace.vault_dir / f"{sanitize_filename(paywalled_paper.title)}.md"
     assert ingested_file.exists()
 
+def test_configurable_agent_turns_in_config_and_studio(
+    temp_workspace: WorkspaceManager,
+    tmp_path: Path,
+) -> None:
+    """Validate configurable max_agent_turns via config, /turns, and settings commands."""
+    from pydantic import ValidationError
+    import pytest
 
+    # 1. Config defaults and constraints
+    default_cfg = ScrpcyConfig()
+    assert default_cfg.max_agent_turns == 15
+
+    custom_cfg = ScrpcyConfig(max_agent_turns=20)
+    assert custom_cfg.max_agent_turns == 20
+
+    with pytest.raises(ValidationError):
+        ScrpcyConfig(max_agent_turns=0)
+
+    with pytest.raises(ValidationError):
+        ScrpcyConfig(max_agent_turns=51)
+
+    # 2. Studio commands test
+    console = Console(file=io.StringIO(), force_terminal=True, color_system=None)
+    pm = ProjectManager(registry_file=tmp_path / "reg.json")
+    proj = pm.create_project("thesis", temp_workspace.root_dir)
+    cfg = ScrpcyConfig(workspace_path=str(temp_workspace.root_dir), max_agent_turns=15)
+
+    studio = CLIStudio(
+        workspace=temp_workspace,
+        config=cfg,
+        console=console,
+        project_manager=pm,
+    )
+    studio.open_project(proj)
+
+    # View turns
+    studio.cmd_turns("")
+    out_view = studio.console.file.getvalue()
+    assert "15 turn" in out_view
+
+    # Set turns via /turns
+    studio.cmd_turns("18")
+    assert studio.config.max_agent_turns == 18
+
+    # Set turns via settings command
+    studio.cmd_settings("set-turns 20")
+    assert studio.config.max_agent_turns == 20
+
+    # Settings show displays max agent turns
+    studio.console.file = io.StringIO()
+    studio.cmd_settings("show")
+    out_settings = studio.console.file.getvalue()
+    assert "Max Agent Turns" in out_settings
+    assert "20 turns" in out_settings
 

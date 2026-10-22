@@ -95,6 +95,12 @@ class ScrpcyConfig(BaseModel):
         default_factory=CitationPreferences,
         description="Citation and evidence synthesis settings.",
     )
+    max_agent_turns: int = Field(
+        default=15,
+        ge=1,
+        le=50,
+        description="Maximum agent loop turns for synthesis, verification, and citation loops.",
+    )
     workspace_path: str = Field(
         default="~/.scrpcy/workspace",
         description="Base path for workspace caches and document vaults.",
