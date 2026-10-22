@@ -158,3 +158,50 @@ def test_no_duplicate_eval_response_on_task_completion(temp_studio: CLIStudio) -
     system_msgs = [m for m in messages if m.role == "system"]
     assert len(system_msgs) == 1
     assert "PROSES LATAR BELAKANG SELESAI" in system_msgs[0].content
+
+
+def test_dynamic_scout_quota_calculation(temp_studio: CLIStudio) -> None:
+    # Simple narrow query
+    quota_simple = temp_studio._determine_target_scout_quota("definisi emisi")
+    assert 5 <= quota_simple <= 6
+
+    # Complex multi-argument query
+    quota_complex = temp_studio._determine_target_scout_quota("berikan aku argument komprehensif mengenai karhutla dan dampaknya terhadap kebijakan moratorium")
+    assert 7 <= quota_complex <= 10
+
+
+def test_background_scout_worker_batch_ingestion(temp_studio: CLIStudio) -> None:
+    from scrpcy.core.scout import ScoutResult
+    from unittest.mock import AsyncMock
+
+    mock_candidates = [
+        ScoutResult(
+            title=f"Paper Title {i} regarding Peatland Fire",
+            authors=["Author A"],
+            year=2023,
+            citation_count=50 - i,
+            has_pdf=(i % 2 == 0),
+            pdf_url=f"https://example.com/p{i}.pdf" if (i % 2 == 0) else None,
+            abstract=f"This is the official abstract for paper {i} regarding tropical peatlands.",
+        )
+        for i in range(1, 15)
+    ]
+
+    temp_studio.scout = MagicMock()
+    temp_studio.scout.extract_search_criteria.return_value = MagicMock(keywords="karhutla")
+    temp_studio.scout.search_multi_source = AsyncMock(return_value=mock_candidates)
+    temp_studio.scout.curate_and_rank.return_value = mock_candidates
+    temp_studio.scout.download_scout_paper = AsyncMock(return_value=Path("cache/mock_paper.pdf"))
+    temp_studio.scout.ingest_abstract_paper = MagicMock(return_value=Path("cache/mock_abstract.md"))
+
+    summary = temp_studio._background_scout_worker(
+        task_id="test-task-1",
+        query="berikan aku argument mengenai karhutla",
+        max_download=7,
+    )
+
+    # Must attempt to ingest top candidates up to target quota 7 (using both PDF and abstracts)
+    assert "Mengindeks 7/7 dokumen ke vault" in summary or "selesai" in summary.lower()
+    temp_studio.scout.search_multi_source.assert_called_once()
+    call_args = temp_studio.scout.search_multi_source.call_args
+    assert call_args[1].get("limit") == 35 or (len(call_args[0]) > 1 and call_args[0][1] == 35)

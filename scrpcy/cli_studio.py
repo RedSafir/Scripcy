@@ -2966,15 +2966,37 @@ class CLIStudio:
         self.task_manager.log(task_id, f"Finished: {summary}")
         return summary
 
+    def _determine_target_scout_quota(self, query: str, contract: Any = None) -> int:
+        """Dynamically determine optimal paper ingestion quota (5-10) based on inquiry scope and complexity."""
+        words = len(query.split())
+        complexity_keywords = (
+            "argument", "argumen", "komprehensif", "lengkap", "analisis",
+            "tinjauan", "review", "pro", "kontra", "dialektika", "celah", "kebijakan", "sintesis"
+        )
+        is_complex = any(k in query.lower() for k in complexity_keywords)
+
+        if contract:
+            max_words = getattr(contract, "max_words", 800)
+            dod_len = len(getattr(contract, "definition_of_done", []))
+            if max_words >= 1000 or dod_len >= 4:
+                return 9 if is_complex else 8
+            elif max_words >= 600 or is_complex:
+                return 7
+            return 5
+
+        if is_complex or words >= 8:
+            return 8
+        return 5
+
     def _background_scout_worker(
         self,
         task_id: str,
         query: str = "",
         topic_query: str = "",
-        max_download: int = 3,
+        max_download: int | None = None,
         **kwargs: Any,
     ) -> str:
-        """Background agent worker that formulates criteria, searches multi-source, ranks, and downloads into vault."""
+        """Background agent worker that searches multi-source (30-40 candidates), ranks with AI, and downloads/ingests a robust batch (5-10) into vault."""
         clean_query = (query or topic_query).strip().strip("'\"")
         self.task_manager.log(task_id, f"Formulating query strategy for: '{clean_query}'")
         try:
@@ -2984,12 +3006,17 @@ class CLIStudio:
             from scrpcy.core.scout import ScoutQuery
             query_spec = ScoutQuery(keywords=clean_query, summary=clean_query)
 
-        self.task_manager.log(task_id, f"Scraping OpenAlex & Semantic Scholar (keywords: '{query_spec.keywords}')...")
+        # Dynamic target quota between 5 and 10 papers
+        target_quota = max_download if (max_download is not None and max_download >= 5) else self._determine_target_scout_quota(clean_query)
+        self.task_manager.log(task_id, f"Target kuota literatur: {target_quota} dokumen.")
+
+        # Multi-source search with larger candidate limit (35 candidates)
+        self.task_manager.log(task_id, f"Scraping OpenAlex & Semantic Scholar (35 candidates, keywords: '{query_spec.keywords}')...")
 
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         try:
-            candidates = loop.run_until_complete(self.scout.search_multi_source(query_spec, limit=15))
+            candidates = loop.run_until_complete(self.scout.search_multi_source(query_spec, limit=35))
         except Exception as exc:
             self.task_manager.log(task_id, f"[x] Multi-source search error: {exc}")
             raise
@@ -3001,67 +3028,99 @@ class CLIStudio:
             self.task_manager.log(task_id, msg)
             return msg
 
-        self.task_manager.log(task_id, f"Curating & ranking {len(candidates)} candidates against research intent...")
+        self.task_manager.log(task_id, f"Curating & ranking {len(candidates)} candidates against research intent with AI...")
         try:
-            curated = self.scout.curate_and_rank(query, candidates, engine=self.engine, max_output=None)
+            curated = self.scout.curate_and_rank(clean_query, candidates, engine=self.engine, max_output=target_quota * 2)
         except Exception:
             curated = candidates
 
         self.last_scout_results = curated
 
-        oa_papers = [p for p in curated if p.has_pdf and p.pdf_url][:max_download]
-        if not oa_papers:
-            msg = f"Found {len(curated)} candidates, but none had direct open-access PDF links."
-            self.task_manager.log(task_id, msg)
-            return msg
+        # Ingestion loop: prioritize full-text OA PDF, automatically fallback to official abstract for paywalled papers
+        ingested_count = 0
+        tried_titles: set[str] = set()
 
-        self.task_manager.log(task_id, f"Downloading top {len(oa_papers)} open-access paper(s) into vault...")
-        downloaded = 0
-        all_oa_candidates = [p for p in curated if p.has_pdf and p.pdf_url]
-        tried_titles = {p.title.lower() for p in oa_papers}
+        for idx, paper in enumerate(curated, 1):
+            if ingested_count >= target_quota:
+                break
+            if paper.title.lower() in tried_titles:
+                continue
+            tried_titles.add(paper.title.lower())
 
-        for idx, paper in enumerate(oa_papers, 1):
-            self.task_manager.log(task_id, f"[{idx}/{len(oa_papers)}] Downloading '{paper.title[:45]}...'")
+            has_direct_pdf = bool(paper.has_pdf and paper.pdf_url)
+            safe_stem = sanitize_filename(paper.title)
+
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             try:
-                dl_path = loop.run_until_complete(self.scout.download_scout_paper(paper))
-                self.active_documents.add(dl_path.stem)
-                self._sync_vault_cache()
-                self.task_manager.log(task_id, f"[✓] Added #{idx} to vault & indexed: {paper.title[:50]}")
-                downloaded += 1
-            except Exception as exc:
-                self.task_manager.log(task_id, f"[!] Download error on #{idx} '{paper.title[:35]}': {exc}")
-                # Autonomous error recovery: find open-access alternative candidate
-                alt_found = False
-                for alt_paper in all_oa_candidates:
-                    if alt_paper.title.lower() in tried_titles:
-                        continue
-                    tried_titles.add(alt_paper.title.lower())
-                    self.task_manager.log(task_id, f"[→] Trying OA alternative: '{alt_paper.title[:40]}...'")
-                    try:
-                        dl_path = loop.run_until_complete(self.scout.download_scout_paper(alt_paper))
-                        self.active_documents.add(dl_path.stem)
-                        self._sync_vault_cache()
-                        self.task_manager.log(task_id, f"[✓] Ingested alternative to vault: {alt_paper.title[:45]}")
-                        downloaded += 1
-                        alt_found = True
-                        break
-                    except Exception as alt_exc:
-                        self.task_manager.log(task_id, f"[!] Alternative failed: {alt_exc}")
-                        continue
-
-                if not alt_found and paper.abstract:
-                    self.task_manager.log(task_id, f"[→] Fallback: Ingesting abstract for '{paper.title[:35]}...'")
+                if has_direct_pdf:
+                    self.task_manager.log(task_id, f"[{ingested_count + 1}/{target_quota}] Mengunduh PDF: '{paper.title[:45]}...'")
+                    dl_path = loop.run_until_complete(self.scout.download_scout_paper(paper))
+                    self.active_documents.add(dl_path.stem)
+                    self._sync_vault_cache()
+                    self.task_manager.log(task_id, f"[✓] Ingested PDF #{ingested_count + 1}: {paper.title[:50]}")
+                    ingested_count += 1
+                elif paper.abstract:
+                    self.task_manager.log(task_id, f"[{ingested_count + 1}/{target_quota}] Mengindeks abstrak resmi (paywalled): '{paper.title[:45]}...'")
                     self.scout.ingest_abstract_paper(paper)
-                    safe_stem = sanitize_filename(paper.title)
                     self.active_documents.add(safe_stem)
                     self._sync_vault_cache()
-                    downloaded += 1
+                    self.task_manager.log(task_id, f"[✓] Ingested abstrak resmi #{ingested_count + 1}: {paper.title[:50]}")
+                    ingested_count += 1
+            except Exception as exc:
+                self.task_manager.log(task_id, f"[!] Kendala unduh '{paper.title[:35]}': {exc}")
+                if paper.abstract:
+                    try:
+                        self.scout.ingest_abstract_paper(paper)
+                        self.active_documents.add(safe_stem)
+                        self._sync_vault_cache()
+                        self.task_manager.log(task_id, f"[✓] Fallback abstrak berhasil diindeks: {paper.title[:45]}")
+                        ingested_count += 1
+                    except Exception:
+                        pass
             finally:
                 loop.close()
 
-        summary = f"Scout & Ingest finished: Added {downloaded}/{len(oa_papers)} paper(s) to vault."
+        # If still below target_quota and we have active documents, expand via Reference Mapping
+        if ingested_count < target_quota and self.active_documents:
+            stems = list(self.active_documents)
+            self.task_manager.log(task_id, f"Menelusuri jejaring sitasi (Reference Mapping) untuk mencapai target {target_quota} dokumen...")
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                cit_papers = loop.run_until_complete(self.scout.map_vault_citation_network(stems, limit=target_quota - ingested_count + 3))
+                for cp in cit_papers:
+                    if ingested_count >= target_quota:
+                        break
+                    if cp.title.lower() in tried_titles:
+                        continue
+                    tried_titles.add(cp.title.lower())
+                    safe_stem = sanitize_filename(cp.title)
+                    if cp.has_pdf and cp.pdf_url:
+                        try:
+                            dl_path = loop.run_until_complete(self.scout.download_scout_paper(cp))
+                            self.active_documents.add(dl_path.stem)
+                            self._sync_vault_cache()
+                            ingested_count += 1
+                            self.task_manager.log(task_id, f"[✓] Ingested sitasi PDF #{ingested_count}: {cp.title[:45]}")
+                        except Exception:
+                            if cp.abstract:
+                                self.scout.ingest_abstract_paper(cp)
+                                self.active_documents.add(safe_stem)
+                                self._sync_vault_cache()
+                                ingested_count += 1
+                    elif cp.abstract:
+                        self.scout.ingest_abstract_paper(cp)
+                        self.active_documents.add(safe_stem)
+                        self._sync_vault_cache()
+                        ingested_count += 1
+                        self.task_manager.log(task_id, f"[✓] Ingested sitasi abstrak #{ingested_count}: {cp.title[:45]}")
+            except Exception as ref_exc:
+                self.task_manager.log(task_id, f"[!] Kendala reference mapping: {ref_exc}")
+            finally:
+                loop.close()
+
+        summary = f"Scout & Ingest selesai: Mengindeks {ingested_count}/{target_quota} dokumen ke vault."
         self.task_manager.log(task_id, summary)
         return summary
 
@@ -5867,12 +5926,17 @@ class CLIStudio:
         if evidence and coverage_score < 0.35:
             self.console.print(f"[dim]● Catatan: Cakupan literatur vault terhadap kueri saat ini adalah {int(coverage_score * 100)}%. Evaluasi kritis akan menelusuri literatur tambahan jika diperlukan.[/dim]")
 
-        # Pre-flight auto-scout triggers when vault has no matching evidence
-        if not evidence and self.scout:
+        # Pre-flight auto-scout triggers when vault has no matching evidence OR when existing evidence coverage is very low (< 0.25)
+        needs_auto_scout = (not evidence) or (evidence and coverage_score < 0.25)
+        if needs_auto_scout and self.scout:
             self.console.print("[bold cyan]●[/bold cyan] [bold bright_white]Berpikir[/bold bright_white] [dim]Mengevaluasi kecukupan literatur di vault...[/dim]")
-            self.console.print("[dim]● Bukti di vault belum mencukupi untuk topik ini.[/dim]")
+            if not evidence:
+                self.console.print("[dim]● Bukti di vault belum mencukupi untuk topik ini.[/dim]")
+            else:
+                self.console.print(f"[dim]● Referensi di vault memiliki kecocokan rendah ({int(coverage_score * 100)}%) terhadap fokus pertanyaan.[/dim]")
             suggested_topic = self._extract_scout_query(query)
-            self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Rencana:[/bold bright_white] [cyan]Mencari & mengunduh literatur terkait '{suggested_topic}'[/cyan]")
+            target_quota = self._determine_target_scout_quota(query, task_contract)
+            self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Rencana:[/bold bright_white] [cyan]Mencari & mengunduh {target_quota} literatur terkait '{suggested_topic}'[/cyan]")
 
             try:
                 user_choice = self.console.input("[bold cyan][?] Jalankan pencarian & unduh otomatis? [Y/n/ketik kata kunci baru]: [/bold cyan]").strip()
@@ -5899,6 +5963,7 @@ class CLIStudio:
                     target_fn=self._background_scout_worker,
                     query=target_topic,
                     topic_query=target_topic,
+                    max_download=target_quota,
                     session_id=session.id if session else None,
                 )
 
@@ -6360,8 +6425,8 @@ class CLIStudio:
                         for target_gap_q in directed_queries[:2]:
                             self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Directed Gap Search[/bold bright_white] [cyan]Menelusuri literatur spesifik penambal celah: '{target_gap_q}'...[/cyan]")
                             try:
-                                sq = ScoutQuery(keywords=target_gap_q, limit=2)
-                                candidates = asyncio.run(self.scout.search_multi_source(sq, limit=2))
+                                sq = ScoutQuery(keywords=target_gap_q, limit=5)
+                                candidates = asyncio.run(self.scout.search_multi_source(sq, limit=5))
                                 if candidates:
                                     existing_titles = {p.title for p in mapped_papers}
                                     mapped_papers.extend([p for p in candidates if p.title not in existing_titles])
@@ -6373,7 +6438,7 @@ class CLIStudio:
                         self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Reference Mapping[/bold bright_white] [cyan]Menelusuri jaringan sitasi dokumen vault...[/cyan]")
                         try:
                             t_map_s = time.time()
-                            cit_papers = asyncio.run(self.scout.map_vault_citation_network(stems, limit=2))
+                            cit_papers = asyncio.run(self.scout.map_vault_citation_network(stems, limit=5))
                             if cit_papers:
                                 existing_titles = {p.title for p in mapped_papers}
                                 mapped_papers.extend([p for p in cit_papers if p.title not in existing_titles])
