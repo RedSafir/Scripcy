@@ -29,6 +29,7 @@ class CritiqueReport(BaseModel):
     recency_alert: str | None = Field(default=None, description="Warning if references are outdated.")
     needs_citation_mapping: bool = Field(default=False, description="True if new/recent references should be scouted.")
     recommended_topics: list[str] = Field(default_factory=list, description="Key missing topics or questions to explore.")
+    directed_search_queries: list[str] = Field(default_factory=list, description="Targeted academic search queries to fill evidence gaps.")
     critique_summary: str = Field(default="", description="Concise reviewer assessment.")
 
 
@@ -90,10 +91,16 @@ class DevilsAdvocate:
             counter_args.append("Pertimbangkan faktor pembatas, trade-off, atau skenario di mana argumen ini tidak berlaku.")
             score -= 1
 
-        # Derive recommended topics from query
-        words = [w for w in re.split(r"[^\w-]", query.lower()) if len(w) > 4]
+        # Derive recommended topics and directed search queries from query and gaps
+        words = [w for w in re.split(r"[^\w-]", query.lower()) if len(w) > 3]
+        directed_queries: list[str] = []
         if words:
-            recommended_topics.append(f"{' '.join(words[:4])} recent advances limitations")
+            base_kw = " ".join(words[:5])
+            recommended_topics.append(f"{base_kw} recent advances limitations")
+            directed_queries.append(f"{base_kw} policy community management")
+            directed_queries.append(f"{base_kw} empirical evaluation challenges")
+        else:
+            directed_queries.append(f"{query} review evidence")
 
         score = max(1, min(10, score))
         needs_more_scout = score < 7 or is_outdated
@@ -110,6 +117,7 @@ class DevilsAdvocate:
             recency_alert=recency_msg,
             needs_citation_mapping=needs_more_scout,
             recommended_topics=recommended_topics,
+            directed_search_queries=directed_queries,
             critique_summary=summary,
         )
 
@@ -138,6 +146,7 @@ class DevilsAdvocate:
                 "- weaknesses: list of 1-3 specific analytical weaknesses\n"
                 "- counter_arguments: list of 1-2 potent counter-perspectives\n"
                 "- recommended_topics: list of 1-2 search queries for complementary literature\n"
+                "- directed_search_queries: list of 1-3 specific academic search queries to find literature addressing these weaknesses directly\n"
                 "- critique_summary: 1-sentence verdict"
             )
 
@@ -176,6 +185,7 @@ class DevilsAdvocate:
             ai_weaknesses = data.get("weaknesses", heuristic.weaknesses)
             ai_counter = data.get("counter_arguments", heuristic.counter_arguments)
             ai_topics = data.get("recommended_topics", heuristic.recommended_topics)
+            ai_directed = data.get("directed_search_queries", heuristic.directed_search_queries or ai_topics)
             ai_summary = data.get("critique_summary", heuristic.critique_summary)
 
             # Preserve recency alert from heuristic
@@ -192,6 +202,7 @@ class DevilsAdvocate:
                 recency_alert=heuristic.recency_alert,
                 needs_citation_mapping=needs_scout,
                 recommended_topics=ai_topics,
+                directed_search_queries=ai_directed if isinstance(ai_directed, list) else heuristic.directed_search_queries,
                 critique_summary=ai_summary,
             )
         except Exception:

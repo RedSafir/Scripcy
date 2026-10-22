@@ -5865,11 +5865,15 @@ class CLIStudio:
                 evidence = evidence[:5]
                 self.console.print("[dim]● Dibatasi ke 5 chunks teratas untuk penghematan token.[/dim]")
 
-        # Autonomous Deep-Research Literature Discovery Hook (when evidence is insufficient)
+        # Autonomous Deep-Research Literature Discovery Hook (when evidence is insufficient or domain coverage is low)
+        coverage_score = self.engine.evidence_synthesizer.compute_coverage_score(query, evidence) if evidence else 0.0
+        if evidence and coverage_score < 0.35:
+            self.console.print(f"[dim]● Catatan: Cakupan literatur vault terhadap kueri saat ini adalah {int(coverage_score * 100)}%. Evaluasi kritis akan menelusuri literatur tambahan jika diperlukan.[/dim]")
+
+        # Pre-flight auto-scout triggers when vault has no matching evidence
         if not evidence and self.scout:
             self.console.print("[bold cyan]●[/bold cyan] [bold bright_white]Berpikir[/bold bright_white] [dim]Mengevaluasi kecukupan literatur di vault...[/dim]")
             self.console.print("[dim]● Bukti di vault belum mencukupi untuk topik ini.[/dim]")
-
             suggested_topic = self._extract_scout_query(query)
             self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Rencana:[/bold bright_white] [cyan]Mencari & mengunduh literatur terkait '{suggested_topic}'[/cyan]")
 
@@ -6009,6 +6013,13 @@ class CLIStudio:
         start_time = time.time()
         max_agent_turns = getattr(self.config, "max_agent_turns", 15)
         turn = 0
+        refinement_turns = 0
+        MAX_REFINEMENT_TURNS = 3
+        locked_supported_claims: list[str] = []
+        best_draft: str = ""
+        best_grounding: float = -1.0
+        best_critic: int = -1
+        best_composite: float = -1.0
         current_query = initial_query_override if "initial_query_override" in locals() and initial_query_override else query
         citation_guide = self._format_vault_citation_guide()
         if citation_guide:
@@ -6119,11 +6130,36 @@ class CLIStudio:
                             summary=c_rep.critique_summary,
                         )
 
+                    # Monotonic Claim Locking: Record verified supported claims
+                    for c in v_rep.claims:
+                        if c.status == "supported" and c.claim not in locked_supported_claims:
+                            locked_supported_claims.append(c.claim)
+
+                    # Best-Draft Tracking
+                    composite = 0.55 * v_rep.grounding_score + 0.45 * (c_rep.score / 10.0)
+                    nonlocal best_composite, best_draft, best_grounding, best_critic
+                    if composite > best_composite or not best_draft:
+                        best_composite = composite
+                        best_draft = p_resp
+                        best_grounding = v_rep.grounding_score
+                        best_critic = c_rep.score
+
                     # Check if ungrounded claims or citation mapping triggers another turn
-                    if v_rep.hallucination_warning and turn < max_agent_turns - 1:
-                        return {"type": "ungrounded", "report": v_rep, "response": p_resp}
-                    if c_rep.needs_citation_mapping and turn < max_agent_turns - 1:
-                        return {"type": "needs_citation_mapping", "report": c_rep, "response": p_resp}
+                    needs_refine = (bool(v_rep.hallucination_warning) or bool(c_rep.needs_citation_mapping)) and turn < max_agent_turns - 1
+                    if needs_refine:
+                        if refinement_turns >= MAX_REFINEMENT_TURNS:
+                            return {
+                                "type": "epistemic_exit",
+                                "best_draft": best_draft or p_resp,
+                                "v_report": v_rep,
+                                "c_report": c_rep,
+                                "best_grounding": best_grounding,
+                                "best_critic": best_critic,
+                            }
+                        if v_rep.hallucination_warning:
+                            return {"type": "ungrounded", "report": v_rep, "response": p_resp}
+                        if c_rep.needs_citation_mapping:
+                            return {"type": "needs_citation_mapping", "report": c_rep, "response": p_resp}
 
                     # 5. Automatic Bibliography
                     final_text = p_resp
@@ -6208,32 +6244,81 @@ class CLIStudio:
                     turn += 1
                     continue
 
+                elif turn_result["type"] == "epistemic_exit":
+                    self.console.print("[bold yellow]●[/bold yellow] [bold bright_white]Epistemic Convergence[/bold bright_white] [dim]Batas 3 iterasi perbaikan tercapai. Memfinalisasi draf terbaik dengan catatan dialektis...[/dim]\n")
+                    raw_final = turn_result.get("best_draft", "")
+                    dialectic_caveat = (
+                        "\n\n> [!NOTE]\n"
+                        "> **Catatan Analisis Kritis**: Sintesis ini mempertahankan tinjauan dialektis dari literatur yang tersedia. "
+                        "Terdapat variasi metodologis antara temuan empiris dokumen dengan implikasi kebijakan di lapangan."
+                    )
+                    final_response = self._sanitize_final_response(raw_final) + dialectic_caveat
+                    if self.vault_manager and final_response:
+                        final_response = append_vault_bibliography(
+                            text=final_response,
+                            evidence=evidence,
+                            vault_manager=self.vault_manager,
+                            style=self.config.citation.style,
+                            active_documents=self.active_documents,
+                        )
+                    last_v_report = turn_result.get("v_report")
+                    last_c_report = turn_result.get("c_report")
+                    break
+
                 elif turn_result["type"] == "ungrounded":
+                    refinement_turns += 1
                     v_rep = turn_result["report"]
                     self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Memverifikasi Fakta[/bold bright_white] [yellow]{v_rep.hallucination_warning}[/yellow]")
                     unsupported_claims = [c.claim for c in v_rep.claims if c.status == "unsupported"]
                     if unsupported_claims:
+                        locked_sec = ""
+                        if locked_supported_claims:
+                            locked_sec = (
+                                "### KLAIM TERVERIFIKASI SEBELUMNYA (WAJIB DIPERTAHANKAN VERBATIM):\n"
+                                "Pernyataan-pernyataan berikut telah terverifikasi valid terhadap dokumen vault. Pertahankan:\n"
+                                + "\n".join(f"- {c}" for c in locked_supported_claims[:6]) + "\n\n"
+                            )
                         current_query = (
+                            f"{locked_sec}"
                             f"### VERIFIKASI FAKTA (CLAIM GROUNDING AUDIT):\n"
                             f"Beberapa klaim berikut tidak ditemukan dasarnya pada literatur vault:\n"
                             + "\n".join(f"- {c}" for c in unsupported_claims) +
                             f"\n\nPertanyaan riset asli: \"{query}\"\n"
-                            f"Instruksi: Pangkas atau sesuaikan klaim di atas agar 100% didukung oleh bukti teks dokumen vault."
+                            f"Instruksi: Pertahankan seluruh klaim terverifikasi di atas. Pangkas atau sesuaikan klaim yang belum didukung agar 100% didukung oleh bukti teks dokumen vault."
                         )
                         turn += 1
                         continue
 
                 elif turn_result["type"] == "needs_citation_mapping":
+                    refinement_turns += 1
                     c_rep = turn_result["report"]
                     self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Devil's Advocate[/bold bright_white] [yellow]Skor {c_rep.score}/10: {c_rep.critique_summary}[/yellow]")
                     stems = self._get_cached_stems()
                     mapped_papers = []
                     newly_ingested_stems = []
+
+                    # 1. Directed Gap Search via Typed Critique Queries
+                    directed_queries = getattr(c_rep, "directed_search_queries", [])
+                    if directed_queries and self.scout:
+                        target_gap_q = directed_queries[0]
+                        self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Directed Gap Search[/bold bright_white] [cyan]Menelusuri literatur spesifik penambal celah: '{target_gap_q}'...[/cyan]")
+                        try:
+                            sq = ScoutQuery(keywords=target_gap_q, limit=2)
+                            candidates = asyncio.run(self.scout.search_multi_source(sq, limit=2))
+                            if candidates:
+                                mapped_papers = list(candidates)
+                        except Exception:
+                            mapped_papers = []
+
+                    # 2. Reference Mapping (Vault citation network)
                     if stems and self.scout:
                         self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Reference Mapping[/bold bright_white] [cyan]Menelusuri jaringan sitasi dokumen vault...[/cyan]")
                         try:
                             t_map_s = time.time()
-                            mapped_papers = asyncio.run(self.scout.map_vault_citation_network(stems, limit=2))
+                            cit_papers = asyncio.run(self.scout.map_vault_citation_network(stems, limit=2))
+                            if cit_papers:
+                                existing_titles = {p.title for p in mapped_papers}
+                                mapped_papers.extend([p for p in cit_papers if p.title not in existing_titles])
                             if hasattr(self, "logger") and self.logger:
                                 self.logger.log_citation_mapping(
                                     session_id=session_id,
@@ -6325,12 +6410,20 @@ class CLIStudio:
                     counter_str = ("\nPotensi sanggahan: " + ", ".join(c_rep.counter_arguments)) if c_rep.counter_arguments else ""
                     recency_str = f"\nCatatan kebaruan: {c_rep.recency_alert}" if c_rep.recency_alert else ""
 
+                    locked_sec = ""
+                    if locked_supported_claims:
+                        locked_sec = (
+                            "### KLAIM TERVERIFIKASI SEBELUMNYA (WAJIB DIPERTAHANKAN VERBATIM):\n"
+                            "Pernyataan-pernyataan berikut telah terverifikasi valid terhadap dokumen vault. Pertahankan:\n"
+                            + "\n".join(f"- {c}" for c in locked_supported_claims[:6]) + "\n\n"
+                        )
                     current_query = (
                         f"{citation_guide}\n\n"
+                        f"{locked_sec}"
                         f"{extra_ref}### EVALUASI DEVIL'S ADVOCATE (SKOR {c_rep.score}/10):\n"
                         f"Catatan kelemahan: {weaknesses_str}{counter_str}{recency_str}\n\n"
                         f"Pertanyaan riset asli: \"{query}\"\n"
-                        f"Instruksi: Mentailor ulang sintesis untuk mengatasi catatan kelemahan di atas dengan memanfaatkan bukti literatur baru yang telah diindeks di vault, sertakan sitasi in-text APA pada setiap klaim, dan berikan jawaban yang komprehensif serta mantap (100% yakin)."
+                        f"Instruksi: Pertahankan seluruh klaim terverifikasi di atas. Mentailor ulang sintesis untuk mengatasi catatan kelemahan di atas dengan memanfaatkan bukti literatur baru yang telah diindeks di vault, sertakan sitasi in-text APA pada setiap klaim, dan berikan jawaban yang komprehensif serta mantap (100% yakin)."
                     )
                     turn += 1
                     continue
@@ -6360,16 +6453,17 @@ class CLIStudio:
             c_score = last_c_report.score if last_c_report else 8
             grounding_badge = f"Grounding: {int(v_score * 100)}%"
             critic_badge = f"Critic: {c_score}/10"
+            turns_badge = f"{turn + 1} turn" if (turn + 1) == 1 else f"{turn + 1} turns"
 
             # Permanent telemetry footer stored in chat database for persistent retrieval
             footer_badge_md = (
                 f"\n\n---\n"
-                f"*[dim]Tokens: {input_tokens:,} in · {output_tokens:,} out · {total_tokens:,} total ({model_label}) • {grounding_badge} • {critic_badge} • {elapsed:.1f}s • {style_name} style[/dim]*"
+                f"*[dim]Tokens: {input_tokens:,} in · {output_tokens:,} out · {total_tokens:,} total ({model_label}) • {turns_badge} • {grounding_badge} • {critic_badge} • {elapsed:.1f}s • {style_name} style[/dim]*"
             )
             final_response_persisted = f"{final_response}{footer_badge_md}"
 
             self.console.print(
-                f"[dim]── Tokens: {input_tokens:,} in · {output_tokens:,} out · {total_tokens:,} total ({model_label}) • {grounding_badge} • {critic_badge} • {elapsed:.1f}s • {style_name} style ──[/dim]\n"
+                f"[dim]── Tokens: {input_tokens:,} in · {output_tokens:,} out · {total_tokens:,} total ({model_label}) • {turns_badge} • {grounding_badge} • {critic_badge} • {elapsed:.1f}s • {style_name} style ──[/dim]\n"
             )
 
             if hasattr(self, "logger") and self.logger:

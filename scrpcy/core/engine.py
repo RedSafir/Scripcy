@@ -155,6 +155,24 @@ class EvidenceSynthesizer:
 
         return score
 
+    def compute_coverage_score(self, query: str, evidence: list[EvidenceChunk]) -> float:
+        """Compute semantic/lexical coverage of query intent within retrieved evidence (0.0 to 1.0)."""
+        if not evidence:
+            return 0.0
+
+        query_terms = [t for t in tokenize_query(query) if len(t) >= 3]
+        if not query_terms:
+            return 1.0
+
+        combined_text = " ".join(c.text.lower() for c in evidence)
+        matched_terms = 0
+        for term in query_terms:
+            if term in combined_text or (len(term) >= 4 and any(w.startswith(term[:4]) for w in combined_text.split())):
+                matched_terms += 1
+
+        coverage = matched_terms / len(query_terms)
+        return round(coverage, 2)
+
     def retrieve_evidence(
         self,
         query: str,

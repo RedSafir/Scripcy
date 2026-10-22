@@ -765,9 +765,13 @@ def test_citation_mapping_autodownload_and_paywall_ingest(
         pdf_url=None,
     )
 
+    async def mock_search(sq: Any, limit: int = 10):
+        return []
+
     async def mock_map(stems: list[str], limit: int = 10):
         return [paywalled_paper]
 
+    studio.scout.search_multi_source = mock_search
     studio.scout.map_vault_citation_network = mock_map
 
     studio.handle_chat("Bagaimana efektivitas regulasi sekat kanal di Kalimantan?")
@@ -834,4 +838,82 @@ def test_configurable_agent_turns_in_config_and_studio(
     out_settings = studio.console.file.getvalue()
     assert "Max Agent Turns" in out_settings
     assert "20 turns" in out_settings
+
+def test_evidence_synthesizer_coverage_score():
+    """Verify compute_coverage_score correctly distinguishes in-domain vs out-of-domain evidence."""
+    from scrpcy.core.engine import EvidenceSynthesizer, EvidenceChunk
+
+    synth = EvidenceSynthesizer()
+
+    # Empty evidence yields 0.0
+    assert synth.compute_coverage_score("kebakaran gambut kalimantan", []) == 0.0
+
+    # High coverage
+    ev_high = [
+        EvidenceChunk(chunk_id="c1", source="s1", text="Kebakaran gambut di Kalimantan Tengah menyebabkan kabut asap hebat.", token_estimate=15),
+    ]
+    cov_high = synth.compute_coverage_score("kebakaran gambut kalimantan", ev_high)
+    assert cov_high >= 0.65
+
+    # Out of domain query vs physical atmospheric evidence
+    ev_mismatch = [
+        EvidenceChunk(chunk_id="c2", source="s2", text="Satellite GEOS-Chem aerosol optical depth modeling of carbon fluxes.", token_estimate=15),
+    ]
+    cov_low = synth.compute_coverage_score("apa yang seharusnya masyarakat lakukan dalam mitigasi", ev_mismatch)
+    assert cov_low < 0.35
+
+
+def test_devils_advocate_directed_search_queries():
+    """Verify DevilsAdvocate produces typed directed_search_queries for evidence gap filling."""
+    from scrpcy.core.critic import DevilsAdvocate
+
+    critic = DevilsAdvocate()
+    query = "apa peran masyarakat peduli api dalam pencegahan karhutla"
+    answer = "Karhutla sering terjadi di lahan basah Indonesia."
+
+    rep = critic.critique(query, answer)
+    assert rep.directed_search_queries
+    assert any("masyarakat" in q.lower() or "peduli" in q.lower() or "policy" in q.lower() for q in rep.directed_search_queries)
+
+
+def test_epistemic_exit_and_monotonic_locking(
+    temp_workspace: WorkspaceManager,
+    tmp_path: Path,
+):
+    """Verify loop exits gracefully via Epistemic Convergence after 3 refinement iterations."""
+    (temp_workspace.vault_dir / "paper.pdf").write_bytes(b"%PDF-1.4 test")
+    temp_workspace.save_to_cache(
+        "paper.md",
+        "---\ntitle: Peatland Smoldering Combustion\nauthors:\n  - Peat Researcher\nyear: 2017\ncite_key: Peat2017\n---\n# Combustion\nDeep smoldering combustion in tropical peat occurs when the water table drops.",
+    )
+
+    console = Console(file=io.StringIO(), force_terminal=True, color_system=None)
+    pm = ProjectManager(registry_file=tmp_path / "reg.json")
+    proj = pm.create_project("thesis", temp_workspace.root_dir)
+    cfg = ScrpcyConfig(workspace_path=str(temp_workspace.root_dir), max_agent_turns=10)
+
+    call_count = 0
+    async def mock_acompletion(**kwargs: Any):
+        nonlocal call_count
+        call_count += 1
+        # Generates text that has unsupported claim to trigger refinement
+        yield MockStreamChunk(f"Berdasarkan (Peat Researcher, 2017), muka air gambut turun memicu pembakaran. Klaim buatan ke-{call_count} masyarakat harus menanam pohon jelutung.")
+
+    engine = LLMEngine(config=cfg, acompletion_fn=mock_acompletion)
+    studio = CLIStudio(
+        workspace=temp_workspace,
+        config=cfg,
+        console=console,
+        project_manager=pm,
+        engine=engine,
+    )
+    studio.open_project(proj)
+    studio.config.api_keys["gemini"] = "mock_key"
+
+    studio.handle_chat("Bagaimana mitigasi pembakaran gambut?")
+
+    out = studio.console.file.getvalue()
+    assert "Epistemic Convergence" in out or "Catatan Analisis Kritis" in out
+    # Loop must not burn all 10 turns; must exit early via Epistemic Convergence
+    assert call_count <= 4
 
