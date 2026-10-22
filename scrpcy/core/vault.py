@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 from scrpcy.core.models import DocumentMetadata, ParsedDocument
 from scrpcy.core.parser import DocumentParser
 from scrpcy.core.workspace import WorkspaceManager
+from scrpcy.core.vector_vault import ProjectVectorVault
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +63,10 @@ class VaultManager:
         self.pdf_parser = DocumentParser(workspace=workspace)
         self.markitdown = MarkItDown() if MARKITDOWN_AVAILABLE else None
         self.ensure_directories()
+        self.vector_vault = ProjectVectorVault(
+            db_path=self.vault_dir / "project_vault.db",
+            vault_dir=self.vault_dir,
+        )
 
     def ensure_directories(self) -> None:
         """Ensure vault and archive directories exist."""
@@ -69,24 +74,47 @@ class VaultManager:
         self.archive_dir.mkdir(parents=True, exist_ok=True)
 
     def list_active_files(self) -> list[VaultItem]:
-        """List all non-hidden, active files inside vault/."""
+        """List all non-hidden, active paper files inside vault/papers/ and root vault/."""
         self.ensure_directories()
         items: list[VaultItem] = []
-        for p in sorted(self.vault_dir.iterdir()):
-            if p.is_file() and not p.name.startswith("."):
-                cache_file = self.workspace.get_cache_path(f"{p.stem}.md")
-                meta = self._read_frontmatter_metadata(cache_file) if cache_file.exists() else None
-                items.append(VaultItem(
-                    filename=p.name,
-                    path=p,
-                    extension=p.suffix.lower(),
-                    size_bytes=p.stat().st_size,
-                    is_archived=False,
-                    is_cached=cache_file.exists(),
-                    title=meta.title if meta else p.stem,
-                    cite_key=meta.cite_key if meta else "",
-                ))
+        seen_paths: set[Path] = set()
+
+        candidate_dirs = [self.workspace.papers_dir, self.vault_dir]
+        for cdir in candidate_dirs:
+            if not cdir.exists():
+                continue
+            for p in sorted(cdir.iterdir()):
+                if p.is_file() and not p.name.startswith(".") and not p.name.endswith(".db"):
+                    if p.resolve() in seen_paths:
+                        continue
+                    seen_paths.add(p.resolve())
+                    cache_file = self.workspace.get_cache_path(f"{p.stem}.md")
+                    meta = self._read_frontmatter_metadata(cache_file) if cache_file.exists() else None
+                    items.append(VaultItem(
+                        filename=p.name,
+                        path=p,
+                        extension=p.suffix.lower(),
+                        size_bytes=p.stat().st_size,
+                        is_archived=False,
+                        is_cached=cache_file.exists(),
+                        title=meta.title if meta else p.stem,
+                        cite_key=meta.cite_key if meta else "",
+                    ))
         return items
+
+    def list_images(self) -> list[dict[str, Any]]:
+        """List filtered informative images from project vector vault."""
+        try:
+            return self.vector_vault.list_inventory().get("images", [])
+        except Exception:
+            return []
+
+    def list_tables(self) -> list[dict[str, Any]]:
+        """List structured tables extracted into vault/tables/."""
+        try:
+            return self.vector_vault.list_inventory().get("tables", [])
+        except Exception:
+            return []
 
     def list_archived_files(self) -> list[VaultItem]:
         """List all soft-removed files inside vault/.archive/."""
@@ -132,6 +160,15 @@ class VaultManager:
         # 1. Academic PDF Parser path
         if file_path.suffix.lower() == ".pdf":
             try:
+                try:
+                    self.vector_vault.ingest_paper_pdf(
+                        pdf_path=file_path,
+                        paper_id=file_path.stem,
+                        title=file_path.stem.replace("_", " ").title(),
+                    )
+                except Exception as vec_err:
+                    logger.debug(f"Vector vault ingestion skipped/failed for {file_path.name}: {vec_err}")
+
                 parsed = self.pdf_parser.parse(file_path, save_to_cache=True)
                 return parsed.cache_path
             except Exception as pdf_err:

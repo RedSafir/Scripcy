@@ -179,6 +179,7 @@ class EvidenceSynthesizer:
         documents: list[str | Path | ParsedDocument],
         max_chunks: int | None = None,
         token_budget: int | None = None,
+        vector_vault: Any = None,
     ) -> list[EvidenceChunk]:
         """Decompose documents, rank passages against query, and select within token limits.
 
@@ -204,6 +205,54 @@ class EvidenceSynthesizer:
         else:
             limit_chunks = max_chunks or self.default_max_chunks
             limit_tokens = token_budget or self.default_token_budget
+
+        # 1. High-Performance Hybrid Search (FTS5 BM25 + sqlite-vec dense embeddings)
+        if vector_vault is not None:
+            try:
+                hybrid_res = vector_vault.hybrid_search_rrf(query, top_k=limit_chunks)
+                if hybrid_res:
+                    active_stems = set()
+                    for d in documents:
+                        if isinstance(d, Path):
+                            active_stems.add(d.stem)
+                        elif hasattr(d, "stem"):
+                            active_stems.add(d.stem)
+                        elif hasattr(d, "metadata") and getattr(d.metadata, "cite_key", None):
+                            active_stems.add(d.metadata.cite_key)
+                        elif isinstance(d, str):
+                            active_stems.add(Path(d).stem)
+
+                    matched_chunks = []
+                    for h in hybrid_res:
+                        if active_stems and h.paper_id not in active_stems:
+                            continue
+                        chunk_text = h.content
+                        if h.tables:
+                            for tbl in h.tables:
+                                md_p = tbl.get("md_path")
+                                if md_p and Path(md_p).exists():
+                                    try:
+                                        t_content = Path(md_p).read_text(encoding="utf-8")
+                                        chunk_text += f"\n\n[Tabel Terindeks: {tbl.get('caption', 'Tabel')}]:\n{t_content}"
+                                    except Exception:
+                                        pass
+                        if h.images:
+                            for img in h.images:
+                                ai_desc = img.get("ai_analysis")
+                                if ai_desc and "JUNK_IMAGE" not in ai_desc:
+                                    chunk_text += f"\n\n[Analisis Visual Gambar Halaman {h.page_num}: {img.get('caption', 'Gambar')}]:\n{ai_desc}"
+
+                        matched_chunks.append(EvidenceChunk(
+                            chunk_id=h.chunk_id,
+                            source=h.paper_id,
+                            text=chunk_text,
+                            token_estimate=estimate_tokens(chunk_text),
+                            score=h.rrf_score,
+                        ))
+                    if matched_chunks:
+                        return matched_chunks[:limit_chunks]
+            except Exception as v_err:
+                logger.debug(f"Hybrid search fallback to lexical chunking: {v_err}")
 
         query_terms = tokenize_query(query)
 

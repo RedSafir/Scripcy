@@ -509,7 +509,8 @@ class LiteratureScout:
 
         self.workspace.ensure_directories()
         safe_stem = sanitize_filename(paper.title)
-        target_pdf = self.workspace.vault_dir / f"{safe_stem}.pdf"
+        papers_dir = getattr(self.workspace, "papers_dir", self.workspace.vault_dir)
+        target_pdf = papers_dir / f"{safe_stem}.pdf"
 
         # Stream download directly
         async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
@@ -544,6 +545,17 @@ class LiteratureScout:
         self.workspace.save_to_cache(
             cache_file, f"{meta.to_frontmatter()}\n{clean_body_markdown.strip()}\n"
         )
+
+        def _ingest_vector_safe():
+            try:
+                from scrpcy.core.vector_vault import ProjectVectorVault
+                db_p = self.workspace.vault_dir / "project_vault.db"
+                vv = ProjectVectorVault(db_p, self.workspace.vault_dir)
+                vv.ingest_paper_pdf(target_pdf, paper_id=safe_stem, title=paper.title)
+            except Exception:
+                pass
+
+        await asyncio.to_thread(_ingest_vector_safe)
         return target_pdf
 
     def ingest_abstract_paper(self, paper: ScoutResult) -> Path:
@@ -570,7 +582,8 @@ class LiteratureScout:
         )
         full_content = f"{meta.to_frontmatter()}\n{body.strip()}\n"
 
-        target_md = self.workspace.vault_dir / f"{safe_stem}.md"
+        papers_dir = getattr(self.workspace, "papers_dir", self.workspace.vault_dir)
+        target_md = papers_dir / f"{safe_stem}.md"
         target_md.write_text(full_content, encoding="utf-8")
 
         cache_file = f"{safe_stem}.md"

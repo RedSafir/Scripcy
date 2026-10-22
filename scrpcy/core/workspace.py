@@ -37,16 +37,22 @@ class WorkspaceManager:
         self.root_dir = resolved_root.expanduser().resolve()
         self.cache_dir = self.root_dir / "cache"
         self.vault_dir = self.root_dir / "vault"
+        self.papers_dir = self.vault_dir / "papers"
+        self.images_dir = self.vault_dir / "images"
+        self.tables_dir = self.vault_dir / "tables"
 
         if auto_create:
             self.ensure_directories()
 
     def ensure_directories(self) -> None:
-        """Create workspace root, cache, and vault directories if they do not exist."""
+        """Create workspace root, cache, and segregated vault directories if they do not exist."""
         try:
             self.root_dir.mkdir(parents=True, exist_ok=True)
             self.cache_dir.mkdir(parents=True, exist_ok=True)
             self.vault_dir.mkdir(parents=True, exist_ok=True)
+            self.papers_dir.mkdir(parents=True, exist_ok=True)
+            self.images_dir.mkdir(parents=True, exist_ok=True)
+            self.tables_dir.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
             raise WorkspaceError(
                 f"Failed to create workspace directories at '{self.root_dir}': {exc}"

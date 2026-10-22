@@ -3344,41 +3344,49 @@ class CLIStudio:
         v_table = Table(box=None, padding=(0, 2), show_header=False)
         v_table.add_column("Label", style="dim", width=18)
         v_table.add_column("Value", style="white")
+        tables_count = len(self.vault_manager.list_tables())
+        images_count = len(self.vault_manager.list_images())
+
         v_table.add_row("Status", "[bold cyan]Aktif[/bold cyan]")
         v_table.add_row("Folder Vault", str(vault_path))
-        v_table.add_row("Total Berkas", f"{len(active_items)} berkas aktif ({cached_count} terindeks Markdown, {needs_reload} perlu reload)")
+        v_table.add_row("Koleksi Paper", f"{len(active_items)} berkas di vault/papers/ ({cached_count} terindeks Markdown, {needs_reload} perlu reload)")
+        v_table.add_row("Tabel Terstruktur", f"{tables_count} tabel terindeks di vault/tables/")
+        v_table.add_row("Gambar & Grafik", f"{images_count} visual diagram di vault/images/")
         v_table.add_row("Diarsipkan", f"{archived_count} berkas di .archive/ (tidak aktif di konteks AI)")
         v_table.add_row("Format Dokumen", "[dim]PDF, DOCX, PPTX, XLSX, TXT, HTML, MD (didukung Microsoft MarkItDown)[/dim]")
         self.console.print(v_table)
         self.console.print()
 
     def render_vault_view(self) -> None:
-        """Render active vault items table and usage hint."""
+        """Render active vault items (papers, tables, images) following DESIGN.md."""
         if not self.vault_manager:
             return
         items = self.vault_manager.list_active_files()
-        if not items:
-            self.console.print("\n[dim]Vault masih kosong (0 berkas aktif).[/dim]")
+        tables = self.vault_manager.list_tables()
+        images = self.vault_manager.list_images()
+
+        if not items and not tables and not images:
+            self.console.print("\n[dim]Vault masih kosong (0 paper, 0 tabel, 0 gambar).[/dim]")
             self.console.print("[dim]Gunakan 'add <path>', 'findpaper <topik>', atau 'gdrive' untuk menambahkan berkas.[/dim]\n")
             return
 
-        self.console.print(f"\n[bold bright_white]Daftar Berkas Vault [{self.current_project.name if self.current_project else 'Vault'}][/bold bright_white]")
-        table = Table(
+        self.console.print(f"\n[bold bright_white]Koleksi Paper Vault [{self.current_project.name if self.current_project else 'Vault'}][/bold bright_white] [dim](vault/papers/ • {len(items)} paper)[/dim]")
+        p_table = Table(
             box=None,
             padding=(0, 2),
             show_header=True,
             header_style="bold cyan",
         )
-        table.add_column("#", justify="right", style="dim", width=3)
-        table.add_column("Filename", style="bold white")
-        table.add_column("Format", justify="center", width=8, style="dim")
-        table.add_column("Size", justify="right", width=10, style="dim")
-        table.add_column("Markdown Status", justify="center", width=18)
-        table.add_column("Cite Key / Title", style="cyan")
+        p_table.add_column("#", justify="right", style="dim", width=3)
+        p_table.add_column("Filename", style="bold white")
+        p_table.add_column("Format", justify="center", width=8, style="dim")
+        p_table.add_column("Size", justify="right", width=10, style="dim")
+        p_table.add_column("Markdown Status", justify="center", width=18)
+        p_table.add_column("Cite Key / Title", style="cyan")
 
         for idx, item in enumerate(items, 1):
             md_status = "[bold cyan][Ready / Cached][/bold cyan]" if item.is_cached else "[dim][Needs Reload][/dim]"
-            table.add_row(
+            p_table.add_row(
                 str(idx),
                 item.filename,
                 item.extension.upper().lstrip("."),
@@ -3386,13 +3394,165 @@ class CLIStudio:
                 md_status,
                 item.title or item.cite_key,
             )
+        self.console.print(p_table)
 
-        self.console.print(table)
+        if tables:
+            self.console.print(f"\n[bold bright_white]Tabel Terstruktur Akademis[/bold bright_white] [dim](vault/tables/ • {len(tables)} tabel)[/dim]")
+            t_table = Table(
+                box=None,
+                padding=(0, 2),
+                show_header=True,
+                header_style="bold cyan",
+            )
+            t_table.add_column("#", justify="right", style="dim", width=3)
+            t_table.add_column("Paper Sumber", style="bold white")
+            t_table.add_column("Halaman", justify="center", width=8, style="dim")
+            t_table.add_column("Format", justify="center", width=10, style="dim")
+            t_table.add_column("Metode", justify="center", width=18)
+            t_table.add_column("Keterangan", style="cyan")
+
+            for t_idx, tab in enumerate(tables, 1):
+                method_badge = "[cyan]Multimodal Vision[/cyan]" if tab.get("is_vision_fallback") else "[bold cyan]PyMuPDF Tabular[/bold cyan]"
+                fmt = "MD + CSV" if tab.get("csv_path") else "Markdown"
+                caption = (tab.get("caption") or "-")[:50]
+                t_table.add_row(
+                    str(t_idx),
+                    tab.get("paper_id", "")[:28],
+                    str(tab.get("page_num", 1)),
+                    fmt,
+                    method_badge,
+                    caption,
+                )
+            self.console.print(t_table)
+
+        if images:
+            self.console.print(f"\n[bold bright_white]Gambar & Visual Diagram Akademis[/bold bright_white] [dim](vault/images/ • {len(images)} gambar informatif)[/dim]")
+            i_table = Table(
+                box=None,
+                padding=(0, 2),
+                show_header=True,
+                header_style="bold cyan",
+            )
+            i_table.add_column("#", justify="right", style="dim", width=3)
+            i_table.add_column("File Gambar", style="bold white")
+            i_table.add_column("Paper Sumber", style="dim", width=25)
+            i_table.add_column("Dimensi", justify="center", width=12, style="dim")
+            i_table.add_column("Analisis Multimodal AI", style="cyan")
+
+            for i_idx, img in enumerate(images, 1):
+                f_name = Path(img.get("file_path", "")).name
+                dim = f"{img.get('width', 0)}x{img.get('height', 0)}"
+                analysis = (img.get("ai_analysis") or img.get("caption") or "Diagram informatif")[:55]
+                i_table.add_row(
+                    str(i_idx),
+                    f_name,
+                    img.get("paper_id", "")[:23],
+                    dim,
+                    analysis,
+                )
+            self.console.print(i_table)
+
         archived_count = len(self.vault_manager.list_archived_files())
         archive_hint = f" ({archived_count} files in .archive/)" if archived_count else ""
         self.console.print(
-            f"[dim]Ketik 'view <#>' untuk baca isi markdown, 'remove <#>' untuk arsip, atau 'back' untuk kembali{archive_hint}.[/dim]\n"
+            f"\n[dim]Ketik 'view <#>' untuk baca paper, 'view table <#>' untuk buka tabel, 'remove <#>' untuk arsip, atau 'back' untuk kembali{archive_hint}.[/dim]\n"
         )
+
+    def _check_agent_turn_checkpoint(
+        self,
+        turn: int,
+        best_grounding: float,
+        best_critic: int,
+        accumulated_input_tokens: int,
+        accumulated_output_tokens: int,
+    ) -> bool:
+        """Evaluate if an interactive 3-turn checkpoint should pause and ask user to continue.
+
+        Returns True if turn execution should STOP (finalize with best draft).
+        Returns False if turn execution should CONTINUE.
+        """
+        completed_turns = turn + 1
+        if completed_turns <= 0 or completed_turns % 3 != 0:
+            return False
+
+        # If Grounding and Critic evaluators already passed threshold, finish without asking!
+        if best_grounding >= 0.70 and best_critic >= 7:
+            return True
+
+        if not sys.stdin.isatty():
+            # Non-interactive / headless environment (e.g. test suites)
+            return completed_turns >= 15
+
+        # Interactive terminal: render checkpoint telemetry and prompt user
+        total_tokens = accumulated_input_tokens + accumulated_output_tokens
+        self.console.print(
+            f"\n[bold yellow]●[/bold yellow] [bold bright_white]Checkpoint Iterasi ({completed_turns} Turn Selesai)[/bold bright_white]\n"
+            f"  [dim]•[/dim] Skor Evaluasi: [cyan]Grounding: {max(0, int(best_grounding * 100))}%[/cyan] [dim]•[/dim] [yellow]Critic: {max(0, best_critic)}/10[/yellow]\n"
+            f"  [dim]•[/dim] Konsumsi Token: [dim]{accumulated_input_tokens:,} in · {accumulated_output_tokens:,} out ({total_tokens:,} total)[/dim]"
+        )
+        try:
+            choice = self.console.input(
+                " [bold cyan]?[/bold cyan] Tambah 3 iterasi turn lagi untuk menyempurnakan jawaban? [bold cyan][Y/n/selesai][/bold cyan]: "
+            ).strip().lower()
+            if choice in ("n", "no", "selesai", "c", "cancel"):
+                return True
+            self.console.print("[dim]● Melanjutkan 3 iterasi turn berikutnya...[/dim]\n")
+            return False
+        except (KeyboardInterrupt, EOFError):
+            return True
+
+    def _cmd_view_table(self, arg: str) -> None:
+        """View extracted table markdown or CSV."""
+        if not self.vault_manager:
+            return
+        tables = self.vault_manager.list_tables()
+        if not tables:
+            self.console.print("[dim]Belum ada tabel terindeks di vault/tables/.[/dim]\n")
+            return
+        if not arg or not arg.isdigit():
+            self.console.print(f"[yellow]Usage: /view table <1..{len(tables)}>[/yellow]\n")
+            return
+        idx = int(arg) - 1
+        if not (0 <= idx < len(tables)):
+            self.console.print(f"[red][x] Tabel #{arg} tidak ditemukan (total: {len(tables)}).[/red]\n")
+            return
+        tab = tables[idx]
+        md_p = Path(tab.get("md_path", ""))
+        self.console.print(f"\n[bold bright_white]Tabel #{arg} [{tab.get('paper_id')} - Halaman {tab.get('page_num')}][/bold bright_white]")
+        if tab.get("caption"):
+            self.console.print(f"[dim]Keterangan: {tab.get('caption')}[/dim]")
+        if md_p.exists():
+            content = md_p.read_text(encoding="utf-8")
+            self.console.print(f"\n{content}\n")
+        else:
+            self.console.print(f"[dim]Berkas tabel: {md_p}[/dim]\n")
+
+    def _cmd_view_image(self, arg: str) -> None:
+        """View extracted informative figure metadata and multimodal AI analysis."""
+        if not self.vault_manager:
+            return
+        images = self.vault_manager.list_images()
+        if not images:
+            self.console.print("[dim]Belum ada gambar/diagram terindeks di vault/images/.[/dim]\n")
+            return
+        if not arg or not arg.isdigit():
+            self.console.print(f"[yellow]Usage: /view image <1..{len(images)}>[/yellow]\n")
+            return
+        idx = int(arg) - 1
+        if not (0 <= idx < len(images)):
+            self.console.print(f"[red][x] Gambar #{arg} tidak ditemukan (total: {len(images)}).[/red]\n")
+            return
+        img = images[idx]
+        img_p = Path(img.get("file_path", ""))
+        self.console.print(f"\n[bold bright_white]Gambar #{arg} [{img_p.name}][/bold bright_white]")
+        self.console.print(f"[dim]Paper Sumber : {img.get('paper_id')} (Halaman {img.get('page_num')})[/dim]")
+        self.console.print(f"[dim]Dimensi      : {img.get('width')} x {img.get('height')} px[/dim]")
+        self.console.print(f"[dim]File Path    : {img_p}[/dim]")
+        if img.get("caption"):
+            self.console.print(f"[dim]Caption Teks : {img.get('caption')}[/dim]")
+        if img.get("ai_analysis"):
+            self.console.print(f"\n[bold cyan]Interpretasi Visual Multimodal AI:[/bold cyan]\n{img.get('ai_analysis')}\n")
+
 
     def print_vault_help(self) -> None:
         """Render instructions for Vault sub-mode."""
@@ -4597,9 +4757,21 @@ class CLIStudio:
         self.console.print(f"    Cached at: [dim]{parsed.cache_path}[/dim]\n")
 
     def cmd_view(self, arg: str) -> None:
-        """Inspect the frontmatter and beginning of a paper's markdown text."""
+        """Inspect paper, table, or figure image in the vault."""
         if not arg:
-            self.console.print("[yellow]Usage: /view <# | stem>[/yellow]\n")
+            self.console.print("[yellow]Usage: /view <# | stem> atau /view table <#> atau /view image <#>[/yellow]\n")
+            return
+
+        clean = arg.strip()
+        parts = clean.split(maxsplit=1)
+        sub = parts[0].lower()
+        sub_arg = parts[1].strip() if len(parts) > 1 else ""
+
+        if sub in ("table", "tables", "t"):
+            self._cmd_view_table(sub_arg)
+            return
+        elif sub in ("image", "images", "img", "i"):
+            self._cmd_view_image(sub_arg)
             return
 
         if not self.workspace:
@@ -5899,6 +6071,7 @@ class CLIStudio:
             query=query,
             documents=existing_paths,
             max_chunks=self.config.citation.max_evidence_chunks,
+            vector_vault=getattr(self.vault_manager, "vector_vault", None),
         )
 
         # High Token Consumption Warning & Confirmation (if > 5 chunks)
@@ -6042,6 +6215,7 @@ class CLIStudio:
                     query=query,
                     documents=existing_paths,
                     max_chunks=self.config.citation.max_evidence_chunks,
+                    vector_vault=getattr(self.vault_manager, "vector_vault", None),
                 )
                 if evidence:
                     self.console.print(f"[bold green][✓] Berhasil memuat bukti literatur dari dokumen vault yang baru diunduh.[/bold green]")
@@ -6087,8 +6261,8 @@ class CLIStudio:
                 self.logger.log_evidence_retrieved(session_id, query, evidence)
 
         start_time = time.time()
-        max_agent_turns = getattr(self.config, "max_agent_turns", 15)
-        max_refinement_turns = getattr(self.config, "max_refinement_turns", min(8, max_agent_turns - 2))
+        max_agent_turns = 9999
+        max_refinement_turns = 9999
         turn = 0
         refinement_turns = 0
         locked_supported_claims: list[str] = []
@@ -6354,6 +6528,26 @@ class CLIStudio:
                     )
                     current_docs = []
                     turn += 1
+                    if self._check_agent_turn_checkpoint(
+                        turn=turn,
+                        best_grounding=best_grounding,
+                        best_critic=best_critic,
+                        accumulated_input_tokens=accumulated_input_tokens,
+                        accumulated_output_tokens=accumulated_output_tokens,
+                    ):
+                        raw_final = best_draft or turn_result.get("response", "")
+                        final_response = self._sanitize_final_response(raw_final)
+                        if self.vault_manager and final_response:
+                            final_response = append_vault_bibliography(
+                                text=final_response,
+                                evidence=evidence,
+                                vault_manager=self.vault_manager,
+                                style=self.config.citation.style,
+                                active_documents=self.active_documents,
+                            )
+                        last_v_report = turn_result.get("v_report")
+                        last_c_report = turn_result.get("c_report")
+                        break
                     continue
 
                 elif turn_result["type"] == "epistemic_exit":
@@ -6399,6 +6593,26 @@ class CLIStudio:
                             f"Instruksi: Pertahankan seluruh klaim terverifikasi di atas. Pangkas atau sesuaikan klaim yang belum didukung agar 100% didukung oleh bukti teks dokumen vault."
                         )
                         turn += 1
+                    if self._check_agent_turn_checkpoint(
+                        turn=turn,
+                        best_grounding=best_grounding,
+                        best_critic=best_critic,
+                        accumulated_input_tokens=accumulated_input_tokens,
+                        accumulated_output_tokens=accumulated_output_tokens,
+                    ):
+                        raw_final = best_draft or turn_result.get("response", "")
+                        final_response = self._sanitize_final_response(raw_final)
+                        if self.vault_manager and final_response:
+                            final_response = append_vault_bibliography(
+                                text=final_response,
+                                evidence=evidence,
+                                vault_manager=self.vault_manager,
+                                style=self.config.citation.style,
+                                active_documents=self.active_documents,
+                            )
+                        last_v_report = turn_result.get("v_report")
+                        last_c_report = turn_result.get("c_report")
+                        break
                         continue
 
                 elif turn_result["type"] == "needs_citation_mapping":
@@ -6516,6 +6730,7 @@ class CLIStudio:
                             query=query,
                             documents=current_docs,
                             max_chunks=self.config.citation.max_evidence_chunks,
+                            vector_vault=getattr(self.vault_manager, "vector_vault", None),
                         )
                         citation_guide = self._format_vault_citation_guide()
                         self.console.print(f"[bold green][✓] Berhasil mengindeks {len(newly_ingested_stems)} dokumen sitasi baru ke vault.[/bold green]")
@@ -6561,6 +6776,26 @@ class CLIStudio:
                         f"Instruksi: Pertahankan seluruh klaim terverifikasi di atas. Mentailor ulang sintesis untuk mengatasi catatan kelemahan di atas dengan memanfaatkan bukti literatur baru yang telah diindeks di vault, sertakan sitasi in-text APA pada setiap klaim, dan berikan jawaban yang komprehensif serta mantap (100% yakin)."
                     )
                     turn += 1
+                    if self._check_agent_turn_checkpoint(
+                        turn=turn,
+                        best_grounding=best_grounding,
+                        best_critic=best_critic,
+                        accumulated_input_tokens=accumulated_input_tokens,
+                        accumulated_output_tokens=accumulated_output_tokens,
+                    ):
+                        raw_final = best_draft or turn_result.get("response", "")
+                        final_response = self._sanitize_final_response(raw_final)
+                        if self.vault_manager and final_response:
+                            final_response = append_vault_bibliography(
+                                text=final_response,
+                                evidence=evidence,
+                                vault_manager=self.vault_manager,
+                                style=self.config.citation.style,
+                                active_documents=self.active_documents,
+                            )
+                        last_v_report = turn_result.get("v_report")
+                        last_c_report = turn_result.get("c_report")
+                        break
                     continue
 
                 else:
