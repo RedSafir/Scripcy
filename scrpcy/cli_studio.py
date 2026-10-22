@@ -97,14 +97,14 @@ class _AgentProgressTracker:
 
 
 
-SCRPCY_LOGO = r"""
-  ███████╗ ██████╗██████╗ ██████╗  ██████╗██╗   ██╗
-  ██╔════╝██╔════╝██╔══██╗██╔══██╗██╔════╝╚██╗ ██╔╝
-  ███████╗██║     ██████╔╝██████╔╝██║      ╚████╔╝ 
-  ╚════██║██║     ██╔══██╗██╔═══╝ ██║       ╚██╔╝  
-  ███████║╚██████╗██║  ██║██║     ╚██████╗   ██║   
-  ╚══════╝ ╚═════╝╚═╝  ╚═╝╚═╝      ╚═════╝   ╚═╝   
-"""
+SCRPCY_LOGO = (
+    "███████╗  ██████╗   ██████╗   ██████╗   ██████╗   ██╗   ██╗\n"
+    "██╔════╝  ██╔════╝  ██╔══██╗  ██╔══██╗  ██╔════╝  ╚██╗ ██╔╝\n"
+    "███████╗  ██║       ██████╔╝  ██████╔╝  ██║        ╚████╔╝ \n"
+    "╚════██║  ██║       ██╔══██╗  ██╔════╝  ██║         ╚██╔╝  \n"
+    "███████║  ╚██████╗  ██║  ██║  ██║       ╚██████╗     ██║   \n"
+    "╚══════╝   ╚═════╝  ╚═╝  ╚═╝  ╚═╝        ╚═════╝     ╚═╝   "
+)
 SCRPCY_VERSION = "v0.1.0"
 
 
@@ -275,7 +275,8 @@ class CLIStudio:
     def print_banner(self) -> None:
         """Render the large ASCII art logo at most once."""
         if not self._has_printed_banner:
-            self.console.print(f"[bold cyan]{SCRPCY_LOGO.strip()}[/bold cyan]\n")
+            banner_lines = "\n".join(f" {line}" for line in SCRPCY_LOGO.strip().splitlines())
+            self.console.print(f"[bold cyan]{banner_lines}[/bold cyan]\n")
             self.console.print(f" [dim]{SCRPCY_VERSION} • Local-First Academic Research Studio[/dim]\n")
             self._has_printed_banner = True
 
