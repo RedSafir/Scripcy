@@ -763,6 +763,152 @@ def interactive_action_confirm(action_text: str, console: Console | None = None)
     finally:
         c.show_cursor(True)
 
+
+def interactive_scout_confirm(
+    suggested_topic: str,
+    quota: int = 7,
+    console: Console | None = None,
+) -> tuple[str, str | None]:
+    """Interactive 3-option confirmation for literature scout conforming to DESIGN.md.
+
+    Options:
+        [1] Ya: Run autonomous literature search and ingest
+        [2] Tolak: Decline and continue synthesis with general knowledge
+        [3] Input User: Enter custom keywords for scouting
+
+    Returns:
+        tuple[str, str | None]: (action, custom_keyword)
+            where action in ('yes', 'no', 'custom')
+    """
+    c = console or Console()
+
+    # Enable ANSI Virtual Terminal processing on Windows
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            kernel32 = ctypes.windll.kernel32
+            kernel32.SetConsoleMode(kernel32.GetStdHandle(-11), 7)
+        except Exception:
+            pass
+
+    # Non-interactive / mock fallback for tests and automated pipelines
+    from unittest.mock import Mock
+    is_mocked = isinstance(getattr(c, "input", None), Mock)
+    if is_mocked or not sys.stdin.isatty():
+        try:
+            line = c.input("[bold cyan][?] Jalankan pencarian & unduh otomatis? [Y/n/ketik kata kunci baru]: [/bold cyan]").strip()
+            if line.lower() in ("", "y", "yes", "ya", "ok", "1"):
+                return ("yes", suggested_topic)
+            elif line.lower() in ("n", "no", "tidak", "skip", "batal", "cancel", "0", "2"):
+                return ("no", None)
+            elif line == "3":
+                c.print("[bold cyan]● Masukkan kata kunci pencarian kustom:[/bold cyan]")
+                custom = c.input("  > ").strip()
+                return ("custom", custom if custom else suggested_topic)
+            else:
+                return ("custom", line)
+        except Exception:
+            return ("no", None)
+
+    options = [
+        (f"Ya, jalankan pencarian & unduh otomatis ({quota} paper: '{suggested_topic}')", "yes"),
+        ("Tolak, lanjutkan sintesis dengan pengetahuan umum", "no"),
+        ("Input kata kunci baru (pencarian kustom)", "custom"),
+    ]
+    cursor_idx = 0
+    prev_lines_drawn = 0
+    last_rendered_text = ""
+
+    c.show_cursor(False)
+    try:
+        while True:
+            lines_out: list[Text] = []
+            header = Text("● Rencana: Mencari & mengunduh literatur ", style="bold cyan")
+            header.append(f"({quota} paper terkait '{suggested_topic}')", style="bold bright_white")
+            lines_out.append(header)
+            lines_out.append(Text("  Pilih tindakan untuk melanjutkan:", style="dim"))
+
+            for idx, (label, val) in enumerate(options):
+                is_cursor = idx == cursor_idx
+                item_text = Text()
+                num_tag = f"[{idx + 1}] "
+                if is_cursor:
+                    item_text.append("  > ", style="bold cyan")
+                    marker_style = "bold green" if val == "yes" else ("bold red" if val == "no" else "bold yellow")
+                    item_text.append(num_tag, style=marker_style)
+                    item_text.append(label, style="bold bright_white")
+                else:
+                    item_text.append("    ", style="dim")
+                    item_text.append(num_tag, style="dim")
+                    item_text.append(label, style="dim white")
+                lines_out.append(item_text)
+
+            footer = Text("  Navigasi: ", style="dim")
+            footer.append("↑/↓ / 1-3", style="bold cyan")
+            footer.append(" Pilih  ", style="dim")
+            footer.append("Enter", style="bold green")
+            footer.append(" Konfirmasi  ", style="dim")
+            footer.append("Esc/n", style="bold yellow")
+            footer.append(" Tolak", style="dim")
+            lines_out.append(footer)
+
+            last_rendered_text, prev_lines_drawn = _render_diff_inplace(
+                c, lines_out, last_rendered_text, prev_lines_drawn
+            )
+
+            key = _read_key()
+            if key in ("ESC", "n", "N", "q", "Q"):
+                if prev_lines_drawn > 0:
+                    _clear_lines(prev_lines_drawn, c)
+                return ("no", None)
+            elif key in ("y", "Y"):
+                if prev_lines_drawn > 0:
+                    _clear_lines(prev_lines_drawn, c)
+                return ("yes", suggested_topic)
+            elif key in ("1", "2", "3"):
+                choice_idx = int(key) - 1
+                choice = options[choice_idx][1]
+                if prev_lines_drawn > 0:
+                    _clear_lines(prev_lines_drawn, c)
+                if choice == "yes":
+                    return ("yes", suggested_topic)
+                elif choice == "no":
+                    return ("no", None)
+                elif choice == "custom":
+                    c.show_cursor(True)
+                    c.print("[bold cyan]● Masukkan kata kunci pencarian kustom:[/bold cyan]")
+                    try:
+                        user_input = c.input("  > ").strip()
+                    except Exception:
+                        user_input = ""
+                    if user_input:
+                        return ("custom", user_input)
+                    return ("no", None)
+            elif key == "ENTER":
+                choice = options[cursor_idx][1]
+                if prev_lines_drawn > 0:
+                    _clear_lines(prev_lines_drawn, c)
+                if choice == "yes":
+                    return ("yes", suggested_topic)
+                elif choice == "no":
+                    return ("no", None)
+                elif choice == "custom":
+                    c.show_cursor(True)
+                    c.print("[bold cyan]● Masukkan kata kunci pencarian kustom:[/bold cyan]")
+                    try:
+                        user_input = c.input("  > ").strip()
+                    except Exception:
+                        user_input = ""
+                    if user_input:
+                        return ("custom", user_input)
+                    return ("no", None)
+            elif key in ("UP", "LEFT"):
+                cursor_idx = (cursor_idx - 1) % len(options)
+            elif key in ("DOWN", "RIGHT", "TAB"):
+                cursor_idx = (cursor_idx + 1) % len(options)
+    finally:
+        c.show_cursor(True)
+
 def interactive_token_warning_confirm(
     chunk_count: int,
     doc_count: int,

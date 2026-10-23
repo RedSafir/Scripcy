@@ -259,6 +259,116 @@ def test_auto_scout_timeout_falls_back_to_background(
     assert "Proses dialihkan ke background:" in output
 
 
+def test_interactive_scout_confirm_choices() -> None:
+    """Test interactive_scout_confirm across all 3 choices according to DESIGN.md."""
+    from scrpcy.ui.interactive import interactive_scout_confirm
+
+    console = Console(file=io.StringIO(), force_terminal=True)
+
+    # 1. Option 1: Yes
+    with patch.object(console, "input", return_value="1"):
+        res = interactive_scout_confirm("deep learning", quota=5, console=console)
+        assert res == ("yes", "deep learning")
+
+    with patch.object(console, "input", return_value=""):
+        res = interactive_scout_confirm("deep learning", quota=5, console=console)
+        assert res == ("yes", "deep learning")
+
+    # 2. Option 2: Decline / Skip
+    with patch.object(console, "input", return_value="2"):
+        res = interactive_scout_confirm("deep learning", quota=5, console=console)
+        assert res == ("no", None)
+
+    with patch.object(console, "input", return_value="n"):
+        res = interactive_scout_confirm("deep learning", quota=5, console=console)
+        assert res == ("no", None)
+
+    # 3. Option 3: Custom keywords
+    with patch.object(console, "input", side_effect=["3", "attention mechanism"]):
+        res = interactive_scout_confirm("deep learning", quota=5, console=console)
+        assert res == ("custom", "attention mechanism")
+
+    with patch.object(console, "input", return_value="reinforcement learning"):
+        res = interactive_scout_confirm("deep learning", quota=5, console=console)
+        assert res == ("custom", "reinforcement learning")
+
+
+def test_auto_scout_detach_with_esc(
+    temp_workspace: WorkspaceManager,
+    tmp_path: Path,
+) -> None:
+    """When user presses Esc during scouting, session is detached and task continues in background."""
+    from scrpcy.studio.signals import SessionDetachSignal
+
+    console = Console(file=io.StringIO(), force_terminal=True, color_system=None)
+    pm = ProjectManager(registry_file=tmp_path / "reg.json")
+    proj = pm.create_project("thesis", temp_workspace.root_dir)
+    cfg = ScrpcyConfig(workspace_path=str(temp_workspace.root_dir))
+
+    engine = LLMEngine(config=cfg)
+    studio = CLIStudio(
+        workspace=temp_workspace,
+        config=cfg,
+        console=console,
+        project_manager=pm,
+        engine=engine,
+    )
+    studio.open_project(proj)
+    session = studio.chat_manager.create_session("Bab 1")
+    studio.current_chat_session = session
+    studio.sub_mode = "chat"
+
+    # Simulate user pressing ESC during _run_agent_turn_interactive
+    with patch.object(studio.console, "input", return_value="y"), \
+         patch.object(studio, "_run_agent_turn_interactive", side_effect=SessionDetachSignal("detach")):
+        studio.handle_chat("Jelaskan parameter efficient fine tuning")
+
+    output = studio.console.file.getvalue()
+    assert "di-detach ke latar belakang" in output
+    assert "berjalan di background" in output
+    assert studio.sub_mode == "chat_hub"
+
+    # Background task must still exist in TaskManager
+    tasks = studio.task_manager.list_tasks()
+    assert len(tasks) >= 1
+    scout_task = tasks[0]
+    assert "Deep Research Scout" in scout_task.name
+
+
+def test_auto_scout_cancelled_with_ctrl_c(
+    temp_workspace: WorkspaceManager,
+    tmp_path: Path,
+) -> None:
+    """When user cancels during scouting with Ctrl+C, task is cooperatively cancelled in TaskManager."""
+    console = Console(file=io.StringIO(), force_terminal=True, color_system=None)
+    pm = ProjectManager(registry_file=tmp_path / "reg.json")
+    proj = pm.create_project("thesis", temp_workspace.root_dir)
+    cfg = ScrpcyConfig(workspace_path=str(temp_workspace.root_dir))
+
+    engine = LLMEngine(config=cfg)
+    studio = CLIStudio(
+        workspace=temp_workspace,
+        config=cfg,
+        console=console,
+        project_manager=pm,
+        engine=engine,
+    )
+    studio.open_project(proj)
+
+    # Simulate user pressing Ctrl+C (KeyboardInterrupt)
+    with patch.object(studio.console, "input", return_value="y"), \
+         patch.object(studio, "_run_agent_turn_interactive", side_effect=KeyboardInterrupt()):
+        studio.handle_chat("Jelaskan parameter efficient fine tuning")
+
+    output = studio.console.file.getvalue()
+    assert "Pencarian literatur dibatalkan oleh pengguna" in output
+
+    # Background task should be cancelled
+    tasks = studio.task_manager.list_tasks()
+    assert len(tasks) >= 1
+    assert tasks[0].status == "cancelled"
+
+
 def test_ingest_abstract_paper_creates_markdown(
     temp_workspace: WorkspaceManager,
 ) -> None:

@@ -152,8 +152,12 @@ def test_exit_chat_while_task_running(
     assert task.status in ("running", "completed")
 
     # Wait for it to finish and verify it logs into the session
-    time.sleep(0.4)
-    messages = studio.chat_manager.get_messages(session.id)
+    messages = []
+    for _ in range(30):
+        time.sleep(0.05)
+        messages = studio.chat_manager.get_messages(session.id)
+        if any("Heavy Downloader" in m.content for m in messages):
+            break
     assert any("Heavy Downloader" in m.content for m in messages)
 
 

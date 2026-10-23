@@ -22,6 +22,7 @@ interactive_help_view = _ui_interactive.interactive_help_view
 interactive_input_prompt = _ui_interactive.interactive_input_prompt
 interactive_menu = _ui_interactive.interactive_menu
 interactive_model_selector = _ui_interactive.interactive_model_selector
+interactive_scout_confirm = _ui_interactive.interactive_scout_confirm
 interactive_skill_selector = _ui_interactive.interactive_skill_selector
 
 __all__ = [
@@ -36,6 +37,7 @@ __all__ = [
     "interactive_item_browser",
     "interactive_confirm",
     "interactive_token_warning_confirm",
+    "interactive_scout_confirm",
     "interactive_detail_viewer",
     "interactive_help_view",
     "interactive_input_prompt",

@@ -553,16 +553,21 @@ class StudioProcessingMixin:
                 def _on_st(action: str, label: str) -> None:
                     self.task_manager.log(task_id, f"[{action}] {label}")
                     self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]{action}[/bold bright_white] [cyan]{label}[/cyan]")
-                res = auto_fn(
-                    clean_query,
-                    max_papers=max_download or 2,
-                    on_status=_on_st,
-                    engine=self.engine,
-                )
-                if inspect.isawaitable(res):
-                    res_stems = loop.run_until_complete(res)
-                else:
-                    res_stems = res
+                scout_kwargs: dict[str, Any] = {
+                    "max_papers": max_download or 2,
+                    "on_status": _on_st,
+                }
+                sig = inspect.signature(auto_fn)
+                if "engine" in sig.parameters or any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()):
+                    scout_kwargs["engine"] = self.engine
+                res = auto_fn(clean_query, **scout_kwargs)
+                try:
+                    if inspect.isawaitable(res):
+                        res_stems = loop.run_until_complete(res)
+                    else:
+                        res_stems = res
+                except (asyncio.TimeoutError, TimeoutError) as to_exc:
+                    raise TimeoutError("Auto-scout timed out") from to_exc
                 for s in res_stems or []:
                     self.active_documents.add(s)
                 return f"Ingested {len(res_stems or [])} paper(s): {', '.join(res_stems or [])}"

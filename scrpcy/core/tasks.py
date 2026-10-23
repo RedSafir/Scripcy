@@ -276,8 +276,8 @@ class TaskManager:
             except Exception as exc:
                 with self._lock:
                     info.status = "failed"
-                    info.error = str(exc)
-                    info.progress = f"Failed: {exc}"
+                    info.error = str(exc) or type(exc).__name__
+                    info.progress = f"Failed: {exc or type(exc).__name__}"
                     info.finished_at = datetime.now(timezone.utc).isoformat()
                     self._persist_task(info)
                 self.log(task_id, f"Task encountered error: {exc}")

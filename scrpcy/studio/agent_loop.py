@@ -65,6 +65,7 @@ from scrpcy.ui.interactive import (
     interactive_item_browser,
     interactive_menu,
     interactive_model_selector,
+    interactive_scout_confirm,
     interactive_skill_selector,
     interactive_token_warning_confirm,
 )
@@ -843,7 +844,7 @@ class StudioAgentLoopMixin:
             def _get_layout() -> tuple[str, str]:
                 cur_width = max(20, (self.console.width or shutil.get_terminal_size((80, 24)).columns) - 1)
                 cur_div = "─" * cur_width
-                left_st = "? shortcuts · /detach bg · /close exit"
+                left_st = "? shortcuts · esc detach · ctrl+c batal"
                 right_st = f"{self.active_skill_name} • {model_label} • {effort}" if self.active_skill_name else f"{model_label} • {effort}"
                 if len(left_st) + len(right_st) + 2 > cur_width:
                     right_st = f"{model_label} • {effort}"
@@ -922,7 +923,7 @@ class StudioAgentLoopMixin:
                             display_buf = buf_str if len(buf_str) <= avail_buf else "…" + buf_str[-(avail_buf - 1):]
                             prompt_line = f"\033[1;36m{vis_prompt}\033[0m\033[1;37m{display_buf}\033[0m\033[1;37m█\033[0m"
                         else:
-                            ph = "[Sedang memproses... Tekan Esc atau ketik /detach untuk latar belakang]"
+                            ph = "[Sedang memproses... Esc: detach · Ctrl+C: batal]"
                             avail_ph = max_p_w - len(vis_prompt) - 1
                             display_ph = ph if len(ph) <= avail_ph else ph[:avail_ph - 1] + "…]"
                             prompt_line = f"\033[1;36m{vis_prompt}\033[0m\033[2;37m{display_ph}\033[0m"
@@ -1076,95 +1077,99 @@ class StudioAgentLoopMixin:
             target_quota = self._determine_target_scout_quota(query, task_contract)
             self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Rencana: Mencari & mengunduh literatur[/bold bright_white] [cyan]({target_quota} paper terkait '{suggested_topic}')[/cyan]")
 
-            try:
-                from unittest.mock import Mock
-                if isinstance(self.console.input, Mock):
-                    user_choice = self.console.input("[bold cyan][?] Jalankan pencarian & unduh otomatis? [Y/n/ketik kata kunci baru]: [/bold cyan]").strip()
-                elif not sys.stdin.isatty():
-                    user_choice = "n"
-                else:
-                    user_choice = self.console.input("[bold cyan][?] Jalankan pencarian & unduh otomatis? [Y/n/ketik kata kunci baru]: [/bold cyan]").strip()
-            except (KeyboardInterrupt, EOFError, OSError):
-                user_choice = "n"
-                self.console.print()
+            choice, custom_keyword = interactive_scout_confirm(
+                suggested_topic=suggested_topic,
+                quota=target_quota,
+                console=self.console,
+            )
 
-            if user_choice.lower() in ("n", "no", "tidak", "batal", "cancel"):
+            if choice == "no":
                 self.console.print("[dim]● Pencarian otomatis dilewati. Melanjutkan sintesis dengan pengetahuan umum...[/dim]\n")
             else:
-                target_topic = suggested_topic if user_choice.lower() in ("", "y", "yes", "ya", "ok") else user_choice
+                target_topic = custom_keyword if (choice == "custom" and custom_keyword) else suggested_topic
                 self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Mencari[/bold bright_white] [dim]Menelusuri repositori ilmiah (OpenAlex & Semantic Scholar)...[/dim]")
 
-                scout_progress = _AgentProgressTracker("Menelusuri repositori ilmiah (OpenAlex & Semantic Scholar)...")
+                initial_active = set(self.active_documents)
+                task = self.task_manager.submit(
+                    name=f"Deep Research Scout: {target_topic}",
+                    task_type="scout",
+                    target_fn=self._background_scout_worker,
+                    query=target_topic,
+                    topic_query=target_topic,
+                    max_download=target_quota,
+                    session_id=session.id if session else None,
+                )
 
-                def on_scout_status(action: str, label: str) -> None:
-                    scout_progress.set(f"{action}: {label}")
-                    self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]{action}[/bold bright_white] [cyan]{label}[/cyan]")
+                scout_timeout = getattr(self.config, "scout_timeout", 180.0)
 
-                async def _run_scout_with_timeout() -> list[str]:
-                    scout_kwargs: dict[str, Any] = {
-                        "max_papers": target_quota,
-                        "on_status": on_scout_status,
-                    }
-                    import inspect
-                    sig = inspect.signature(self.scout.auto_scout_and_ingest)
-                    if "engine" in sig.parameters or any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()):
-                        scout_kwargs["engine"] = self.engine
+                async def _wait_for_task() -> TaskInfo:
+                    start_t = time.monotonic()
+                    while True:
+                        t_info = self.task_manager.get_task(task.id)
+                        if not t_info:
+                            break
+                        if t_info.status in ("completed", "failed", "cancelled"):
+                            return t_info
+                        if time.monotonic() - start_t > scout_timeout:
+                            raise asyncio.TimeoutError("Scout timeout exceeded")
+                        await asyncio.sleep(0.08)
+                    return task
 
-                    scout_timeout = getattr(self.config, "scout_timeout", 180.0)
-                    return await asyncio.wait_for(
-                        self.scout.auto_scout_and_ingest(
-                            target_topic,
-                            **scout_kwargs,
-                        ),
-                        timeout=scout_timeout,
-                    )
+                def _get_scout_log() -> str:
+                    t_info = self.task_manager.get_task(task.id)
+                    if t_info and t_info.logs:
+                        return f"[Deep Research Scout] {t_info.logs[-1]}"
+                    return f"[Deep Research Scout] Menelusuri repositori ilmiah..."
+
+                prompt_str = f"{self.current_project.name}/chat/{session.name}> " if (self.sub_mode == "chat" and session and self.current_project) else (f"{self.current_project.name}> " if self.current_project else "> ")
 
                 timed_out = False
-                new_stems: list[str] = []
-                prompt_str = f"{self.current_project.name}/chat/{session.name}> " if (self.sub_mode == "chat" and session and self.current_project) else (f"{self.current_project.name}> " if self.current_project else "> ")
+                task_cancelled = False
+                completed_task: TaskInfo | None = None
+                wait_coro = _wait_for_task()
                 try:
-                    new_stems = self._run_agent_turn_interactive(
-                        coro=_run_scout_with_timeout(),
-                        step_desc=scout_progress,
+                    completed_task = self._run_agent_turn_interactive(
+                        coro=wait_coro,
+                        step_desc=_get_scout_log,
                         prompt_lbl=prompt_str,
                         model_label=model_label,
                         effort=effort,
                     )
                 except SessionDetachSignal:
-                    task = self.task_manager.submit(
-                        name=f"Deep Research Scout: {target_topic}",
-                        task_type="scout",
-                        target_fn=self._background_scout_worker,
-                        query=target_topic,
-                        topic_query=target_topic,
-                        max_download=target_quota,
-                        session_id=session.id if session else None,
-                    )
                     self.console.print(f"\n[bold cyan]● Sesi '{session.name if session else ''}' di-detach ke latar belakang.[/bold cyan]")
                     self.console.print(f"  [dim]Tugas '{task.name}' ({task.id}) tetap berjalan di background (Ketik /proc untuk pantau).[/dim]\n")
                     if session and self.chat_manager:
                         self.chat_manager.update_session_status(session.id, "detached")
                     self.sub_mode = "chat_hub"
                     return
+                except (asyncio.CancelledError, KeyboardInterrupt):
+                    self.task_manager.cancel_task(task.id)
+                    task_cancelled = True
+                    self.console.print("[dim]● Pencarian literatur dibatalkan oleh pengguna.[/dim]\n")
                 except (asyncio.TimeoutError, TimeoutError):
                     timed_out = True
-                except (asyncio.CancelledError, KeyboardInterrupt):
-                    self.console.print("[dim]● Pencarian literatur dibatalkan oleh pengguna.[/dim]\n")
                 except Exception as exc:
                     if hasattr(self, "logger") and self.logger:
                         self.logger.log_error(session.id if session else None, "AUTO_SCOUT", exc)
-                    self.console.print(f"[dim]● Pencarian repositori gagal: {exc}. Melanjutkan...[/dim]\n")
+                    self.console.print(f"[dim]● Pemantauan tugas repositori: {exc}. Melanjutkan...[/dim]\n")
+                finally:
+                    import inspect
+                    if inspect.iscoroutine(wait_coro):
+                        try:
+                            wait_coro.close()
+                        except Exception:
+                            pass
 
-                if timed_out:
-                    task = self.task_manager.submit(
-                        name=f"Deep Research Scout: {target_topic}",
-                        task_type="scout",
-                        target_fn=self._background_scout_worker,
-                        query=target_topic,
-                        topic_query=target_topic,
-                        max_download=target_quota,
-                        session_id=session.id if session else None,
+                is_timeout = (
+                    timed_out
+                    or (
+                        completed_task
+                        and completed_task.status == "failed"
+                        and any(k in (completed_task.error or "").lower() for k in ("timeout", "timed out", "timed_out", "time out"))
                     )
+                )
+
+                if is_timeout:
                     self.console.print("[bold yellow][!] Unduhan repositori membutuhkan waktu > 20 detik.[/bold yellow]")
                     self.console.print(f"[bold green][✓] Proses dialihkan ke background:[/bold green] [bold cyan]{task.id}[/bold cyan] [dim](Ketik /proc untuk pantau)[/dim]\n")
                     initial_query_override = (
@@ -1175,12 +1180,13 @@ class StudioAgentLoopMixin:
                         f"Berikan sintesis awal atau fondasi konseptual terbaik berdasarkan pengetahuan yang ada saat ini. "
                         f"Secara proaktif sarankan fokus konseptual atau hipotesis apa yang bisa dikaji sekarang sementara tugas unduhan selesai di background (JANGAN menyuruh pengguna mengetikkan perintah slash).]"
                     )
-                elif new_stems:
+                elif completed_task and completed_task.status == "completed":
                     if self.vault_manager:
                         self.vault_manager.reload_vault(force=False)
                     self._sync_vault_cache()
-                    for s in new_stems:
-                        self.active_documents.add(s)
+                    new_stems = [s for s in self.active_documents if s not in initial_active]
+                    if not new_stems and self.active_documents:
+                        new_stems = list(self.active_documents)
 
                     active_paths = [self.workspace.get_cache_path(f"{s}.md") for s in self.active_documents]
                     existing_paths = [p for p in active_paths if p.exists()]
@@ -1194,6 +1200,8 @@ class StudioAgentLoopMixin:
                     for s in new_stems:
                         self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Membaca[/bold bright_white] [cyan]cache/{s}.md[/cyan] [dim](Dokumen siap)[/dim]")
                     self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Menganalisis[/bold bright_white] [dim]Menyintesis temuan paper baru ke dalam jawaban komprehensif...[/dim]\n")
+                elif completed_task and completed_task.status == "failed":
+                    self.console.print(f"[dim]● Pencarian repositori gagal: {completed_task.error}. Melanjutkan...[/dim]\n")
 
                 # Synchronize vault cache with freshly downloaded papers
                 if self.vault_manager:
