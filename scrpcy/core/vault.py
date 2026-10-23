@@ -17,12 +17,8 @@ from scrpcy.core.vector_vault import ProjectVectorVault
 
 logger = logging.getLogger(__name__)
 
-# Try importing MarkItDown
-try:
-    from markitdown import MarkItDown
-    MARKITDOWN_AVAILABLE = True
-except ImportError:
-    MARKITDOWN_AVAILABLE = False
+# MarkItDown is imported lazily on demand to avoid heavy Azure SDK startup penalty
+MARKITDOWN_AVAILABLE = True
 
 
 class VaultItem(BaseModel):
@@ -61,12 +57,26 @@ class VaultManager:
         self.vault_dir = workspace.vault_dir
         self.archive_dir = self.vault_dir / ".archive"
         self.pdf_parser = DocumentParser(workspace=workspace)
-        self.markitdown = MarkItDown() if MARKITDOWN_AVAILABLE else None
+        self._markitdown = None
         self.ensure_directories()
         self.vector_vault = ProjectVectorVault(
             db_path=self.vault_dir / "project_vault.db",
             vault_dir=self.vault_dir,
         )
+
+    @property
+    def markitdown(self) -> Any:
+        if self._markitdown is None:
+            try:
+                from markitdown import MarkItDown
+                self._markitdown = MarkItDown()
+            except ImportError:
+                self._markitdown = False
+        return self._markitdown if self._markitdown is not False else None
+
+    @markitdown.setter
+    def markitdown(self, val: Any) -> None:
+        self._markitdown = val
 
     def ensure_directories(self) -> None:
         """Ensure vault and archive directories exist."""

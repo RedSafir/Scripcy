@@ -8,10 +8,7 @@ from pathlib import Path
 import re
 from typing import Any, Callable
 
-import litellm
-litellm.suppress_debug_info = True
-litellm.set_verbose = False
-litellm.drop_params = True
+# litellm is imported lazily in _invoke_acompletion to avoid startup lag
 from pydantic import BaseModel, Field
 
 from scrpcy.core.config import ScrpcyConfig
@@ -390,6 +387,10 @@ class LLMEngine:
             if hasattr(res, "__await__"):
                 res = await res
             return res
+        import litellm
+        litellm.suppress_debug_info = True
+        litellm.set_verbose = False
+        litellm.drop_params = True
         return await litellm.acompletion(**kwargs)
 
     async def stream_query(

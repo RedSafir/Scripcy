@@ -6,7 +6,6 @@ import os
 from pathlib import Path
 
 import pymupdf
-import pymupdf4llm
 
 from scrpcy.core.extractor import GeminiMetadataExtractor, MetadataExtractor
 from scrpcy.core.models import DocumentMetadata, ParsedDocument
@@ -67,6 +66,8 @@ class DocumentParser:
 
         if file_size == 0:
             raise CorruptedPDFError(f"PDF file is empty (0 bytes): '{target_path}'")
+
+        import pymupdf4llm
 
         # Validate that the file is an openable PDF document with at least one page
         try:

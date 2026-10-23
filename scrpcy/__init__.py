@@ -1,50 +1,9 @@
 """scrpcy: A local-first academic research studio."""
 
-from scrpcy.core.config import CitationPreferences, ConfigManager, ScrpcyConfig
-from scrpcy.core.engine import (
-    EvidenceChunk,
-    EvidenceSynthesizer,
-    LLMEngine,
-    SynthesisResult,
-)
-from scrpcy.core.extractor import (
-    GeminiMetadataExtractor,
-    MetadataExtractor,
-    MockMetadataExtractor,
-)
-from scrpcy.core.mcp_client import (
-    BaseMCPTransport,
-    CitationItem,
-    MockMCPTransport,
-    StdioMCPTransport,
-    WordCraftClient,
-    format_inline_citation_apa,
-    format_inline_citation_ieee,
-    format_reference_entry_apa,
-    format_reference_entry_ieee,
-)
-from scrpcy.core.models import DocumentMetadata, ParsedDocument
-from scrpcy.core.parser import DocumentParser, parse_pdf
-from scrpcy.core.search import PaperSearcher, SearchResult, sanitize_filename
-from scrpcy.core.skills import Skill, SkillsLoader
-from scrpcy.core.workspace import WorkspaceManager
-from scrpcy.exceptions import (
-    ConfigError,
-    CorruptedPDFError,
-    DocumentGenerationError,
-    DownloadError,
-    EngineError,
-    MCPConnectionError,
-    MCPError,
-    MetadataExtractionError,
-    NoOpenAccessPDFError,
-    PDFParseError,
-    RateLimitError,
-    ScrpcyError,
-    SearchError,
-    SkillNotFoundError,
-    WorkspaceError,
-)
+from __future__ import annotations
+
+import importlib
+from typing import Any
 
 __all__ = [
     "BaseMCPTransport",
@@ -92,3 +51,63 @@ __all__ = [
     "parse_pdf",
     "sanitize_filename",
 ]
+
+_LAZY_EXPORTS = {
+    "CitationPreferences": "scrpcy.core.config",
+    "ConfigManager": "scrpcy.core.config",
+    "ScrpcyConfig": "scrpcy.core.config",
+    "EvidenceChunk": "scrpcy.core.engine",
+    "EvidenceSynthesizer": "scrpcy.core.engine",
+    "LLMEngine": "scrpcy.core.engine",
+    "SynthesisResult": "scrpcy.core.engine",
+    "GeminiMetadataExtractor": "scrpcy.core.extractor",
+    "MetadataExtractor": "scrpcy.core.extractor",
+    "MockMetadataExtractor": "scrpcy.core.extractor",
+    "BaseMCPTransport": "scrpcy.core.mcp_client",
+    "CitationItem": "scrpcy.core.mcp_client",
+    "MockMCPTransport": "scrpcy.core.mcp_client",
+    "StdioMCPTransport": "scrpcy.core.mcp_client",
+    "WordCraftClient": "scrpcy.core.mcp_client",
+    "format_inline_citation_apa": "scrpcy.core.mcp_client",
+    "format_inline_citation_ieee": "scrpcy.core.mcp_client",
+    "format_reference_entry_apa": "scrpcy.core.mcp_client",
+    "format_reference_entry_ieee": "scrpcy.core.mcp_client",
+    "DocumentMetadata": "scrpcy.core.models",
+    "ParsedDocument": "scrpcy.core.models",
+    "DocumentParser": "scrpcy.core.parser",
+    "parse_pdf": "scrpcy.core.parser",
+    "PaperSearcher": "scrpcy.core.search",
+    "SearchResult": "scrpcy.core.search",
+    "sanitize_filename": "scrpcy.core.search",
+    "Skill": "scrpcy.core.skills",
+    "SkillsLoader": "scrpcy.core.skills",
+    "WorkspaceManager": "scrpcy.core.workspace",
+    "ConfigError": "scrpcy.exceptions",
+    "CorruptedPDFError": "scrpcy.exceptions",
+    "DocumentGenerationError": "scrpcy.exceptions",
+    "DownloadError": "scrpcy.exceptions",
+    "EngineError": "scrpcy.exceptions",
+    "MCPConnectionError": "scrpcy.exceptions",
+    "MCPError": "scrpcy.exceptions",
+    "MetadataExtractionError": "scrpcy.exceptions",
+    "NoOpenAccessPDFError": "scrpcy.exceptions",
+    "PDFParseError": "scrpcy.exceptions",
+    "RateLimitError": "scrpcy.exceptions",
+    "ScrpcyError": "scrpcy.exceptions",
+    "SearchError": "scrpcy.exceptions",
+    "SkillNotFoundError": "scrpcy.exceptions",
+    "WorkspaceError": "scrpcy.exceptions",
+}
+
+
+def __getattr__(name: str) -> Any:
+    if name in _LAZY_EXPORTS:
+        module = importlib.import_module(_LAZY_EXPORTS[name])
+        val = getattr(module, name)
+        globals()[name] = val
+        return val
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def __dir__() -> list[str]:
+    return list(__all__)

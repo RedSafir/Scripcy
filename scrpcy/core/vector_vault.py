@@ -13,21 +13,21 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-import fitz  # PyMuPDF
+import pymupdf as fitz
 import sqlite_vec
-from fastembed import TextEmbedding
 from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
 
 # Global singleton embedder instance to prevent reload overhead
-_GLOBAL_EMBEDDER: TextEmbedding | None = None
+_GLOBAL_EMBEDDER: Any | None = None
 
 
-def get_shared_embedder() -> TextEmbedding:
+def get_shared_embedder() -> Any:
     """Return shared FastEmbed BGE-small instance (dim: 384, ~130MB, CPU ONNX)."""
     global _GLOBAL_EMBEDDER
     if _GLOBAL_EMBEDDER is None:
+        from fastembed import TextEmbedding
         _GLOBAL_EMBEDDER = TextEmbedding(model_name="BAAI/bge-small-en-v1.5")
     return _GLOBAL_EMBEDDER
 

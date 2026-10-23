@@ -11,7 +11,6 @@ import webbrowser
 from rich.console import Console
 from rich.table import Table
 import typer
-import uvicorn
 
 from scrpcy.core.config import ConfigManager, ScrpcyConfig, detect_9router_key, fetch_9router_models
 from scrpcy.core.parser import DocumentParser
@@ -539,6 +538,7 @@ def start(
         from scrpcy.server import create_app
 
         server_app = create_app(workspace=workspace)
+        import uvicorn
         uvicorn.run(server_app, host=host, port=port)
     else:
         from scrpcy.cli_studio import CLIStudio
