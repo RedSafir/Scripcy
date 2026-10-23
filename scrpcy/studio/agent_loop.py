@@ -1110,6 +1110,9 @@ class StudioAgentLoopMixin:
                             break
                         if t_info.status in ("completed", "failed", "cancelled"):
                             return t_info
+                        fut = self.task_manager._futures.get(task.id)
+                        if fut and fut.done():
+                            return self.task_manager.get_task(task.id) or task
                         if time.monotonic() - start_t > scout_timeout:
                             raise asyncio.TimeoutError("Scout timeout exceeded")
                         await asyncio.sleep(0.08)
@@ -1259,64 +1262,76 @@ class StudioAgentLoopMixin:
             if evidence:
                 self.logger.log_evidence_retrieved(session_id, query, evidence)
 
-        start_time = time.time()
-        max_agent_turns = getattr(self.config, "max_agent_turns", 9999) if self.config else 9999
-        max_refinement_turns = getattr(self.config, "max_refinement_turns", 3) if self.config else 3
-        turn = 0
-        refinement_turns = 0
-        locked_supported_claims: list[str] = []
-        best_draft: str = ""
-        best_grounding: float = -1.0
-        best_critic: int = -1
-        best_composite: float = -1.0
-        accumulated_input_tokens = 0
-        accumulated_output_tokens = 0
-        total_turns_completed = 0
-        current_query = initial_query_override if "initial_query_override" in locals() and initial_query_override else query
-        citation_guide = self._format_vault_citation_guide()
-        if citation_guide:
-            current_query = f"{citation_guide}\n\n{current_query}"
+        task_result_box: dict[str, Any] = {}
 
-        # Inject dynamic Task Contract directive to guide synthesis
-        dod_str = "\n".join(f"  * {d}" for d in task_contract.definition_of_done)
-        contract_directive = (
-            f"\n\n[PANDUAN KONTRAK PENYELESAIAN TUGAS]:\n"
-            f"- Sasaran Utama: {task_contract.primary_goal}\n"
-            f"- Format Output: {task_contract.format_requirements}\n"
-            f"- Alokasi Panjang: {task_contract.min_words} - {task_contract.max_words} kata (Patuhi batas ini agar tidak terpotong).\n"
-            f"- Batasan Negatif (Out-of-Scope): DILARANG menyertakan {', '.join(task_contract.out_of_scope)}.\n"
-            f"- Definition of Done (Checklist yang Wajib Dipenuhi):\n{dod_str}\n"
-            f"Patuhi seluruh instruksi di atas secara presisi."
-        )
-        current_query = f"{current_query}{contract_directive}"
-        current_docs = list(existing_paths)
-        final_response = ""
-        last_turn_tokens: list[str] = []
-        last_v_report: VerificationReport | None = None
-        last_c_report: CritiqueReport | None = None
+        def _bg_chat_synthesis_worker(task_id: str, cancel_event: threading.Event | None = None) -> str:
+            self.task_manager.log(task_id, f"Pertanyaan: {query}")
+            self.task_manager.log(task_id, f"Model: {model_label} (effort: {effort})")
+            self.task_manager.log(task_id, "Menghubungi AI & Menganalisis...")
+            self.task_manager.update_progress(task_id, "Menghubungi AI & Menganalisis...")
 
-        try:
-            while turn < max_agent_turns:
-                turn_tokens: list[str] = []
+            start_time = time.time()
+            max_agent_turns = getattr(self.config, "max_agent_turns", 9999) if self.config else 9999
+            max_refinement_turns = getattr(self.config, "max_refinement_turns", 3) if self.config else 3
+            turn = 0
+            refinement_turns = 0
+            locked_supported_claims: list[str] = []
+            best_draft: str = ""
+            best_grounding: float = -1.0
+            best_critic: int = -1
+            best_composite: float = -1.0
+            accumulated_input_tokens = 0
+            accumulated_output_tokens = 0
+            total_turns_completed = 0
+            current_query = initial_query_override if "initial_query_override" in locals() and initial_query_override else query
+            citation_guide = self._format_vault_citation_guide()
+            if citation_guide:
+                current_query = f"{citation_guide}\n\n{current_query}"
 
-                # Gather previous session dialogue history
-                history_msgs: list[dict[str, str]] = []
-                if self.chat_manager and session:
-                    raw_history = self.chat_manager.get_messages(session.id)
-                    for m in raw_history[-10:]:
-                        if m.role == "user" and m.content == query:
-                            continue
-                        history_msgs.append({"role": m.role, "content": m.content})
+            # Inject dynamic Task Contract directive to guide synthesis
+            dod_str = "\n".join(f"  * {d}" for d in task_contract.definition_of_done)
+            contract_directive = (
+                f"\n\n[PANDUAN KONTRAK PENYELESAIAN TUGAS]:\n"
+                f"- Sasaran Utama: {task_contract.primary_goal}\n"
+                f"- Format Output: {task_contract.format_requirements}\n"
+                f"- Alokasi Panjang: {task_contract.min_words} - {task_contract.max_words} kata (Patuhi batas ini agar tidak terpotong).\n"
+                f"- Batasan Negatif (Out-of-Scope): DILARANG menyertakan {', '.join(task_contract.out_of_scope)}.\n"
+                f"- Definition of Done (Checklist yang Wajib Dipenuhi):\n{dod_str}\n"
+                f"Patuhi seluruh instruksi di atas secara presisi."
+            )
+            current_query = f"{current_query}{contract_directive}"
+            current_docs = list(existing_paths)
+            curr_evidence = list(evidence) if evidence else []
+            final_response = ""
+            last_v_report: VerificationReport | None = None
+            last_c_report: CritiqueReport | None = None
 
-                progress = _AgentProgressTracker(
-                    "Menghubungi AI & Menganalisis..." if turn == 0 else "Menyintesis temuan dokumen ke dalam jawaban akhir..."
-                )
+            # Gather previous session dialogue history
+            history_msgs: list[dict[str, str]] = []
+            if self.chat_manager and session:
+                raw_history = self.chat_manager.get_messages(session.id)
+                for m in raw_history[-10:]:
+                    if m.role == "user" and m.content == query:
+                        continue
+                    history_msgs.append({"role": m.role, "content": m.content})
 
-                async def _run_full_turn_async() -> dict[str, Any]:
-                    progress.set("Menghubungi AI & Menganalisis..." if turn == 0 else "Menyintesis temuan dokumen...")
+            async def _async_synthesis_loop() -> None:
+                nonlocal turn, refinement_turns, locked_supported_claims, best_draft, best_grounding, best_critic, best_composite
+                nonlocal accumulated_input_tokens, accumulated_output_tokens, total_turns_completed, current_query, current_docs
+                nonlocal final_response, last_v_report, last_c_report, max_agent_turns, curr_evidence, citation_guide
+
+                while turn < max_agent_turns:
+                    if cancel_event and cancel_event.is_set():
+                        return
+
+                    turn_tokens: list[str] = []
+                    step_msg = "Menghubungi AI & Menganalisis..." if turn == 0 else "Menyintesis temuan dokumen..."
+                    self.task_manager.update_progress(task_id, step_msg)
+                    self.task_manager.log(task_id, step_msg)
+
                     t_stream_s = time.time()
                     if hasattr(self, "logger") and self.logger:
-                        self.logger.log_llm_stream_start(session_id, turn, model_name, str(progress))
+                        self.logger.log_llm_stream_start(session_id, turn, model_name, step_msg)
 
                     async for token in self.engine.stream_query(
                         query=current_query,
@@ -1327,6 +1342,8 @@ class StudioAgentLoopMixin:
                         history=history_msgs,
                         vector_vault=getattr(self.vault_manager, "vector_vault", None),
                     ):
+                        if cancel_event and cancel_event.is_set():
+                            return
                         turn_tokens.append(token)
 
                     t_stream_dur = time.time() - t_stream_s
@@ -1338,15 +1355,66 @@ class StudioAgentLoopMixin:
                     # 1. Internal vault tool call check
                     tool_cmd = self._detect_internal_tool_call(raw_resp)
                     if tool_cmd and turn < max_agent_turns - 1:
-                        return {"type": "internal_tool", "command": tool_cmd, "response": raw_resp}
+                        if cancel_event and cancel_event.is_set():
+                            return
+                        cmd_line = tool_cmd.strip()
+                        is_archive = any(k in cmd_line.lower() for k in ("remove", "rm", "archive"))
+                        is_scout = any(k in cmd_line.lower() for k in ("scout", "search", "findpaper"))
+                        action_label, target_label, tool_output = self._execute_internal_vault_tool(cmd_line)
+
+                        if is_archive:
+                            sub_label = "(Mengarsipkan paper yang tidak relevan...)"
+                        elif is_scout:
+                            sub_label = "(Menelusuri repositori akademik...)"
+                        else:
+                            sub_label = "(Membaca teks dari vault...)"
+
+                        self.task_manager.log(task_id, f"Eksekusi alat internal: {action_label} {target_label}")
+                        if not (session and session.status == "detached"):
+                            self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]{action_label}[/bold bright_white] [cyan]{target_label}[/cyan] [dim]{sub_label}[/dim]")
+                            self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Menganalisis[/bold bright_white] [dim]Menyintesis temuan dokumen ke dalam jawaban akhir...[/dim]\n")
+
+                        current_query = (
+                            f"### HASIL EKSEKUSI ALAT ({cmd_line}):\n"
+                            f"Aksi: {action_label}\n"
+                            f"Target: {target_label}\n"
+                            f"```markdown\n{tool_output}\n```\n\n"
+                            f"Pertanyaan riset asli pengguna: \"{query}\"\n"
+                            f"Berdasarkan informasi di atas, silakan lanjutkan sintesis akademis mendalam 100% yakin dan berikan jawaban akhir tanpa menyuruh pengguna menjalankan perintah slash."
+                        )
+                        current_docs = [self.workspace.get_cache_path(f"{s}.md") for s in self.active_documents if self.workspace.get_cache_path(f"{s}.md").exists()]
+                        turn += 1
+                        if self._check_agent_turn_checkpoint(
+                            turn=turn,
+                            best_grounding=best_grounding,
+                            best_critic=best_critic,
+                            accumulated_input_tokens=accumulated_input_tokens,
+                            accumulated_output_tokens=accumulated_output_tokens,
+                        ):
+                            raw_final = best_draft or raw_resp
+                            final_response = self._sanitize_final_response(raw_final)
+                            if self.vault_manager and final_response:
+                                final_response = append_vault_bibliography(
+                                    text=final_response,
+                                    evidence=curr_evidence,
+                                    vault_manager=self.vault_manager,
+                                    style=self.config.citation.style,
+                                    active_documents=self.active_documents,
+                                )
+                            break
+                        continue
 
                     # 2. Academic Polisher
-                    progress.set("Menyelaraskan ritme & gaya bahasa akademis...")
+                    if cancel_event and cancel_event.is_set():
+                        return
+                    p_msg = "Menyelaraskan ritme & gaya bahasa akademis..."
+                    self.task_manager.update_progress(task_id, p_msg)
+                    self.task_manager.log(task_id, p_msg)
                     p_resp = raw_resp
                     t_pol_s = time.time()
                     try:
                         polisher = self.polisher or AcademicPolisher(engine=self.engine)
-                        p_res = await asyncio.to_thread(polisher.polish, raw_resp, query)
+                        p_res = polisher.polish(raw_resp, query)
                         if p_res.applied:
                             p_resp = p_res.polished_text
                         if hasattr(self, "logger") and self.logger:
@@ -1364,10 +1432,14 @@ class StudioAgentLoopMixin:
                             self.logger.log_error(session_id, "POLISHER", p_err)
 
                     # 3. FactChecker
-                    progress.set("Mengaudit keabsahan fakta terhadap dokumen vault...")
+                    if cancel_event and cancel_event.is_set():
+                        return
+                    fc_msg = "Mengaudit keabsahan fakta terhadap dokumen vault..."
+                    self.task_manager.update_progress(task_id, fc_msg)
+                    self.task_manager.log(task_id, fc_msg)
                     t_fc_s = time.time()
                     verifier = self.fact_checker or FactChecker(engine=self.engine)
-                    v_rep = await asyncio.to_thread(verifier.verify_synthesis, p_resp, evidence)
+                    v_rep = verifier.verify_synthesis(p_resp, curr_evidence)
                     if hasattr(self, "logger") and self.logger:
                         self.logger.log_fact_check_result(
                             session_id=session_id,
@@ -1380,10 +1452,14 @@ class StudioAgentLoopMixin:
                         )
 
                     # 4. Devil's Advocate
-                    progress.set("Menjalankan evaluasi kritis (Devil's Advocate)...")
+                    if cancel_event and cancel_event.is_set():
+                        return
+                    cr_msg = "Menjalankan evaluasi kritis (Devil's Advocate)..."
+                    self.task_manager.update_progress(task_id, cr_msg)
+                    self.task_manager.log(task_id, cr_msg)
                     t_cr_s = time.time()
                     critic = self.devils_advocate or DevilsAdvocate(engine=self.engine)
-                    c_rep = await asyncio.to_thread(critic.critique, query, p_resp, contract=task_contract)
+                    c_rep = critic.critique(query, p_resp, contract=task_contract)
                     if hasattr(self, "logger") and self.logger:
                         self.logger.log_critic_result(
                             session_id=session_id,
@@ -1396,65 +1472,250 @@ class StudioAgentLoopMixin:
                             summary=c_rep.critique_summary,
                         )
 
-                    # Monotonic Claim Locking: Record verified supported claims
+                    # Monotonic Claim Locking
                     for c in v_rep.claims:
                         if c.status == "supported" and c.claim not in locked_supported_claims:
                             locked_supported_claims.append(c.claim)
 
                     # Best-Draft Tracking
                     composite = 0.55 * v_rep.grounding_score + 0.45 * (c_rep.score / 10.0)
-                    nonlocal best_composite, best_draft, best_grounding, best_critic
                     if composite > best_composite or not best_draft:
                         best_composite = composite
                         best_draft = p_resp
                         best_grounding = v_rep.grounding_score
                         best_critic = c_rep.score
 
-                    # Accumulate token metrics for this turn (across ALL turns including refinement iterations)
-                    stream_in_est = estimate_tokens(current_query) + sum(c.token_estimate or estimate_tokens(c.text) for c in (evidence or [])) + 250
-                    nonlocal accumulated_input_tokens, accumulated_output_tokens, total_turns_completed
+                    stream_in_est = estimate_tokens(current_query) + sum(c.token_estimate or estimate_tokens(c.text) for c in (curr_evidence or [])) + 250
                     accumulated_input_tokens += stream_in_est + getattr(v_rep, "input_tokens", 0) + getattr(c_rep, "input_tokens", 0)
                     accumulated_output_tokens += out_tok + getattr(v_rep, "output_tokens", 0) + getattr(c_rep, "output_tokens", 0)
                     total_turns_completed = turn + 1
 
-                    # Check if ungrounded claims or citation mapping triggers another turn
+                    # Check if refinement needed
                     needs_refine = (bool(v_rep.hallucination_warning) or bool(c_rep.needs_citation_mapping)) and turn < max_agent_turns - 1
                     if needs_refine:
                         max_refine_limit = 1 if getattr(task_contract, 'max_words', 1000) <= 750 else max_refinement_turns
                         if refinement_turns >= max_refine_limit:
-                            return {
-                                "type": "epistemic_exit",
-                                "best_draft": best_draft or p_resp,
-                                "v_report": v_rep,
-                                "c_report": c_rep,
-                                "best_grounding": best_grounding,
-                                "best_critic": best_critic,
-                            }
-                        # Priority: If Devil's Advocate flags missing citations or knowledge gaps,
-                        # run citation mapping & scout search to ingest new literature!
+                            if not (session and session.status == "detached"):
+                                self.console.print("[bold yellow]●[/bold yellow] [bold bright_white]Epistemic Convergence[/bold bright_white] [dim]Batas 3 iterasi perbaikan tercapai. Memfinalisasi draf terbaik dengan catatan dialektis...[/dim]\n")
+                            raw_final = best_draft or p_resp
+                            dialectic_caveat = (
+                                "\n\n> [!NOTE]\n"
+                                "> **Catatan Analisis Kritis**: Sintesis ini mempertahankan tinjauan dialektis dari literatur yang tersedia. "
+                                "Terdapat variasi metodologis antara temuan empiris dokumen dengan implikasi kebijakan di lapangan."
+                            )
+                            final_response = self._sanitize_final_response(raw_final) + dialectic_caveat
+                            if self.vault_manager and final_response:
+                                final_response = append_vault_bibliography(
+                                    text=final_response,
+                                    evidence=curr_evidence,
+                                    vault_manager=self.vault_manager,
+                                    style=self.config.citation.style,
+                                    active_documents=self.active_documents,
+                                )
+                            last_v_report = v_rep
+                            last_c_report = c_rep
+                            break
+
                         if c_rep.needs_citation_mapping:
-                            return {
-                                "type": "needs_citation_mapping",
-                                "report": c_rep,
-                                "v_report": v_rep,
-                                "response": p_resp,
-                            }
-                        if v_rep.hallucination_warning:
-                            return {
-                                "type": "ungrounded",
-                                "report": v_rep,
-                                "c_report": c_rep,
-                                "response": p_resp,
-                            }
+                            refinement_turns += 1
+                            self.task_manager.log(task_id, f"Devil's Advocate: Skor {c_rep.score}/10: {c_rep.critique_summary}")
+                            if not (session and session.status == "detached"):
+                                self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Devil's Advocate[/bold bright_white] [yellow]Skor {c_rep.score}/10: {c_rep.critique_summary}[/yellow]")
+                            stems = self._get_cached_stems()
+                            if stems and self.scout and not (session and session.status == "detached"):
+                                self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Reference Mapping[/bold bright_white] [cyan]Menelusuri jaringan sitasi dokumen vault...[/cyan]")
+                            mapped_papers: list[Any] = []
+                            newly_ingested_stems: list[str] = []
+                            directed_queries = list(getattr(c_rep, "directed_search_queries", []))
+                            if v_rep and getattr(v_rep, "claims", None):
+                                unsupported = [c.claim for c in v_rep.claims if c.status == "unsupported"]
+                                for u_cl in unsupported[:2]:
+                                    clean_words = [
+                                        w for w in re.findall(r"\b\w{4,}\b", u_cl)
+                                        if w.lower() not in ("yang", "pada", "dari", "untuk", "dengan", "dalam", "adalah", "bahwa", "tidak")
+                                    ]
+                                    if len(clean_words) >= 2:
+                                        gap_q = " ".join(clean_words[:5])
+                                        if gap_q not in directed_queries:
+                                            directed_queries.append(gap_q)
+
+                            is_mock_env = bool(api_key and (api_key.startswith("mock") or api_key == "mock_key"))
+                            is_scout_mocked = bool(self.scout and (hasattr(self.scout.search_multi_source, "assert_called") or getattr(self.scout.search_multi_source, "__code__", None) != LiteratureScout.search_multi_source.__code__))
+                            is_map_mocked = bool(self.scout and (hasattr(self.scout.map_vault_citation_network, "assert_called") or getattr(self.scout.map_vault_citation_network, "__code__", None) != LiteratureScout.map_vault_citation_network.__code__))
+
+                            if directed_queries and self.scout and (not is_mock_env or is_scout_mocked):
+                                for target_gap_q in directed_queries[:2]:
+                                    try:
+                                        sq = ScoutQuery(keywords=target_gap_q, limit=5)
+                                        candidates = await self.scout.search_multi_source(sq, limit=5)
+                                        if candidates:
+                                            existing_titles = {p.title for p in mapped_papers}
+                                            mapped_papers.extend([p for p in candidates if p.title not in existing_titles])
+                                    except Exception:
+                                        pass
+
+                            if stems and self.scout and (not is_mock_env or is_map_mocked):
+                                try:
+                                    cit_papers = await self.scout.map_vault_citation_network(stems, limit=5)
+                                    if cit_papers:
+                                        existing_titles = {p.title for p in mapped_papers}
+                                        mapped_papers.extend([p for p in cit_papers if p.title not in existing_titles])
+                                except Exception:
+                                    pass
+
+                            if mapped_papers and self.scout:
+                                for idx, p in enumerate(mapped_papers, 1):
+                                    safe_stem = sanitize_filename(p.title)
+                                    downloaded = False
+                                    if p.has_pdf and p.pdf_url:
+                                        try:
+                                            await self.scout.download_scout_paper(p)
+                                            newly_ingested_stems.append(safe_stem)
+                                            downloaded = True
+                                        except Exception:
+                                            downloaded = False
+                                    if not downloaded:
+                                        if not (session and session.status == "detached"):
+                                            self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Paywall Terdeteksi[/bold bright_white] [yellow][{idx}/{len(mapped_papers)}] {p.title[:50]}...[/yellow] [dim](Naskah berbayar)[/dim]")
+                                        decision = await asyncio.to_thread(self._ask_ai_paywall_action, p, query)
+                                        if decision.get("decision") == "FIND_ALTERNATIVE":
+                                            try:
+                                                sq = ScoutQuery(keywords=f"{p.title} open access", is_oa_only=True)
+                                                alt_candidates = await self.scout.search_multi_source(sq, limit=5)
+                                                alt_oa = [c for c in alt_candidates if c.has_pdf and c.pdf_url]
+                                                if alt_oa:
+                                                    await self.scout.download_scout_paper(alt_oa[0])
+                                                    newly_ingested_stems.append(sanitize_filename(alt_oa[0].title))
+                                                else:
+                                                    if not (session and session.status == "detached"):
+                                                        self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Abstrak Memadai[/bold bright_white] [green]Mengindeks abstrak resmi paper ke vault[/green]")
+                                                    await asyncio.to_thread(self.scout.ingest_abstract_paper, p)
+                                                    newly_ingested_stems.append(safe_stem)
+                                            except Exception:
+                                                await asyncio.to_thread(self.scout.ingest_abstract_paper, p)
+                                                newly_ingested_stems.append(safe_stem)
+                                        else:
+                                            if not (session and session.status == "detached"):
+                                                self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Abstrak Memadai[/bold bright_white] [green]Mengindeks abstrak resmi paper ke vault[/green] [dim]({decision.get('reason', '')})[/dim]")
+                                            await asyncio.to_thread(self.scout.ingest_abstract_paper, p)
+                                            newly_ingested_stems.append(safe_stem)
+
+                            if not (session and session.status == "detached"):
+                                if mapped_papers:
+                                    self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Directed Gap Search[/bold bright_white] [cyan]Menemukan {len(mapped_papers)} literatur penambal celah empiris.[/cyan]")
+                                if newly_ingested_stems:
+                                    self.console.print(f"[bold green][✓] Berhasil mengindeks {len(newly_ingested_stems)} dokumen sitasi baru ke vault.[/bold green]")
+                                    for s in newly_ingested_stems:
+                                        self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Membaca[/bold bright_white] [cyan]cache/{s}.md[/cyan] [dim](Siap untuk sintesis)[/dim]")
+                                    self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Menganalisis[/bold bright_white] [dim]Menyintesis argumen ilmiah terpadu dengan literatur baru...[/dim]\n")
+
+                            if newly_ingested_stems:
+                                if self.vault_manager:
+                                    self.vault_manager.reload_vault(False)
+                                self._sync_vault_cache()
+                                for s in newly_ingested_stems:
+                                    self.active_documents.add(s)
+                                active_paths = [self.workspace.get_cache_path(f"{s}.md") for s in self.active_documents]
+                                current_docs = [p for p in active_paths if p.exists()]
+                                curr_evidence = self.engine.evidence_synthesizer.retrieve_evidence(
+                                    query=query,
+                                    documents=current_docs,
+                                    max_chunks=self.config.citation.max_evidence_chunks,
+                                    vector_vault=getattr(self.vault_manager, "vector_vault", None),
+                                )
+                                citation_guide = self._format_vault_citation_guide()
+                                max_agent_turns = max(max_agent_turns, turn + 2)
+
+                            weaknesses_str = ", ".join(c_rep.weaknesses) if c_rep.weaknesses else "Perkuat landasan argumen dan sertakan batasan metodologis."
+                            counter_str = ("\nPotensi sanggahan: " + ", ".join(c_rep.counter_arguments)) if c_rep.counter_arguments else ""
+                            recency_str = f"\nCatatan kebaruan: {c_rep.recency_alert}" if c_rep.recency_alert else ""
+                            locked_sec = ("### KLAIM TERVERIFIKASI SEBELUMNYA (WAJIB DIPERTAHANKAN VERBATIM):\n" + "\n".join(f"- {c}" for c in locked_supported_claims[:6]) + "\n\n") if locked_supported_claims else ""
+                            unsupported_sec = ""
+                            if v_rep and getattr(v_rep, "claims", None):
+                                unsupported = [c.claim for c in v_rep.claims if c.status == "unsupported"]
+                                if unsupported:
+                                    unsupported_sec = "### KLAIM YANG MEMBUTUHKAN BUKTI DARI LITERATUR BARU:\n" + "\n".join(f"- {c}" for c in unsupported[:5]) + "\n\n"
+
+                            current_query = (
+                                f"{citation_guide}\n\n"
+                                f"{locked_sec}"
+                                f"### EVALUASI DEVIL'S ADVOCATE (SKOR {c_rep.score}/10):\n"
+                                f"Catatan kelemahan: {weaknesses_str}{counter_str}{recency_str}\n\n"
+                                f"{unsupported_sec}"
+                                f"Pertanyaan riset asli: \"{query}\"\n"
+                                f"Instruksi: Pertahankan seluruh klaim terverifikasi di atas. Mentailor ulang sintesis untuk mengatasi catatan kelemahan di atas dengan memanfaatkan bukti literatur baru yang telah diindeks di vault, sertakan sitasi in-text APA pada setiap klaim, dan berikan jawaban yang komprehensif serta mantap (100% yakin)."
+                            )
+                            turn += 1
+                            if self._check_agent_turn_checkpoint(
+                                turn=turn,
+                                best_grounding=best_grounding,
+                                best_critic=best_critic,
+                                accumulated_input_tokens=accumulated_input_tokens,
+                                accumulated_output_tokens=accumulated_output_tokens,
+                            ):
+                                raw_final = best_draft or p_resp
+                                final_response = self._sanitize_final_response(raw_final)
+                                if self.vault_manager and final_response:
+                                    final_response = append_vault_bibliography(
+                                        text=final_response,
+                                        evidence=curr_evidence,
+                                        vault_manager=self.vault_manager,
+                                        style=self.config.citation.style,
+                                        active_documents=self.active_documents,
+                                    )
+                                last_v_report = v_rep
+                                last_c_report = c_rep
+                                break
+                            continue
+
+                        elif v_rep.hallucination_warning:
+                            refinement_turns += 1
+                            self.task_manager.log(task_id, f"FactChecker: {v_rep.hallucination_warning}")
+                            if not (session and session.status == "detached"):
+                                self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Memverifikasi Fakta[/bold bright_white] [yellow]{v_rep.hallucination_warning}[/yellow]")
+                            unsupported_claims = [c.claim for c in v_rep.claims if c.status == "unsupported"]
+                            if unsupported_claims:
+                                locked_sec = ("### KLAIM TERVERIFIKASI SEBELUMNYA (WAJIB DIPERTAHANKAN VERBATIM):\n" + "\n".join(f"- {c}" for c in locked_supported_claims[:6]) + "\n\n") if locked_supported_claims else ""
+                                current_query = (
+                                    f"{locked_sec}"
+                                    f"### VERIFIKASI FAKTA (CLAIM GROUNDING AUDIT):\n"
+                                    f"Beberapa klaim berikut tidak ditemukan dasarnya pada literatur vault:\n"
+                                    + "\n".join(f"- {c}" for c in unsupported_claims) +
+                                    f"\n\nPertanyaan riset asli: \"{query}\"\n"
+                                    f"Instruksi: Pertahankan seluruh klaim terverifikasi di atas. Pangkas atau sesuaikan klaim yang belum didukung agar 100% didukung oleh bukti teks dokumen vault."
+                                )
+                                turn += 1
+                            if self._check_agent_turn_checkpoint(
+                                turn=turn,
+                                best_grounding=best_grounding,
+                                best_critic=best_critic,
+                                accumulated_input_tokens=accumulated_input_tokens,
+                                accumulated_output_tokens=accumulated_output_tokens,
+                            ):
+                                raw_final = best_draft or p_resp
+                                final_response = self._sanitize_final_response(raw_final)
+                                if self.vault_manager and final_response:
+                                    final_response = append_vault_bibliography(
+                                        text=final_response,
+                                        evidence=curr_evidence,
+                                        vault_manager=self.vault_manager,
+                                        style=self.config.citation.style,
+                                        active_documents=self.active_documents,
+                                    )
+                                last_v_report = v_rep
+                                last_c_report = c_rep
+                                break
+                            continue
 
                     # 5. Automatic Bibliography
                     final_text = p_resp
                     if self.vault_manager and final_text:
-                        progress.set("Menyusun daftar pustaka vault terverifikasi...")
-                        final_text = await asyncio.to_thread(
-                            append_vault_bibliography,
+                        b_msg = "Menyusun daftar pustaka vault terverifikasi..."
+                        self.task_manager.update_progress(task_id, b_msg)
+                        self.task_manager.log(task_id, b_msg)
+                        final_text = append_vault_bibliography(
                             text=final_text,
-                            evidence=evidence,
+                            evidence=curr_evidence,
                             vault_manager=self.vault_manager,
                             style=self.config.citation.style,
                             active_documents=self.active_documents,
@@ -1463,421 +1724,38 @@ class StudioAgentLoopMixin:
                             self.logger.log_bibliography_appended(
                                 session_id=session_id,
                                 style=self.config.citation.style,
-                                entries_count=len(evidence),
-                                filenames=[c.source for c in evidence],
+                                entries_count=len(curr_evidence),
+                                filenames=[c.source for c in curr_evidence],
                             )
 
-                    return {
-                        "type": "final",
-                        "response": final_text,
-                        "v_report": v_rep,
-                        "c_report": c_rep,
-                    }
-
-                prompt_str = f"{self.current_project.name}/chat/{session.name}> " if (self.sub_mode == "chat" and session and self.current_project) else (f"{self.current_project.name}> " if self.current_project else "> ")
-                turn_coro = _run_full_turn_async()
-                try:
-                    turn_result = self._run_agent_turn_interactive(
-                        coro=turn_coro,
-                        step_desc=progress,
-                        prompt_lbl=prompt_str,
-                        model_label=model_label,
-                        effort=effort,
-                    )
-                except BaseException:
-                    try:
-                        turn_coro.close()
-                    except Exception:
-                        pass
-                    raise
-                last_turn_tokens = turn_tokens
-
-                if turn_result["type"] == "internal_tool":
-                    cmd_line = turn_result["command"].strip()
-                    is_archive = any(k in cmd_line.lower() for k in ("remove", "rm", "archive"))
-                    is_scout = any(k in cmd_line.lower() for k in ("scout", "search", "findpaper"))
-                    if is_archive:
-                        spin_desc = "Mengarsipkan dokumen..."
-                    elif is_scout:
-                        spin_desc = "Mencari literatur ilmiah..."
-                    else:
-                        spin_desc = "Membaca dokumen dari vault..."
-
-                    tool_progress = _AgentProgressTracker(spin_desc)
-                    async def _run_tool_async() -> tuple[str, str, str]:
-                        return await asyncio.to_thread(self._execute_internal_vault_tool, cmd_line)
-
-                    tool_coro = _run_tool_async()
-                    try:
-                        action_label, target_label, tool_output = self._run_agent_turn_interactive(
-                            coro=tool_coro,
-                            step_desc=tool_progress,
-                            prompt_lbl=prompt_str,
-                            model_label=model_label,
-                            effort=effort,
-                        )
-                    except BaseException:
-                        try:
-                            tool_coro.close()
-                        except Exception:
-                            pass
-                        raise
-
-                    # Status Indicator: Membaca/Mengarsipkan -> Menganalisis
-                    if is_archive:
-                        sub_label = "(Mengarsipkan paper yang tidak relevan...)"
-                    elif is_scout:
-                        sub_label = "(Menelusuri repositori akademik...)"
-                    else:
-                        sub_label = "(Membaca teks dari vault...)"
-                    self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]{action_label}[/bold bright_white] [cyan]{target_label}[/cyan] [dim]{sub_label}[/dim]")
-                    self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Menganalisis[/bold bright_white] [dim]Menyintesis temuan dokumen ke dalam jawaban akhir...[/dim]\n")
-
-                    current_query = (
-                        f"### HASIL EKSEKUSI ALAT ({cmd_line}):\n"
-                        f"Aksi: {action_label}\n"
-                        f"Target: {target_label}\n"
-                        f"```markdown\n{tool_output}\n```\n\n"
-                        f"Pertanyaan riset asli pengguna: \"{query}\"\n"
-                        f"Berdasarkan informasi di atas, silakan lanjutkan sintesis akademis mendalam 100% yakin dan berikan jawaban akhir tanpa menyuruh pengguna menjalankan perintah slash."
-                    )
-                    current_docs = []
-                    turn += 1
-                    if self._check_agent_turn_checkpoint(
-                        turn=turn,
-                        best_grounding=best_grounding,
-                        best_critic=best_critic,
-                        accumulated_input_tokens=accumulated_input_tokens,
-                        accumulated_output_tokens=accumulated_output_tokens,
-                    ):
-                        raw_final = best_draft or turn_result.get("response", "")
-                        final_response = self._sanitize_final_response(raw_final)
-                        if self.vault_manager and final_response:
-                            final_response = append_vault_bibliography(
-                                text=final_response,
-                                evidence=evidence,
-                                vault_manager=self.vault_manager,
-                                style=self.config.citation.style,
-                                active_documents=self.active_documents,
-                            )
-                        last_v_report = turn_result.get("v_report")
-                        last_c_report = turn_result.get("c_report")
-                        break
-                    continue
-
-                elif turn_result["type"] == "epistemic_exit":
-                    self.console.print("[bold yellow]●[/bold yellow] [bold bright_white]Epistemic Convergence[/bold bright_white] [dim]Batas 3 iterasi perbaikan tercapai. Memfinalisasi draf terbaik dengan catatan dialektis...[/dim]\n")
-                    raw_final = turn_result.get("best_draft", "")
-                    dialectic_caveat = (
-                        "\n\n> [!NOTE]\n"
-                        "> **Catatan Analisis Kritis**: Sintesis ini mempertahankan tinjauan dialektis dari literatur yang tersedia. "
-                        "Terdapat variasi metodologis antara temuan empiris dokumen dengan implikasi kebijakan di lapangan."
-                    )
-                    final_response = self._sanitize_final_response(raw_final) + dialectic_caveat
-                    if self.vault_manager and final_response:
-                        final_response = append_vault_bibliography(
-                            text=final_response,
-                            evidence=evidence,
-                            vault_manager=self.vault_manager,
-                            style=self.config.citation.style,
-                            active_documents=self.active_documents,
-                        )
-                    last_v_report = turn_result.get("v_report")
-                    last_c_report = turn_result.get("c_report")
+                    final_response = self._sanitize_final_response(final_text)
+                    last_v_report = v_rep
+                    last_c_report = c_rep
                     break
 
-                elif turn_result["type"] == "ungrounded":
-                    refinement_turns += 1
-                    v_rep = turn_result["report"]
-                    self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Memverifikasi Fakta[/bold bright_white] [yellow]{v_rep.hallucination_warning}[/yellow]")
-                    unsupported_claims = [c.claim for c in v_rep.claims if c.status == "unsupported"]
-                    if unsupported_claims:
-                        locked_sec = ""
-                        if locked_supported_claims:
-                            locked_sec = (
-                                "### KLAIM TERVERIFIKASI SEBELUMNYA (WAJIB DIPERTAHANKAN VERBATIM):\n"
-                                "Pernyataan-pernyataan berikut telah terverifikasi valid terhadap dokumen vault. Pertahankan:\n"
-                                + "\n".join(f"- {c}" for c in locked_supported_claims[:6]) + "\n\n"
-                            )
-                        current_query = (
-                            f"{locked_sec}"
-                            f"### VERIFIKASI FAKTA (CLAIM GROUNDING AUDIT):\n"
-                            f"Beberapa klaim berikut tidak ditemukan dasarnya pada literatur vault:\n"
-                            + "\n".join(f"- {c}" for c in unsupported_claims) +
-                            f"\n\nPertanyaan riset asli: \"{query}\"\n"
-                            f"Instruksi: Pertahankan seluruh klaim terverifikasi di atas. Pangkas atau sesuaikan klaim yang belum didukung agar 100% didukung oleh bukti teks dokumen vault."
-                        )
-                        turn += 1
-                    if self._check_agent_turn_checkpoint(
-                        turn=turn,
-                        best_grounding=best_grounding,
-                        best_critic=best_critic,
-                        accumulated_input_tokens=accumulated_input_tokens,
-                        accumulated_output_tokens=accumulated_output_tokens,
-                    ):
-                        raw_final = best_draft or turn_result.get("response", "")
-                        final_response = self._sanitize_final_response(raw_final)
-                        if self.vault_manager and final_response:
-                            final_response = append_vault_bibliography(
-                                text=final_response,
-                                evidence=evidence,
-                                vault_manager=self.vault_manager,
-                                style=self.config.citation.style,
-                                active_documents=self.active_documents,
-                            )
-                        last_v_report = turn_result.get("v_report")
-                        last_c_report = turn_result.get("c_report")
-                        break
-                        continue
+            b_loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(b_loop)
+            try:
+                b_loop.run_until_complete(_async_synthesis_loop())
+            except (KeyboardInterrupt, asyncio.CancelledError):
+                if cancel_event:
+                    cancel_event.set()
+                return "Cancelled"
+            finally:
+                b_loop.close()
 
-                elif turn_result["type"] == "needs_citation_mapping":
-                    refinement_turns += 1
-                    c_rep = turn_result["report"]
-                    v_rep = turn_result.get("v_report")
-                    self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Devil's Advocate[/bold bright_white] [yellow]Skor {c_rep.score}/10: {c_rep.critique_summary}[/yellow]")
-                    stems = self._get_cached_stems()
-                    if stems and self.scout:
-                        self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Reference Mapping[/bold bright_white] [cyan]Menelusuri jaringan sitasi dokumen vault...[/cyan]")
-
-                    gap_progress = _AgentProgressTracker("Menelusuri literatur spesifik penambal celah...")
-
-                    async def _run_gap_search_and_ingestion_async() -> tuple[list[Any], list[str], list[Any], str]:
-                        mapped_papers: list[Any] = []
-                        newly_ingested_stems: list[str] = []
-
-                        # 1. Directed Gap Search via Typed Critique Queries
-                        directed_queries = list(getattr(c_rep, "directed_search_queries", []))
-                        if v_rep and getattr(v_rep, "claims", None):
-                            unsupported = [c.claim for c in v_rep.claims if c.status == "unsupported"]
-                            for u_cl in unsupported[:2]:
-                                clean_words = [
-                                    w for w in re.findall(r"\b\w{4,}\b", u_cl)
-                                    if w.lower() not in ("yang", "pada", "dari", "untuk", "dengan", "dalam", "adalah", "bahwa", "tidak")
-                                ]
-                                if len(clean_words) >= 2:
-                                    gap_q = " ".join(clean_words[:5])
-                                    if gap_q not in directed_queries:
-                                        directed_queries.append(gap_q)
-
-                        is_mock_env = bool(api_key and (api_key.startswith("mock") or api_key == "mock_key"))
-                        is_scout_mocked = bool(self.scout and (hasattr(self.scout.search_multi_source, "assert_called") or getattr(self.scout.search_multi_source, "__code__", None) != LiteratureScout.search_multi_source.__code__))
-                        is_map_mocked = bool(self.scout and (hasattr(self.scout.map_vault_citation_network, "assert_called") or getattr(self.scout.map_vault_citation_network, "__code__", None) != LiteratureScout.map_vault_citation_network.__code__))
-
-                        if directed_queries and self.scout and (not is_mock_env or is_scout_mocked):
-                            for target_gap_q in directed_queries[:2]:
-                                gap_progress.set(f"Menelusuri literatur penambal celah: '{target_gap_q}'...")
-                                try:
-                                    sq = ScoutQuery(keywords=target_gap_q, limit=5)
-                                    candidates = await self.scout.search_multi_source(sq, limit=5)
-                                    if candidates:
-                                        existing_titles = {p.title for p in mapped_papers}
-                                        mapped_papers.extend([p for p in candidates if p.title not in existing_titles])
-                                except Exception:
-                                    pass
-
-                        # 2. Reference Mapping (Vault citation network)
-                        if stems and self.scout and (not is_mock_env or is_map_mocked):
-                            gap_progress.set("Menelusuri jaringan sitasi dokumen vault...")
-                            try:
-                                t_map_s = time.time()
-                                cit_papers = await self.scout.map_vault_citation_network(stems, limit=5)
-                                if cit_papers:
-                                    existing_titles = {p.title for p in mapped_papers}
-                                    mapped_papers.extend([p for p in cit_papers if p.title not in existing_titles])
-                                if hasattr(self, "logger") and self.logger:
-                                    self.logger.log_citation_mapping(
-                                        session_id=session_id,
-                                        stems=stems,
-                                        found_papers=[p.title for p in mapped_papers],
-                                        duration_s=time.time() - t_map_s,
-                                    )
-                            except Exception:
-                                pass
-
-                        # Auto-download mapped papers or evaluate paywall fallback
-                        if mapped_papers and self.scout:
-                            for idx, p in enumerate(mapped_papers, 1):
-                                safe_stem = sanitize_filename(p.title)
-                                downloaded = False
-                                if p.has_pdf and p.pdf_url:
-                                    gap_progress.set(f"Mengunduh sitasi [{idx}/{len(mapped_papers)}]: {p.title[:38]}... (PDF)")
-                                    try:
-                                        await self.scout.download_scout_paper(p)
-                                        newly_ingested_stems.append(safe_stem)
-                                        downloaded = True
-                                    except Exception:
-                                        downloaded = False
-
-                                if not downloaded:
-                                    self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Paywall Terdeteksi[/bold bright_white] [yellow][{idx}/{len(mapped_papers)}] {p.title[:50]}...[/yellow] [dim](Naskah berbayar)[/dim]")
-                                    gap_progress.set(f"Mengevaluasi naskah berbayar [{idx}/{len(mapped_papers)}]: {p.title[:35]}...")
-                                    decision = await asyncio.to_thread(self._ask_ai_paywall_action, p, query)
-
-                                    if decision.get("decision") == "FIND_ALTERNATIVE":
-                                        gap_progress.set(f"Mencari alternatif open-access: {p.title[:35]}...")
-                                        alt_oa = []
-                                        try:
-                                            sq = ScoutQuery(keywords=f"{p.title} open access", is_oa_only=True)
-                                            alt_candidates = await self.scout.search_multi_source(sq, limit=5)
-                                            alt_oa = [c for c in alt_candidates if c.has_pdf and c.pdf_url]
-                                        except Exception:
-                                            pass
-
-                                        alt_downloaded = False
-                                        if alt_oa:
-                                            alt_paper = alt_oa[0]
-                                            gap_progress.set(f"Mengunduh alternatif: {alt_paper.title[:35]}... (PDF)")
-                                            try:
-                                                await self.scout.download_scout_paper(alt_paper)
-                                                newly_ingested_stems.append(sanitize_filename(alt_paper.title))
-                                                alt_downloaded = True
-                                            except Exception:
-                                                alt_downloaded = False
-
-                                        if not alt_downloaded:
-                                            self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Abstrak Memadai[/bold bright_white] [green]Mengindeks abstrak resmi paper ke vault[/green]")
-                                            gap_progress.set(f"Mengindeks abstrak resmi: {p.title[:35]}...")
-                                            await asyncio.to_thread(self.scout.ingest_abstract_paper, p)
-                                            newly_ingested_stems.append(safe_stem)
-                                    else:
-                                        self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Abstrak Memadai[/bold bright_white] [green]Mengindeks abstrak resmi paper ke vault[/green] [dim]({decision.get('reason', '')})[/dim]")
-                                        gap_progress.set(f"Mengindeks abstrak resmi: {p.title[:35]}...")
-                                        await asyncio.to_thread(self.scout.ingest_abstract_paper, p)
-                                        newly_ingested_stems.append(safe_stem)
-
-                        curr_evidence = evidence
-                        curr_citation_guide = citation_guide
-                        if newly_ingested_stems:
-                            gap_progress.set("Mengindeks dokumen sitasi baru ke vault...")
-                            if self.vault_manager:
-                                await asyncio.to_thread(self.vault_manager.reload_vault, False)
-                            await asyncio.to_thread(self._sync_vault_cache)
-                            for s in newly_ingested_stems:
-                                self.active_documents.add(s)
-
-                            active_paths = [self.workspace.get_cache_path(f"{s}.md") for s in self.active_documents]
-                            existing_paths = [p for p in active_paths if p.exists()]
-                            nonlocal current_docs
-                            current_docs = list(existing_paths)
-                            gap_progress.set("Mengekstrak bukti dokumen baru...")
-                            curr_evidence = await asyncio.to_thread(
-                                self.engine.evidence_synthesizer.retrieve_evidence,
-                                query=query,
-                                documents=current_docs,
-                                max_chunks=self.config.citation.max_evidence_chunks,
-                                vector_vault=getattr(self.vault_manager, "vector_vault", None),
-                            )
-                            curr_citation_guide = self._format_vault_citation_guide()
-
-                        return mapped_papers, newly_ingested_stems, curr_evidence, curr_citation_guide
-
-                    gap_coro = _run_gap_search_and_ingestion_async()
-                    try:
-                        mapped_papers, newly_ingested_stems, evidence, citation_guide = self._run_agent_turn_interactive(
-                            coro=gap_coro,
-                            step_desc=gap_progress,
-                            prompt_lbl=prompt_str,
-                            model_label=model_label,
-                            effort=effort,
-                        )
-                    except BaseException:
-                        try:
-                            gap_coro.close()
-                        except Exception:
-                            pass
-                        raise
-
-                    if mapped_papers:
-                        self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Directed Gap Search[/bold bright_white] [cyan]Menemukan {len(mapped_papers)} literatur penambal celah empiris.[/cyan]")
-                    if newly_ingested_stems:
-                        self.console.print(f"[bold green][✓] Berhasil mengindeks {len(newly_ingested_stems)} dokumen sitasi baru ke vault.[/bold green]")
-                        for s in newly_ingested_stems:
-                            self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Membaca[/bold bright_white] [cyan]cache/{s}.md[/cyan] [dim](Siap untuk sintesis)[/dim]")
-                        self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Menganalisis[/bold bright_white] [dim]Menyintesis argumen ilmiah terpadu dengan literatur baru...[/dim]\n")
-                        max_agent_turns = max(max_agent_turns, turn + 2)
-
-                    lines_map = [f"- {p.title} ({p.year or 'n.d.'}) [{p.relevance_reason}]" for p in mapped_papers]
-                    extra_ref = ""
-                    if lines_map:
-                        extra_ref = "### HASIL REFERENCE MAPPING (JARINGAN SITASI VAULT TERUNDUH):\nPaper terhubung yang baru diindeks:\n" + "\n".join(lines_map) + "\n\n"
-
-                    weaknesses_str = ", ".join(c_rep.weaknesses) if c_rep.weaknesses else "Perkuat landasan argumen dan sertakan batasan metodologis."
-                    counter_str = ("\nPotensi sanggahan: " + ", ".join(c_rep.counter_arguments)) if c_rep.counter_arguments else ""
-                    recency_str = f"\nCatatan kebaruan: {c_rep.recency_alert}" if c_rep.recency_alert else ""
-
-                    locked_sec = ""
-                    if locked_supported_claims:
-                        locked_sec = (
-                            "### KLAIM TERVERIFIKASI SEBELUMNYA (WAJIB DIPERTAHANKAN VERBATIM):\n"
-                            "Pernyataan-pernyataan berikut telah terverifikasi valid terhadap dokumen vault. Pertahankan:\n"
-                            + "\n".join(f"- {c}" for c in locked_supported_claims[:6]) + "\n\n"
-                        )
-
-                    unsupported_sec = ""
-                    if v_rep and getattr(v_rep, "claims", None):
-                        unsupported = [c.claim for c in v_rep.claims if c.status == "unsupported"]
-                        if unsupported:
-                            unsupported_sec = (
-                                "### KLAIM YANG MEMBUTUHKAN BUKTI DARI LITERATUR BARU:\n"
-                                "Klaim berikut sebelumnya belum memiliki bukti di vault. Manfaatkan literatur baru yang baru diindeks di atas untuk memverifikasi dan memperkuatnya:\n"
-                                + "\n".join(f"- {c}" for c in unsupported[:5]) + "\n\n"
-                            )
-
-                    current_query = (
-                        f"{citation_guide}\n\n"
-                        f"{locked_sec}"
-                        f"{extra_ref}### EVALUASI DEVIL'S ADVOCATE (SKOR {c_rep.score}/10):\n"
-                        f"Catatan kelemahan: {weaknesses_str}{counter_str}{recency_str}\n\n"
-                        f"{unsupported_sec}"
-                        f"Pertanyaan riset asli: \"{query}\"\n"
-                        f"Instruksi: Pertahankan seluruh klaim terverifikasi di atas. Mentailor ulang sintesis untuk mengatasi catatan kelemahan di atas dengan memanfaatkan bukti literatur baru yang telah diindeks di vault, sertakan sitasi in-text APA pada setiap klaim, dan berikan jawaban yang komprehensif serta mantap (100% yakin)."
-                    )
-                    turn += 1
-                    if self._check_agent_turn_checkpoint(
-                        turn=turn,
-                        best_grounding=best_grounding,
-                        best_critic=best_critic,
-                        accumulated_input_tokens=accumulated_input_tokens,
-                        accumulated_output_tokens=accumulated_output_tokens,
-                    ):
-                        raw_final = best_draft or turn_result.get("response", "")
-                        final_response = self._sanitize_final_response(raw_final)
-                        if self.vault_manager and final_response:
-                            final_response = append_vault_bibliography(
-                                text=final_response,
-                                evidence=evidence,
-                                vault_manager=self.vault_manager,
-                                style=self.config.citation.style,
-                                active_documents=self.active_documents,
-                            )
-                        last_v_report = turn_result.get("v_report")
-                        last_c_report = turn_result.get("c_report")
-                        break
-                    continue
-
-                else:
-                    raw_final = turn_result.get("response", "")
-                    final_response = self._sanitize_final_response(raw_final)
-                    last_v_report = turn_result.get("v_report")
-                    last_c_report = turn_result.get("c_report")
-                    break
+            if cancel_event and cancel_event.is_set():
+                return "Cancelled"
 
             elapsed = time.time() - start_time
-
-            # 3. Clean academic Markdown with LaTeX math beautification
-            render_academic_markdown(final_response, console=self.console)
-            self.console.print()
-
-            # 4. Accurate cumulative token consumption telemetry across all turns
-            evidence_tokens = sum(c.token_estimate or estimate_tokens(c.text) for c in evidence)
-            fallback_in = estimate_tokens(query) + 250 + evidence_tokens
+            ev_tokens = sum(c.token_estimate or estimate_tokens(c.text) for c in curr_evidence)
+            fallback_in = estimate_tokens(query) + 250 + ev_tokens
             fallback_out = estimate_tokens(final_response)
             input_tokens = max(accumulated_input_tokens, fallback_in)
             output_tokens = max(accumulated_output_tokens, fallback_out)
             total_tokens = input_tokens + output_tokens
             style_name = self.config.citation.style.upper()
 
-            # Reuse already evaluated reports from the turn pipeline (Zero duplicate LLM calls)
             v_score = last_v_report.grounding_score if last_v_report else 1.0
             c_score = last_c_report.score if last_c_report else 8
             grounding_badge = f"Grounding: {int(v_score * 100)}%"
@@ -1885,122 +1763,157 @@ class StudioAgentLoopMixin:
             actual_turns = max(total_turns_completed, turn + 1)
             turns_badge = f"{actual_turns} turn" if actual_turns == 1 else f"{actual_turns} turns"
 
-            # Permanent telemetry footer stored in chat database for persistent retrieval
             footer_badge_md = (
                 f"\n\n---\n"
                 f"*[dim]Tokens: {input_tokens:,} in · {output_tokens:,} out · {total_tokens:,} total ({model_label}) • {turns_badge} • {grounding_badge} • {critic_badge} • {elapsed:.1f}s • {style_name} style[/dim]*"
             )
             final_response_persisted = f"{final_response}{footer_badge_md}"
 
-            self.console.print(
-                f"[dim]── Tokens: {input_tokens:,} in · {output_tokens:,} out · {total_tokens:,} total ({model_label}) • {turns_badge} • {grounding_badge} • {critic_badge} • {elapsed:.1f}s • {style_name} style ──[/dim]\n"
-            )
-
-            if hasattr(self, "logger") and self.logger:
-                self.logger.log_response_rendered(
-                    session_id=session_id,
-                    total_input_tokens=input_tokens,
-                    total_output_tokens=output_tokens,
-                    elapsed_total_s=elapsed,
-                    model_label=model_label,
-                    grounding_score=v_score,
-                    critic_score=c_score,
-                )
-
-            if self.chat_manager:
+            if self.chat_manager and session:
                 self.chat_manager.add_message(session.id, "assistant", final_response_persisted)
             self.conversation_history.append({
                 "query": query,
                 "response": final_response_persisted,
             })
 
-            # 5. Suggested actions & Action Indicator: Mengubah / Menulis
-            self._handle_suggested_actions(final_response)
+            self.task_manager.update_tokens(task_id, total_tokens)
+            self.task_manager.log(task_id, f"Token: {input_tokens:,} in · {output_tokens:,} out · {total_tokens:,} total ({model_label}) • {elapsed:.1f}s")
+            self.task_manager.log(task_id, f"Selesai! {len(final_response)} karakter disimpan ke riwayat sesi.")
 
+            task_result_box.update({
+                "final_response": final_response,
+                "final_response_persisted": final_response_persisted,
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "total_tokens": total_tokens,
+                "elapsed": elapsed,
+                "model_label": model_label,
+                "turns_badge": turns_badge,
+                "grounding_badge": grounding_badge,
+                "critic_badge": critic_badge,
+                "style_name": style_name,
+                "last_v_report": last_v_report,
+                "last_c_report": last_c_report,
+            })
+
+            return f"Sintesis selesai ({len(final_response)} karakter, {total_tokens:,} total token)" if final_response else "Selesai"
+
+        task = self.task_manager.submit(
+            name=f"Chat ({session.name if session else 'session'}): {query[:30]}...",
+            task_type="agent",
+            target_fn=_bg_chat_synthesis_worker,
+            session_id=session.id if session else None,
+        )
+
+        chat_timeout = getattr(self.config, "chat_timeout", 300.0)
+
+        async def _wait_for_chat_task() -> TaskInfo:
+            start_t = time.monotonic()
+            while True:
+                t_info = self.task_manager.get_task(task.id)
+                if not t_info:
+                    break
+                if t_info.status in ("completed", "failed", "cancelled"):
+                    return t_info
+                fut = self.task_manager._futures.get(task.id)
+                if fut and fut.done():
+                    return self.task_manager.get_task(task.id) or task
+                if time.monotonic() - start_t > chat_timeout:
+                    raise asyncio.TimeoutError("Chat synthesis timeout exceeded")
+                await asyncio.sleep(0.04)
+            return task
+
+        def _get_chat_status_line() -> str:
+            t_info = self.task_manager.get_task(task.id)
+            if t_info and t_info.logs:
+                last_log = t_info.logs[-1]
+                if last_log.startswith("Started task") or last_log.startswith("Pertanyaan:") or last_log.startswith("Model:"):
+                    return "Menghubungi AI & Menganalisis..."
+                return last_log
+            if t_info and t_info.progress:
+                return t_info.progress
+            return "Menganalisis literatur dan menyusun sintesis ilmiah..."
+
+        prompt_str = f"{self.current_project.name}/chat/{session.name}> " if (self.sub_mode == "chat" and session and self.current_project) else (f"{self.current_project.name}> " if self.current_project else "> ")
+
+        wait_coro = _wait_for_chat_task()
+        completed_task: TaskInfo | None = None
+        try:
+            completed_task = self._run_agent_turn_interactive(
+                coro=wait_coro,
+                step_desc=_get_chat_status_line,
+                prompt_lbl=prompt_str,
+                model_label=model_label,
+                effort=effort,
+            )
         except SessionDetachSignal:
             if session and self.chat_manager:
                 self.chat_manager.update_session_status(session.id, "detached")
-
-            # Handoff query to background TaskManager so AI continues running
-            def _bg_worker(task_id: str) -> str:
-                self.task_manager.log(task_id, f"Pertanyaan: {query}")
-                self.task_manager.log(task_id, f"Model: {model_label} (effort: {effort})")
-                self.task_manager.log(task_id, f"Melanjutkan sintesis di background untuk sesi '{session.name if session else ''}'...")
-                bg_tokens = list(last_turn_tokens) if last_turn_tokens else []
-                async def _bg_stream() -> None:
-                    async for tok in self.engine.stream_query(
-                        query=current_query,
-                        documents=current_docs,
-                        skill_name=self.active_skill_name,
-                        model=model_name,
-                        max_evidence_chunks=0,
-                        history=history_msgs,
-                    ):
-                        bg_tokens.append(tok)
-
-                b_loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(b_loop)
-                try:
-                    b_loop.run_until_complete(_bg_stream())
-                finally:
-                    b_loop.close()
-
-                final_text = "".join(bg_tokens).strip()
-                if final_text:
-                    try:
-                        polisher = self.polisher or AcademicPolisher(engine=self.engine)
-                        p_res = polisher.polish(final_text, query)
-                        if p_res.applied:
-                            final_text = p_res.polished_text
-                    except Exception:
-                        pass
-
-                    if self.vault_manager:
-                        final_text = append_vault_bibliography(
-                            text=final_text,
-                            evidence=evidence,
-                            vault_manager=self.vault_manager,
-                            style=self.config.citation.style,
-                        )
-
-                if self.chat_manager and session and final_text:
-                    self.chat_manager.add_message(session.id, "assistant", final_text)
-                    self.chat_manager.update_session_status(session.id, "detached")
-
-                ev_tokens = sum(c.token_estimate or estimate_tokens(c.text) for c in evidence) if evidence else 0
-                in_tok = estimate_tokens(query) + 250 + ev_tokens
-                out_tok = estimate_tokens(final_text)
-                tot_tok = in_tok + out_tok
-                elapsed_bg = time.time() - start_time
-
-                self.task_manager.update_tokens(task_id, tot_tok)
-                self.task_manager.log(task_id, f"Token: {in_tok:,} in · {out_tok:,} out · {tot_tok:,} total ({model_label}) • {elapsed_bg:.1f}s")
-                self.task_manager.log(task_id, f"Selesai! {len(final_text)} karakter disimpan ke riwayat sesi.")
-                return f"Sintesis selesai ({len(final_text)} karakter, {tot_tok:,} total token)" if final_text else "Selesai"
-
-            task = self.task_manager.submit(
-                name=f"Chat ({session.name if session else 'session'}): {query[:30]}...",
-                task_type="agent",
-                target_fn=_bg_worker,
-                session_id=session.id if session else None,
-            )
-
             self.console.print(f"\n[bold cyan]● Sesi '{session.name if session else ''}' di-detach ke latar belakang.[/bold cyan]")
-            self.console.print(f"[dim]● Proses analisis dialihkan ke background (Task: {task.id}). Pantau di menu Processing atau buka kembali sesi kapan saja.[/dim]\n")
+            self.console.print(f"[dim]● Proses sintesis AI ({task.id}) tetap berjalan di background. Pantau di menu Processing atau buka kembali sesi kapan saja.[/dim]\n")
             raise
-
         except SessionCloseSignal:
             if session and self.chat_manager:
                 self.chat_manager.update_session_status(session.id, "closed")
+            self.task_manager.cancel_task(task.id)
             self.console.print(f"\n[dim]● Sesi '{session.name if session else ''}' ditutup (terminated).\n[/dim]")
             raise
-
         except (KeyboardInterrupt, asyncio.CancelledError):
+            self.task_manager.cancel_task(task.id)
             self.console.print("\n\n[bold yellow]● Pertanyaan dibatalkan oleh pengguna (Ctrl+C).[/bold yellow]\n")
-            # Stay inside active chat session; do not corrupt history with [Dibatalkan]
             return
         except Exception as exc:
             self.console.print(f"\n[bold red][x] Generation error:[/bold red] {exc}\n")
+            return
+        finally:
+            import inspect
+            if inspect.iscoroutine(wait_coro):
+                try:
+                    wait_coro.close()
+                except Exception:
+                    pass
+
+        if completed_task and completed_task.status == "completed":
+            final_resp = task_result_box.get("final_response", "")
+            render_academic_markdown(final_resp, console=self.console)
+            self.console.print()
+
+            in_tok = task_result_box.get("input_tokens", 0)
+            out_tok = task_result_box.get("output_tokens", 0)
+            tot_tok = task_result_box.get("total_tokens", 0)
+            m_lbl = task_result_box.get("model_label", model_label)
+            t_bdg = task_result_box.get("turns_badge", "1 turn")
+            g_bdg = task_result_box.get("grounding_badge", "Grounding: 100%")
+            c_bdg = task_result_box.get("critic_badge", "Critic: 8/10")
+            el_s = task_result_box.get("elapsed", 0.0)
+            st_name = task_result_box.get("style_name", "APA")
+
+            self.console.print(
+                f"[dim]── Tokens: {in_tok:,} in · {out_tok:,} out · {tot_tok:,} total ({m_lbl}) • {t_bdg} • {g_bdg} • {c_bdg} • {el_s:.1f}s • {st_name} style ──[/dim]\n"
+            )
+
+            if hasattr(self, "logger") and self.logger:
+                v_rep = task_result_box.get("last_v_report")
+                c_rep = task_result_box.get("last_c_report")
+                self.logger.log_response_rendered(
+                    session_id=session_id,
+                    total_input_tokens=in_tok,
+                    total_output_tokens=out_tok,
+                    elapsed_total_s=el_s,
+                    model_label=m_lbl,
+                    grounding_score=v_rep.grounding_score if v_rep else 1.0,
+                    critic_score=c_rep.score if c_rep else 8,
+                )
+
+            # Suggested actions & Action Indicator: Mengubah / Menulis
+            self._handle_suggested_actions(final_resp)
+
+        elif completed_task and completed_task.status == "cancelled":
+            self.console.print("\n\n[bold yellow]● Pertanyaan dibatalkan oleh pengguna (Ctrl+C).[/bold yellow]\n")
+            return
+
+        elif completed_task and completed_task.status == "failed":
+            self.console.print(f"\n[bold red][x] Generation error:[/bold red] {completed_task.error}\n")
 
     def _execute_action_list(self, actions: list[str]) -> None:
         """Present interactive confirmation for a list of Scrpcy commands on the main thread."""

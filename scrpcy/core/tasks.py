@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime, timezone
+import asyncio
 import threading
 import json
 from pathlib import Path
@@ -273,6 +274,13 @@ class TaskManager:
                         self.log(task_id, "Task completed successfully.")
                     info.finished_at = datetime.now(timezone.utc).isoformat()
                     self._persist_task(info)
+            except (KeyboardInterrupt, asyncio.CancelledError):
+                with self._lock:
+                    info.status = "cancelled"
+                    info.progress = "Cancelled by user."
+                    info.finished_at = datetime.now(timezone.utc).isoformat()
+                    self._persist_task(info)
+                self.log(task_id, "Task was cancelled.")
             except Exception as exc:
                 with self._lock:
                     info.status = "failed"
@@ -317,6 +325,14 @@ class TaskManager:
             task = self._tasks.get(task_id)
             if task:
                 task.logs.append(f"[{timestamp}] {message}")
+                task.progress = message
+                self._persist_task(task)
+
+    def update_progress(self, task_id: str, message: str) -> None:
+        """Update progress string for an active task without adding a log entry."""
+        with self._lock:
+            task = self._tasks.get(task_id)
+            if task:
                 task.progress = message
                 self._persist_task(task)
 
