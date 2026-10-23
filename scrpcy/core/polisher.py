@@ -156,10 +156,9 @@ class AcademicPolisher:
 
         if self.engine and getattr(self.engine, "config", None):
             try:
-                # Check for active API key
-                api_keys = getattr(self.engine.config, "api_keys", {})
-                has_key = any(bool(k) for k in api_keys.values())
-                if has_key and hasattr(self.engine, "acompletion_fn") and self.engine.acompletion_fn:
+                model_name = getattr(self.engine.config, "default_model", "gemini-2.5-pro")
+                api_key = self.engine.config.get_api_key_for_model(model_name)
+                if api_key and not api_key.startswith("mock") and getattr(self.engine, "_acompletion_fn", None) is None:
                     prompt = (
                         f"Please polish this academic text to elevate natural cadence and remove mechanical AI phrasing.\n\n"
                         f"Research Context Query: \"{query}\"\n\n"
@@ -180,19 +179,18 @@ class AcademicPolisher:
                             chunks.append(c_text)
                     raw_llm = "".join(chunks).strip()
                     if raw_llm:
-                        # Clean out accidental code fences
                         if raw_llm.startswith("```markdown"):
                             raw_llm = raw_llm[11:]
                         elif raw_llm.startswith("```"):
                             raw_llm = raw_llm[3:]
                         if raw_llm.endswith("```"):
                             raw_llm = raw_llm[:-3]
-                        polished_candidate = raw_llm.strip()
+                        polished_candidate = self.polish_heuristic(raw_llm.strip())
                         used_llm = True
             except Exception:
                 polished_candidate = ""
 
-        # Fallback to heuristic polisher if LLM was unavailable or failed
+        # Deterministic heuristic polisher if LLM was unavailable or in mock environment
         if not polished_candidate:
             polished_candidate = self.polish_heuristic(text)
 

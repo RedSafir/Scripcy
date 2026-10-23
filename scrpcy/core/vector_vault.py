@@ -497,11 +497,22 @@ class ProjectVectorVault:
         if not clean_query:
             return []
 
-        embedder = get_shared_embedder()
-        query_vec = list(embedder.embed([clean_query]))[0]
-
         with self._get_connection() as conn:
             cur = conn.cursor()
+            try:
+                cur.execute("SELECT count(*) FROM chunks")
+                row = cur.fetchone()
+                if not row or row[0] == 0:
+                    return []
+            except Exception:
+                return []
+
+            try:
+                embedder = get_shared_embedder()
+                query_vec = list(embedder.embed([clean_query]))[0]
+            except Exception as e_err:
+                logger.warning(f"Vector embedder unavailable: {e_err}")
+                query_vec = None
 
             # 1. Lexical BM25 Search via FTS5
             # Tokenize query for safe MATCH syntax
@@ -525,15 +536,20 @@ class ProjectVectorVault:
                     bm25_matches = []
 
             # 2. Dense Vector Search via sqlite-vec
-            vec_blob = serialize_f32(list(query_vec))
-            cur.execute("""
-                SELECT chunks.id, distance
-                FROM vec_chunks
-                JOIN chunks ON chunks.rowid = vec_chunks.chunk_rowid
-                WHERE embedding MATCH ? AND k = 40
-                ORDER BY distance
-            """, (vec_blob,))
-            vec_matches = [row["id"] for row in cur.fetchall()]
+            vec_matches: list[str] = []
+            if query_vec is not None:
+                try:
+                    vec_blob = serialize_f32(list(query_vec))
+                    cur.execute("""
+                        SELECT chunks.id, distance
+                        FROM vec_chunks
+                        JOIN chunks ON chunks.rowid = vec_chunks.chunk_rowid
+                        WHERE embedding MATCH ? AND k = 40
+                        ORDER BY distance
+                    """, (vec_blob,))
+                    vec_matches = [row["id"] for row in cur.fetchall()]
+                except Exception:
+                    vec_matches = []
 
             # 3. Reciprocal Rank Fusion (RRF)
             rrf_scores: dict[str, float] = {}

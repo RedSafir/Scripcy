@@ -93,13 +93,12 @@ def test_background_task_triggers_ai_evaluation():
         if call[0][1] == "system"
     ]
     assert len(system_calls) == 1
+    sys_note = system_calls[0][0][2]
+    assert "PROSES LATAR BELAKANG SELESAI" in sys_note
 
-    # Check AI evaluation briefing added to assistant role
+    # In single authoritative response architecture, background tasks do not trigger duplicate assistant briefing
     assistant_calls = [
         call for call in cli.chat_manager.add_message.call_args_list
         if call[0][1] == "assistant"
     ]
-    assert len(assistant_calls) == 1
-    briefing_text = assistant_calls[0][0][2]
-    assert "Berdasarkan evaluasi terhadap berkas yang baru diunduh" in briefing_text
-    assert "[STATUS: OK]" in briefing_text
+    assert len(assistant_calls) == 0

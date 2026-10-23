@@ -585,6 +585,11 @@ class LiteratureScout:
         papers_dir = getattr(self.workspace, "papers_dir", self.workspace.vault_dir)
         target_md = papers_dir / f"{safe_stem}.md"
         target_md.write_text(full_content, encoding="utf-8")
+        if papers_dir != self.workspace.vault_dir:
+            try:
+                (self.workspace.vault_dir / f"{safe_stem}.md").write_text(full_content, encoding="utf-8")
+            except Exception:
+                pass
 
         cache_file = f"{safe_stem}.md"
         self.workspace.save_to_cache(cache_file, full_content)

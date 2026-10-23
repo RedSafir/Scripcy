@@ -70,8 +70,9 @@ def _clear_lines(num_lines: int, console: Console | None = None) -> None:
     for _ in range(num_lines):
         out.append("\x1b[2K\n")
     out.append(f"\x1b[{num_lines}A\r")
-    sys.stdout.write("".join(out))
-    sys.stdout.flush()
+    target = getattr(console, "file", None) or sys.stdout
+    target.write("".join(out))
+    target.flush()
 
 
 def _render_diff_inplace(
@@ -85,14 +86,24 @@ def _render_diff_inplace(
     Overwrites the previous terminal output line-by-line without blanking or clearing
     the screen below (no `\\x1b[J`), completely eliminating flicker. Performs dirty-checking:
     if rendered output matches `last_rendered_text`, performs zero I/O writes.
+    Clamps rendering width to terminal columns - 1 to prevent auto-margin-wrap row displacement.
 
     Returns:
         tuple[str, int]: (new_rendered_text, new_lines_drawn_count)
     """
-    with console.capture() as capture:
-        for item in lines:
-            console.print(item)
-    raw_str = capture.get()
+    import shutil
+    term_cols = shutil.get_terminal_size((80, 24)).columns
+    max_w = max(20, (console.width or term_cols) - 1)
+    orig_w = console.width
+    console.width = max_w
+    try:
+        with console.capture() as capture:
+            for item in lines:
+                console.print(item, crop=True, no_wrap=True)
+        raw_str = capture.get()
+    finally:
+        console.width = orig_w
+
     rendered_lines = raw_str.splitlines()
     cur_text = "\n".join(rendered_lines)
 
@@ -114,8 +125,9 @@ def _render_diff_inplace(
             out.append("\x1b[2K\n")
         out.append(f"\x1b[{excess}A\r")
 
-    sys.stdout.write("".join(out))
-    sys.stdout.flush()
+    target = getattr(console, "file", None) or sys.stdout
+    target.write("".join(out))
+    target.flush()
 
     return cur_text, len(rendered_lines)
 
@@ -874,9 +886,13 @@ SLASH_COMMANDS_PROJECT: list[tuple[str, str]] = [
     ("/vault", "Manage vault documents and soft-archive"),
     ("/docx", "Compile synthesized research into Microsoft Word (.docx)"),
     ("/chat", "Manage multi-session conversation history (/chat new|list)"),
+    ("/chats", "Daftar dan switcher sesi percakapan interaktif (alias: /sessions)"),
+    ("/sessions", "Manajemen sesi percakapan interaktif (TMUX-style)"),
     ("/skill", "Switch active research persona (/skill <name|#>)"),
     ("/models", "Manage LLM models, API keys, 9Router, and tokens"),
-    ("/processing", "View and track background tasks and downloads"),
+    ("/processing", "View and track background tasks and downloads (alias: /process)"),
+    ("/process", "View and track background tasks and downloads (alias: /tasks)"),
+    ("/tasks", "View and track background tasks and downloads"),
     ("/gdrive", "Ingest research paper directly from Google Drive"),
     ("/active", "Toggle active context papers for AI queries"),
     ("/rename", "Rename the current project (/rename <new_name>)"),
@@ -893,6 +909,14 @@ SLASH_COMMANDS_PROJECT: list[tuple[str, str]] = [
 
 SLASH_COMMANDS_CHAT: list[tuple[str, str]] = [
     ("/back", "Kembali ke menu daftar chat (skripsi/chat>)"),
+    ("/detach", "Lepas sesi ke background (tmux detach, tugas tetap berjalan)"),
+    ("/switch", "Pindah sesi chat via dialog interaktif (alias: /chats, /sessions)"),
+    ("/chats", "Daftar dan switcher sesi percakapan interaktif"),
+    ("/sessions", "Manajemen sesi percakapan interaktif (TMUX-style)"),
+    ("/process", "Pantau dan kelola proses latar belakang (alias: /tasks)"),
+    ("/tasks", "Pantau dan kelola proses latar belakang (alias: /process)"),
+    ("/cancel", "Batalkan proses AI atau task yang sedang berjalan di sesi ini"),
+    ("/skill", "Ganti persona riset aktif (/skill <nama|#>)"),
     ("/status", "Lihat model aktif dan konsumsi token proyek saat ini"),
     ("/new", "Buat sesi percakapan baru (/new [nama])"),
     ("/resume", "Pindah ke sesi percakapan lain (/resume <#|nama>)"),
@@ -1639,11 +1663,18 @@ def interactive_item_browser(
     page_size: int = 7,
     console: Console | None = None,
     empty_message: str = "Tidak ada item.",
+    items_provider: Any | None = None,
+    poll_interval: float | None = 0.4,
 ) -> tuple[str, int, Any | None]:
     """Interactive slide/carousel item browser with actions per DESIGN.md."""
     import math
 
     c = console or Console(force_terminal=True)
+    if items_provider is not None:
+        try:
+            items = items_provider() or []
+        except Exception:
+            pass
     total_items = len(items)
 
     if not sys.stdin.isatty():
@@ -1660,6 +1691,15 @@ def interactive_item_browser(
     c.show_cursor(False)
     try:
         while True:
+            if items_provider is not None:
+                try:
+                    items = items_provider() or []
+                    total_items = len(items)
+                    total_slides = max(1, math.ceil(total_items / page_size)) if total_items > 0 else 1
+                    current_slide = max(0, min(current_slide, total_slides - 1))
+                except Exception:
+                    pass
+
             start_idx = current_slide * page_size
             end_idx = min(total_items, start_idx + page_size)
             slice_items = items[start_idx:end_idx]
@@ -1687,7 +1727,7 @@ def interactive_item_browser(
                 lines.append(Text(""))
 
                 action_bar = Text()
-                action_bar.append("[esc] ", style="bold cyan")
+                action_bar.append("[esc/q] ", style="bold cyan")
                 action_bar.append("Back", style="dim")
                 lines.append(action_bar)
 
@@ -1695,7 +1735,18 @@ def interactive_item_browser(
                     c, lines, last_rendered_text, prev_lines_drawn
                 )
 
-                key = _read_key()
+                if items_provider is not None:
+                    start_poll = time.monotonic()
+                    poll_dur = poll_interval if poll_interval is not None else 0.4
+                    key = None
+                    while time.monotonic() - start_poll < poll_dur:
+                        key = _poll_key()
+                        if key is not None:
+                            break
+                        time.sleep(0.04)
+                else:
+                    key = _read_key()
+
                 if key in ("ESC", "\x03", "q", "Q", "ENTER", "back", "Back"):
                     if prev_lines_drawn > 0:
                         _clear_lines(prev_lines_drawn, c)
@@ -1745,7 +1796,21 @@ def interactive_item_browser(
                 c, lines, last_rendered_text, prev_lines_drawn
             )
 
-            key = _read_key()
+            if items_provider is not None:
+                start_poll = time.monotonic()
+                poll_dur = poll_interval if poll_interval is not None else 0.4
+                key = None
+                while time.monotonic() - start_poll < poll_dur:
+                    key = _poll_key()
+                    if key is not None:
+                        break
+                    time.sleep(0.04)
+            else:
+                key = _read_key()
+
+            if key is None:
+                continue
+
             if key == "UP":
                 cursor_idx = (cursor_idx - 1) % len(slice_items)
             elif key == "DOWN":
@@ -1756,7 +1821,7 @@ def interactive_item_browser(
             elif key == "RIGHT" and total_slides > 1:
                 current_slide = (current_slide + 1) % total_slides
                 cursor_idx = 0
-            elif key in ("ESC", "\x03"):
+            elif key in ("ESC", "\x03", "q", "Q"):
                 if prev_lines_drawn > 0:
                     _clear_lines(prev_lines_drawn, c)
                 return ("back", absolute_cursor, items[absolute_cursor] if items else None)
@@ -1767,11 +1832,12 @@ def interactive_item_browser(
                 first_act = actions[0][0] if actions else "select"
                 return (first_act, absolute_cursor, items[absolute_cursor])
             else:
-                # Check action shortcut match
+                # Check action shortcut match (support multi-key hints like "c/x")
                 k_clean = key.lower()
                 matched_action = None
                 for a_key, a_label, a_key_hint in actions:
-                    if k_clean == a_key_hint.lower():
+                    hints = [h.strip().lower() for h in a_key_hint.split("/")]
+                    if k_clean in hints:
                         matched_action = a_key
                         break
                 if matched_action:
@@ -1821,8 +1887,9 @@ def interactive_detail_viewer(
             else:
                 scroll_top = max(0, min(scroll_top, max(0, total_lines - view_height)))
 
+            term_w = max(20, (c.width or shutil.get_terminal_size((80, 24)).columns) - 1)
             lines: list[Any] = []
-            header_t = Text()
+            header_t = Text(no_wrap=True, overflow="ellipsis")
             header_t.append(cur_title, style="bold bright_white")
             header_t.append(f" ({total_lines} lines)", style="dim")
             if lines_provider:
@@ -1841,13 +1908,13 @@ def interactive_detail_viewer(
                 lines.append(Text("(No log output)", style="dim"))
             else:
                 for line in visible:
-                    lines.append(Text(line[:(c.width or 80) - 2], style="white"))
+                    lines.append(Text(line[:term_w - 2], style="white", no_wrap=True, overflow="ellipsis"))
 
             # Fill remaining space
             for _ in range(view_height - len(visible)):
                 lines.append(Text(""))
 
-            action_bar = Text()
+            action_bar = Text(no_wrap=True, overflow="ellipsis")
             if total_lines > view_height:
                 action_bar.append(f"[Line {scroll_top + 1}-{min(total_lines, scroll_top + view_height)}/{total_lines}] ", style="bold cyan")
                 action_bar.append("↑/↓ Scroll · ", style="dim")

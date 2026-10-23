@@ -34,6 +34,15 @@ class TaskInfo(BaseModel):
     tokens_burned: int = Field(default=0, description="Total tokens consumed by the task.")
 
     @property
+    def result(self) -> str | None:
+        """Alias for result_summary for backward and API compatibility."""
+        return self.result_summary
+
+    @result.setter
+    def result(self, value: str | None) -> None:
+        self.result_summary = value
+
+    @property
     def display_tokens(self) -> int:
         """Return explicit burned tokens or parse total tokens from execution logs."""
         if self.tokens_burned:

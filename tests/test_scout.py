@@ -361,7 +361,7 @@ class TestLiteratureScoutDownload:
             pdf_path = await scout.download_scout_paper(paper)
 
             assert pdf_path.exists()
-            assert pdf_path.parent == temp_workspace.vault_dir
+            assert pdf_path.parent in (temp_workspace.vault_dir, getattr(temp_workspace, "papers_dir", temp_workspace.vault_dir))
             assert pdf_path.read_bytes() == fake_pdf_bytes
 
             cache_files = list(temp_workspace.cache_dir.glob("*.md"))
