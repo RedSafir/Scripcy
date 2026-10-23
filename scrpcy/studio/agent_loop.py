@@ -1110,12 +1110,13 @@ class StudioAgentLoopMixin:
                     if "engine" in sig.parameters or any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()):
                         scout_kwargs["engine"] = self.engine
 
+                    scout_timeout = getattr(self.config, "scout_timeout", 180.0)
                     return await asyncio.wait_for(
                         self.scout.auto_scout_and_ingest(
                             target_topic,
                             **scout_kwargs,
                         ),
-                        timeout=20.0,
+                        timeout=scout_timeout,
                     )
 
                 timed_out = False
@@ -1316,6 +1317,7 @@ class StudioAgentLoopMixin:
                         model=model_name,
                         max_evidence_chunks=self.config.citation.max_evidence_chunks if current_docs else 0,
                         history=history_msgs,
+                        vector_vault=getattr(self.vault_manager, "vector_vault", None),
                     ):
                         turn_tokens.append(token)
 

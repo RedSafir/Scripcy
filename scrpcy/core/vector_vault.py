@@ -114,6 +114,24 @@ class ProjectVectorVault:
                 )
             """)
 
+            # Triggers to keep external-content FTS5 synchronized with chunks
+            cur.execute("""
+                CREATE TRIGGER IF NOT EXISTS chunks_ai AFTER INSERT ON chunks BEGIN
+                    INSERT INTO fts_chunks(rowid, content) VALUES (new.rowid, new.content);
+                END;
+            """)
+            cur.execute("""
+                CREATE TRIGGER IF NOT EXISTS chunks_ad AFTER DELETE ON chunks BEGIN
+                    INSERT INTO fts_chunks(fts_chunks, rowid, content) VALUES('delete', old.rowid, old.content);
+                END;
+            """)
+            cur.execute("""
+                CREATE TRIGGER IF NOT EXISTS chunks_au AFTER UPDATE ON chunks BEGIN
+                    INSERT INTO fts_chunks(fts_chunks, rowid, content) VALUES('delete', old.rowid, old.content);
+                    INSERT INTO fts_chunks(rowid, content) VALUES (new.rowid, new.content);
+                END;
+            """)
+
             # sqlite-vec virtual table (384 dimensions for bge-small)
             cur.execute("""
                 CREATE VIRTUAL TABLE IF NOT EXISTS vec_chunks USING vec0(
@@ -150,6 +168,13 @@ class ProjectVectorVault:
                     FOREIGN KEY(paper_id) REFERENCES papers(id) ON DELETE CASCADE
                 )
             """)
+
+            # Ensure FTS5 index is fully synchronized with existing chunks on initialization
+            try:
+                cur.execute("INSERT INTO fts_chunks(fts_chunks) VALUES('rebuild')")
+            except Exception:
+                pass
+
             conn.commit()
 
     def is_paper_indexed(self, paper_id: str) -> bool:
@@ -393,6 +418,12 @@ class ProjectVectorVault:
                     i_info["file_path"], i_info["caption"], i_info["ai_analysis"],
                     i_info["width"], i_info["height"]
                 ))
+
+            # Ensure FTS5 index is fully synchronized with new chunks
+            try:
+                cur.execute("INSERT INTO fts_chunks(fts_chunks) VALUES('rebuild')")
+            except Exception:
+                pass
 
             conn.commit()
 

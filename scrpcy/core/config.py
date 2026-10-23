@@ -91,6 +91,12 @@ class ScrpcyConfig(BaseModel):
         default_factory=dict,
         description="Custom base URLs per provider (e.g. 9router or local endpoints).",
     )
+    scout_timeout: float = Field(
+        default=180.0,
+        ge=5.0,
+        le=900.0,
+        description="Foreground timeout in seconds for automatic literature scouting before backgrounding.",
+    )
     citation: CitationPreferences = Field(
         default_factory=CitationPreferences,
         description="Citation and evidence synthesis settings.",

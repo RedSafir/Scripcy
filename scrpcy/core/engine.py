@@ -404,6 +404,7 @@ class LLMEngine:
         project_name: str | None = None,
         project_path: str | Path | None = None,
         history: list[dict[str, str]] | None = None,
+        vector_vault: Any = None,
     ) -> AsyncGenerator[str, None]:
         """Stream generated response tokens from LiteLLM using synthesized evidence."""
         if not query or not query.strip():
@@ -426,6 +427,7 @@ class LLMEngine:
             query=query,
             documents=documents or [],
             max_chunks=max_evidence_chunks,
+            vector_vault=vector_vault,
         )
         evidence_block = self.evidence_synthesizer.format_context_prompt(evidence_chunks)
 
@@ -510,12 +512,14 @@ class LLMEngine:
         project_name: str | None = None,
         project_path: str | Path | None = None,
         history: list[dict[str, str]] | None = None,
+        vector_vault: Any = None,
     ) -> SynthesisResult:
         """Execute query, returning complete synthesis result and supporting evidence chunks."""
         evidence_chunks = self.evidence_synthesizer.retrieve_evidence(
             query=query,
             documents=documents or [],
             max_chunks=max_evidence_chunks,
+            vector_vault=vector_vault,
         )
 
         accumulated: list[str] = []
@@ -531,6 +535,7 @@ class LLMEngine:
             max_evidence_chunks=max_evidence_chunks,
             project_name=project_name or self.project_name,
             project_path=project_path or self.project_path,
+            vector_vault=vector_vault,
         ):
             accumulated.append(token)
 
