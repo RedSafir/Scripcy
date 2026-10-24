@@ -41,6 +41,7 @@ from scrpcy.core.tasks import TaskInfo, TaskManager
 from scrpcy.core.tracker import TokenTracker
 from scrpcy.core.vault import VaultItem, VaultManager
 from scrpcy.core.verifier import FactChecker, VerificationReport
+from scrpcy.core.web_scout import WebScout
 from scrpcy.core.workspace import WorkspaceManager
 
 from scrpcy.studio.signals import (
@@ -123,6 +124,7 @@ class StudioBase:
         self.wordcraft: WordCraftClient | None = None
         self.engine: LLMEngine | None = None
         self.scout: LiteratureScout | None = None
+        self.web_scout: WebScout | None = None
         self.contract_extractor: TaskContractExtractor | None = None
 
         # If a workspace was explicitly provided, bind it
@@ -153,6 +155,7 @@ class StudioBase:
         )
         self.engine.default_model = self.get_active_project_model()
         self.scout = LiteratureScout(workspace=self.workspace, parser=self.parser)
+        self.web_scout = WebScout(workspace=self.workspace)
         self.vault_manager = VaultManager(workspace=self.workspace)
         self.chat_manager = ChatManager(self.workspace.root_dir / "chats.db")
         existing_sessions = self.chat_manager.list_sessions()
@@ -635,7 +638,7 @@ class StudioBase:
 
             elif choice == "settings":
 
-                self.cmd_models("")
+                self.run_interactive_settings()
 
     def open_project(self, target: ProjectInfo | str | Path, show_banner: bool = True) -> None:
         """Switch studio context to a designated master project."""

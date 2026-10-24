@@ -303,6 +303,101 @@ class TestProjectCommands:
         output = cli_studio.console.file.getvalue()
         assert "Model & Provider" in output
 
+    def test_cmd_models_cancel_does_not_dump_tables(self, cli_studio: CLIStudio, monkeypatch: pytest.MonkeyPatch) -> None:
+        """When user cancels model selector via Esc (None), it should return cleanly without dumping 4 tables."""
+        import sys
+        import scrpcy.cli_studio as _cli_studio
+        monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+        monkeypatch.setattr(_cli_studio, "interactive_model_selector", lambda **kwargs: None)
+        monkeypatch.setattr("scrpcy.studio.commands.interactive_model_selector", lambda **kwargs: None)
+        monkeypatch.setattr("scrpcy.studio.commands.fetch_9router_models", lambda base: [])
+        cli_studio.console.file = io.StringIO()
+
+        cli_studio.cmd_models("")
+        out = cli_studio.console.file.getvalue()
+        # Must NOT dump inventory tables on cancel
+        assert "scrpcy Model & Provider Inventory" not in out
+        assert "Panduan Perintah 'models'" not in out
+
+    def test_interactive_settings_hub_navigation(self, cli_studio: CLIStudio, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Verify unified interactive settings hub navigation and sub-menu dispatch."""
+        calls = []
+
+        def mock_interactive_menu(options, **kwargs):
+            first_key = options[0][0]
+            calls.append(first_key)
+            return "back"
+
+        monkeypatch.setattr("scrpcy.studio.dashboard.interactive_menu", mock_interactive_menu)
+        cli_studio.run_interactive_settings()
+
+        assert "model" in calls
+
+    def test_interactive_federation_settings_toggle(self, cli_studio: CLIStudio, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Verify 1-click toggle of federation providers without typing commands."""
+        # Current state: True
+        assert getattr(cli_studio.config, "enable_semantic_scholar", True) is True
+
+        turn = 0
+        def mock_menu(options, **kwargs):
+            nonlocal turn
+            turn += 1
+            if turn == 1:
+                return "s2_toggle"
+            return "back"
+
+        monkeypatch.setattr("scrpcy.studio.dashboard.interactive_menu", mock_menu)
+        cli_studio._run_interactive_federation_settings()
+
+        # Should be toggled to False
+        assert cli_studio.config.enable_semantic_scholar is False
+
+    def test_interactive_agent_limits_settings(self, cli_studio: CLIStudio, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Verify interactive adjustment of max turns and output tokens."""
+        turn = 0
+        def mock_menu(options, **kwargs):
+            nonlocal turn
+            turn += 1
+            if turn == 1:
+                return "turns"
+            elif turn == 2:
+                return "25"
+            return "back"
+
+        monkeypatch.setattr("scrpcy.studio.dashboard.interactive_menu", mock_menu)
+        cli_studio._run_interactive_agent_limits_settings()
+
+        assert cli_studio.config.max_agent_turns == 25
+
+    def test_interactive_menu_renders_rich_markup_without_raw_tags(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Verify rich markup in option labels is parsed into ANSI styles, never printed as raw tags."""
+        import sys
+        import io
+        from rich.console import Console
+        from scrpcy.ui.interactive import interactive_menu
+
+        monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+        # Mock single ENTER keypress
+        monkeypatch.setattr("scrpcy.ui.interactive._read_key", lambda: "ENTER")
+
+        out_buf = io.StringIO()
+        con = Console(file=out_buf, color_system="truecolor", force_terminal=True)
+
+        options = [
+            ("gemini", "Google Gemini : [bold cyan]Configured (tes...-999)[/bold cyan]"),
+            ("claude", "Anthropic Claude : [dim]Not Set[/dim]"),
+        ]
+
+        chosen = interactive_menu(options, console=con)
+        assert chosen == "gemini"
+
+        output = out_buf.getvalue()
+        # Raw markup tags must NOT be printed literally
+        assert "[bold cyan]" not in output
+        assert "[/bold cyan]" not in output
+        assert "[dim]" not in output
+        assert "[/dim]" not in output
+
     def test_cmd_docx_export(self, cli_studio: CLIStudio, temp_workspace: WorkspaceManager) -> None:
         meta = DocumentMetadata(
             title="Transformer Review",

@@ -41,7 +41,9 @@ from scrpcy.core.tasks import TaskInfo, TaskManager
 from scrpcy.core.tracker import TokenTracker
 from scrpcy.core.vault import VaultItem, VaultManager
 from scrpcy.core.verifier import FactChecker, VerificationReport
+from scrpcy.core.web_scout import OfficialDomainFilter, WebScout, WebSearchResult
 from scrpcy.core.workspace import WorkspaceManager
+from scrpcy.exceptions import OfficialSourceRejectedError, WebScoutError
 
 from scrpcy.studio.signals import (
     SCRPCY_LOGO,
@@ -112,6 +114,8 @@ class StudioCommandsMixin:
 
         if cmd in ("/help", "/?"):
             self.print_project_help()
+        elif cmd in ("/web", "/webscout", "/web-scout"):
+            self.cmd_web(args)
         elif cmd in ("/findpaper", "/scout", "/paper-scout"):
             self.cmd_findpaper(args)
         elif cmd in ("/dashboard", "/close", "/back"):
@@ -355,7 +359,10 @@ class StudioCommandsMixin:
         if token_stats.last_active:
             table.add_row("Last LLM Activity", token_stats.last_active.replace("T", " ")[:19] + " UTC")
 
-        table.add_row("Active Skill", self.active_skill_name)
+        if self.active_skill_name and self.active_skill_name != "scrpcy_manual":
+            table.add_row("Active Persona", self.active_skill_name)
+        else:
+            table.add_row("Core Protocol", "Scrpcy Academic Engine (Autonomous)")
         table.add_row("Vault Papers", f"{len(cached_docs)} indexed ({active_count} active rujukan)")
         table.add_row("Citation Style", self.config.citation.style.upper())
         table.add_row("Master Path", str(self.workspace.root_dir))
@@ -834,6 +841,8 @@ class StudioCommandsMixin:
                             f"\n[bold green][✓] Updated global fallback model to:[/bold green] [bold cyan]{chosen_m}[/bold cyan]\n"
                         )
                     return
+                # Return cleanly if user cancelled selector (Esc) without dumping tables
+                return
 
             if live_r9_models:
                 r9_status = f"[bold green][Online - {len(live_r9_models)} models detected][/bold green]"
@@ -1052,8 +1061,8 @@ class StudioCommandsMixin:
                 self.config_manager.config.set_api_key("9router", auto_key)
             self.config_manager.config.set_api_base("9router", base_url)
 
-            if not chosen_model and live_models:
-                chosen_model = f"9router/{live_models[0]}"
+            if not chosen_model:
+                chosen_model = f"9router/{live_models[0]}" if live_models else "9router/default"
 
             if chosen_model:
                 self.config_manager.config.default_model = chosen_model
@@ -1104,30 +1113,151 @@ class StudioCommandsMixin:
             self.console.print("[yellow]Usage: models [list | use <model> [project] | set-key <provider> <key> | 9router [port] [model] | tokens | status][/yellow]\n")
 
     def cmd_settings(self, arg: str = "") -> None:
-        """Display or update general workspace and citation settings."""
+        """Display or update academic search providers, API keys, and workspace preferences per DESIGN.md."""
         parts = shlex.split(arg) if arg else []
         sub = parts[0].lower() if parts else "show"
 
         if sub in ("show", "list", "ls") or not parts:
-            self.console.print("\n[bold bright_white]Workspace & Citation Settings[/bold bright_white]")
+            self.console.print("\n[bold bright_white]Scrpcy Literature, Workspace & Citation Settings[/bold bright_white]")
             s_table = Table(box=None, padding=(0, 2), show_header=False)
-            s_table.add_column("Property", style="dim", width=18)
+            s_table.add_column("Property", style="dim", width=24)
             s_table.add_column("Value", style="white")
-            s_table.add_row("Workspace Path", str(self.config.workspace_path))
-            s_table.add_row("Skills Dir", str(self.config.skills_dir))
-            s_table.add_row("Citation Style", self.config.citation.style.upper())
-            s_table.add_row("Include DOI", str(self.config.citation.include_doi))
-            s_table.add_row("Max Evidence", f"{self.config.citation.max_evidence_chunks} chunks")
-            s_table.add_row("Max Agent Turns", f"{getattr(self.config, 'max_agent_turns', 15)} turns")
-            s_table.add_row("Refinement Rounds", f"{getattr(self.config, 'max_refinement_turns', 8)} rounds")
-            s_table.add_row("Max Output Tokens", f"{getattr(self.config, 'max_output_tokens', 8192)} tokens")
+
+            s_table.add_row("[bold cyan]Academic Search & Federation[/bold cyan]", "")
+            oa_key = self.config.get_api_key("openalex")
+            oa_status = f"[bold cyan]Key configured[/bold cyan] ({oa_key[:4]}...)" if oa_key else "[dim]No API key (shared IP budget $0.10/day)[/dim]"
+            s_table.add_row("  OpenAlex (Utama)", f"[bold cyan]Active[/bold cyan] · {oa_status}")
+
+            cr_en = getattr(self.config, "enable_crossref", True)
+            cr_status = "[bold cyan]Active[/bold cyan]" if cr_en else "[dim]Disabled[/dim]"
+            s_table.add_row("  CrossRef", f"{cr_status} · Polite mailto pool (tanpa API key)")
+
+            s2_en = getattr(self.config, "enable_semantic_scholar", True)
+            s2_key = self.config.get_api_key("semantic_scholar")
+            s2_status = "[bold cyan]Active[/bold cyan]" if s2_en else "[dim]Disabled[/dim]"
+            s2_key_lbl = f"Key: {s2_key[:4]}..." if s2_key else "Key: none (1 req/s)"
+            s_table.add_row("  Semantic Scholar", f"{s2_status} · {s2_key_lbl}")
+
+            oc_en = getattr(self.config, "enable_opencitations", False)
+            oc_key = self.config.get_api_key("opencitations")
+            oc_status = "[bold cyan]Active[/bold cyan]" if oc_en else "[dim]Disabled[/dim]"
+            oc_key_lbl = "Token configured" if oc_key else "Token: none"
+            s_table.add_row("  OpenCitations", f"{oc_status} · {oc_key_lbl}")
+
+            s_table.add_row("  ArXiv Domain Guard", "[bold cyan]Active[/bold cyan] · Dibatasi khusus Computer Science/AI/Math")
+
+            up_email = self.config.unpaywall_email or "[dim]researcher@scrpcy.org (default polite pool)[/dim]"
+            s_table.add_row("  Unpaywall / Email", str(up_email))
+
+            s_table.add_row("", "")
+            s_table.add_row("[bold cyan]Workspace & AI Engine[/bold cyan]", "")
+            s_table.add_row("  Workspace Path", str(self.config.workspace_path))
+            s_table.add_row("  Citation Style", self.config.citation.style.upper())
+            s_table.add_row("  Include DOI", str(self.config.citation.include_doi))
+            s_table.add_row("  Max Evidence", f"{self.config.citation.max_evidence_chunks} chunks")
+            s_table.add_row("  Max Agent Turns", f"{getattr(self.config, 'max_agent_turns', 15)} turns")
+            s_table.add_row("  Refinement Rounds", f"{getattr(self.config, 'max_refinement_turns', 8)} rounds")
+            s_table.add_row("  Max Output Tokens", f"{getattr(self.config, 'max_output_tokens', 8192)} tokens")
             self.console.print(s_table)
-            self.console.print("[dim]Commands: settings set-citation <apa|ieee> | settings set-turns <1-50> | settings set-refinement <2-25> | settings set-max-tokens <512-65536> | settings set-workspace <path>[/dim]\n")
+            self.console.print("\n[dim]Perintah pengaturan:[/dim]")
+            self.console.print("  [cyan]/settings toggle <semantic_scholar | crossref | opencitations>[/cyan]  [dim]Aktif/nonaktifkan provider[/dim]")
+            self.console.print("  [cyan]/settings set-key <openalex | semantic_scholar | opencitations> <key>[/cyan]  [dim]Atur API Key[/dim]")
+            self.console.print("  [cyan]/settings set-email <alamat@email.com>[/cyan]  [dim]Email Unpaywall Green OA[/dim]")
+            self.console.print("  [cyan]/settings set-citation <apa | ieee | bibtex>[/cyan]  [dim]Gaya sitasi bibliografi[/dim]")
+            self.console.print("  [cyan]/settings set-turns <1-50>[/cyan] | [cyan]/settings set-refinement <2-25>[/cyan] | [cyan]/settings set-max-tokens <512-65536>[/cyan]\n")
             return
 
-        if sub in ("set-citation", "citation", "style"):
+        if sub in ("toggle", "enable", "disable"):
             if len(parts) < 2:
-                self.console.print("[yellow]Usage: settings set-citation <apa | ieee>[/yellow]\n")
+                self.console.print("[yellow]Usage: /settings toggle <semantic_scholar | crossref | opencitations>[/yellow]\n")
+                return
+            target = parts[1].lower().strip()
+            if target in ("semantic_scholar", "semanticscholar", "s2"):
+                current = getattr(self.config, "enable_semantic_scholar", True)
+                new_val = not current
+                self.config_manager.update(enable_semantic_scholar=new_val)
+                self.config = self.config_manager.config
+                if getattr(self, "scout", None):
+                    self.scout.config = self.config
+                status_str = "[bold cyan]Aktif[/bold cyan]" if new_val else "[dim]Nonaktif[/dim]"
+                self.console.print(f"[bold green][✓] Semantic Scholar berhasil diubah ke:[/bold green] {status_str}\n")
+            elif target in ("crossref", "cr"):
+                current = getattr(self.config, "enable_crossref", True)
+                new_val = not current
+                self.config_manager.update(enable_crossref=new_val)
+                self.config = self.config_manager.config
+                if getattr(self, "scout", None):
+                    self.scout.config = self.config
+                status_str = "[bold cyan]Aktif[/bold cyan]" if new_val else "[dim]Nonaktif[/dim]"
+                self.console.print(f"[bold green][✓] CrossRef berhasil diubah ke:[/bold green] {status_str}\n")
+            elif target in ("opencitations", "coci", "oc"):
+                current = getattr(self.config, "enable_opencitations", False)
+                new_val = not current
+                self.config_manager.update(enable_opencitations=new_val)
+                self.config = self.config_manager.config
+                if getattr(self, "scout", None):
+                    self.scout.config = self.config
+                status_str = "[bold cyan]Aktif[/bold cyan]" if new_val else "[dim]Nonaktif[/dim]"
+                self.console.print(f"[bold green][✓] OpenCitations berhasil diubah ke:[/bold green] {status_str}\n")
+            else:
+                self.console.print("[yellow]Target tidak valid. Pilih: semantic_scholar, crossref, atau opencitations.[/yellow]\n")
+
+        elif sub in ("set-key", "key", "api-key", "apikey"):
+            if len(parts) < 3:
+                self.console.print("[yellow]Usage: /settings set-key <openalex | semantic_scholar | opencitations> <KEY>[/yellow]\n")
+                return
+            provider = parts[1].lower().strip()
+            key_val = parts[2].strip()
+            if provider == "openalex":
+                self.config_manager.update(openalex_api_key=key_val)
+                self.config = self.config_manager.config
+                try:
+                    import pyalex
+                    pyalex.config.api_key = key_val
+                except ImportError:
+                    pass
+                if getattr(self, "scout", None):
+                    self.scout.config = self.config
+                self.console.print(f"[bold green][✓] OpenAlex API Key berhasil disimpan.[/bold green] [dim]({key_val[:4]}...)[/dim]\n")
+            elif provider in ("semantic_scholar", "semanticscholar", "s2"):
+                self.config_manager.update(semantic_scholar_api_key=key_val)
+                self.config = self.config_manager.config
+                if getattr(self, "scout", None):
+                    self.scout.config = self.config
+                    if getattr(self.scout, "searcher", None):
+                        self.scout.searcher.api_key = key_val
+                self.console.print(f"[bold green][✓] Semantic Scholar API Key berhasil disimpan.[/bold green] [dim]({key_val[:4]}...)[/dim]\n")
+            elif provider in ("opencitations", "oc"):
+                self.config_manager.update(opencitations_api_key=key_val)
+                self.config = self.config_manager.config
+                if getattr(self, "scout", None):
+                    self.scout.config = self.config
+                self.console.print(f"[bold green][✓] OpenCitations API Token berhasil disimpan.[/bold green] [dim]({key_val[:4]}...)[/dim]\n")
+            else:
+                self.console.print("[yellow]Provider tidak dikenal. Gunakan: openalex, semantic_scholar, atau opencitations.[/yellow]\n")
+
+        elif sub in ("set-email", "email", "unpaywall"):
+            if len(parts) < 2:
+                self.console.print("[yellow]Usage: /settings set-email <alamat@email.com>[/yellow]\n")
+                return
+            new_email = parts[1].strip()
+            if "@" not in new_email or "." not in new_email:
+                self.console.print("[yellow]Format email tidak valid. Masukkan alamat email yang benar.[/yellow]\n")
+                return
+            self.config_manager.update(unpaywall_email=new_email)
+            self.config = self.config_manager.config
+            try:
+                import pyalex
+                pyalex.config.email = new_email
+            except ImportError:
+                pass
+            if getattr(self, "scout", None):
+                self.scout.config = self.config
+            self.console.print(f"[bold green][✓] Email untuk Unpaywall & CrossRef polite pool disimpan:[/bold green] [bold cyan]{new_email}[/bold cyan]\n")
+
+        elif sub in ("set-citation", "citation", "style"):
+            if len(parts) < 2:
+                self.console.print("[yellow]Usage: /settings set-citation <apa | ieee | bibtex>[/yellow]\n")
                 return
             new_style = parts[1].lower().strip()
             if new_style not in ("apa", "ieee", "bibtex"):
@@ -1137,18 +1267,20 @@ class StudioCommandsMixin:
             self.config_manager.save()
             self.config = self.config_manager.config
             self.console.print(f"[bold green][✓] Citation formatting style set to:[/bold green] [bold cyan]{new_style.upper()}[/bold cyan]\n")
+
         elif sub in ("set-workspace", "workspace"):
             if len(parts) < 2:
-                self.console.print("[yellow]Usage: settings set-workspace <path>[/yellow]\n")
+                self.console.print("[yellow]Usage: /settings set-workspace <path>[/yellow]\n")
                 return
             new_path = parts[1].strip()
             self.config_manager.config.workspace_path = new_path
             self.config_manager.save()
             self.config = self.config_manager.config
             self.console.print(f"[bold green][✓] Workspace path set to:[/bold green] [bold cyan]{new_path}[/bold cyan]\n")
+
         elif sub in ("set-turns", "turns", "turn"):
             if len(parts) < 2:
-                self.console.print("[yellow]Usage: settings set-turns <1-50>[/yellow]\n")
+                self.console.print("[yellow]Usage: /settings set-turns <1-50>[/yellow]\n")
                 return
             try:
                 val = int(parts[1].strip())
@@ -1160,9 +1292,10 @@ class StudioCommandsMixin:
                 self.console.print(f"[bold green][✓] Max agent turns set to:[/bold green] [bold cyan]{val}[/bold cyan]\n")
             except ValueError:
                 self.console.print("[yellow]Invalid turns value. Enter an integer between 1 and 50.[/yellow]\n")
+
         elif sub in ("set-max-tokens", "max-tokens", "max_tokens"):
             if len(parts) < 2:
-                self.console.print("[yellow]Usage: settings set-max-tokens <512-65536>[/yellow]\n")
+                self.console.print("[yellow]Usage: /settings set-max-tokens <512-65536>[/yellow]\n")
                 return
             try:
                 val = int(parts[1].strip())
@@ -1176,9 +1309,10 @@ class StudioCommandsMixin:
                 self.console.print(f"[bold green][✓] Max output tokens set to:[/bold green] [bold cyan]{val}[/bold cyan]\n")
             except ValueError:
                 self.console.print("[yellow]Invalid value. Enter an integer between 512 and 65536.[/yellow]\n")
+
         elif sub in ("set-refinement", "set-refinement-rounds", "refinement"):
             if len(parts) < 2:
-                self.console.print("[yellow]Usage: settings set-refinement <2-25>[/yellow]\n")
+                self.console.print("[yellow]Usage: /settings set-refinement <2-25>[/yellow]\n")
                 return
             try:
                 val = int(parts[1].strip())
@@ -1192,8 +1326,9 @@ class StudioCommandsMixin:
                 self.console.print(f"[bold green][✓] Max refinement rounds set to:[/bold green] [bold cyan]{val}[/bold cyan]\n")
             except ValueError:
                 self.console.print("[yellow]Invalid value. Enter an integer between 2 and 25.[/yellow]\n")
+
         else:
-            self.console.print("[yellow]Usage: settings [show | set-citation <apa|ieee> | set-turns <1-50> | set-workspace <path>][/yellow]\n")
+            self.console.print("[yellow]Penggunaan: /settings [show | toggle <provider> | set-key <provider> <key> | set-email <email> | set-citation <apa|ieee|bibtex> | set-turns <1-50> | set-workspace <path>][/yellow]\n")
 
     def cmd_config(self, arg: str) -> None:
         """Alias for backward compatibility directing to cmd_models."""
@@ -1262,14 +1397,19 @@ class StudioCommandsMixin:
         self.console.print(f"    Style: {self.config.citation.style.upper()} Citation Standards\n")
 
     def cmd_web(self, arg: str) -> None:
+        """Route to local web server if port number, or official web discovery & ingestion."""
+        if arg and arg.strip().isdigit():
+            self._launch_web_studio_server(int(arg.strip()))
+        else:
+            self.cmd_web_scout(arg)
+
+    def _launch_web_studio_server(self, port: int = 8000) -> None:
         """Launch the web server in background and open the browser."""
         if not self.workspace:
             self.console.print("[yellow][!] Please open a project first or launch web mode with 'scrpcy start --web'.[/yellow]\n")
             return
 
-        port = int(arg) if arg and arg.isdigit() else 8000
         host = "127.0.0.1"
-
         if self._web_server_thread and self._web_server_thread.is_alive():
             self.console.print(f"[yellow][!] Web Studio server is already running at http://{host}:{port}[/yellow]")
             webbrowser.open(f"http://{host}:{port}")
@@ -1290,4 +1430,95 @@ class StudioCommandsMixin:
         time.sleep(1.0)
         webbrowser.open(f"http://{host}:{port}")
         self.console.print(f"[bold green][✓] Web Studio launched in background at:[/bold green] [bold cyan]http://{host}:{port}[/bold cyan]\n")
+
+    def cmd_web_scout(self, arg: str) -> None:
+        """Search or ingest official web documents, statistics, and reports."""
+        if not self.workspace:
+            self.console.print("[red][x] Buka atau buat project terlebih dahulu sebelum menggunakan web scout.[/red]\n")
+            return
+
+        target = arg.strip()
+        if not target:
+            try:
+                target = self.console.input("[bold cyan]web-scout (URL atau kata kunci) > [/bold cyan]").strip()
+            except (KeyboardInterrupt, EOFError):
+                self.console.print("\n[yellow]Dibatalkan.[/yellow]\n")
+                return
+
+        if not target or target.lower() in ("q", "quit", "cancel"):
+            return
+
+        web_scout = getattr(self, "web_scout", None) or WebScout(workspace=self.workspace)
+
+        # 1. Direct URL Ingestion
+        if target.startswith("http://") or target.startswith("https://"):
+            self.console.print(f"\n[cyan]Memverifikasi dan memproses sumber resmi:[/cyan] [bold]{target}[/bold]")
+            with self.console.status("[cyan]Mengevaluasi otoritas, mengekstrak visual substantif, dan mengonversi Markdown...[/cyan]"):
+                import asyncio
+                try:
+                    vec_vault = self.vault_manager.vector_vault if self.vault_manager else None
+                    parsed = asyncio.run(web_scout.ingest_url(target, vector_vault=vec_vault))
+                except OfficialSourceRejectedError as rej_err:
+                    self.console.print(f"\n[bold red][x] Sumber Ditolak:[/bold red] {rej_err}\n")
+                    return
+                except Exception as exc:
+                    self.console.print(f"\n[bold red][x] Gagal memproses URL web:[/bold red] {exc}\n")
+                    return
+
+            self._sync_vault_cache()
+            self.console.print("\n[bold green][✓] Dokumen web resmi berhasil dimasukkan ke Vault:[/bold green]")
+            t = Table(box=None, show_header=False, padding=(0, 2))
+            t.add_column("Key", style="dim", width=16)
+            t.add_column("Value", style="bright_white")
+            t.add_row("Judul", parsed.metadata.title)
+            t.add_row("Instansi", parsed.metadata.institution or "Resmi")
+            t.add_row("Cite Key", f"[bold cyan][{parsed.metadata.cite_key}][/bold cyan]")
+            t.add_row("Skor Otoritas", f"{parsed.metadata.authority_score or 0.0:.2f} (Tier {parsed.metadata.authority_tier or 1})")
+            t.add_row("Snapshot File", str(parsed.file_path.name))
+            t.add_row("Cache Markdown", str(parsed.cache_path.name if parsed.cache_path else ""))
+            self.console.print(t)
+            self.console.print()
+            return
+
+        # 2. Query Search Flow
+        self.console.print(f"\n[cyan]Mencari dokumen web resmi untuk query:[/cyan] [bold]{target}[/bold]")
+        with self.console.status("[cyan]Menelusuri portal web pemerintah, akademik, dan institusi resmi...[/cyan]"):
+            import asyncio
+            try:
+                results = asyncio.run(web_scout.search_official_web(target, limit=6, require_official=True))
+            except Exception as exc:
+                self.console.print(f"\n[bold red][x] Pencarian web gagal:[/bold red] {exc}\n")
+                return
+
+        if not results:
+            self.console.print(f"[yellow][!] Tidak ditemukan dokumen web resmi yang memenuhi kriteria otoritas untuk query '{target}'.[/yellow]\n")
+            return
+
+        self.console.print(f"\n[bold bright_white]Hasil Pencarian Dokumen Resmi ({len(results)} ditemukan):[/bold bright_white]")
+        table = Table(box=None, padding=(0, 2), header_style="bold cyan")
+        table.add_column("#", justify="right", width=3)
+        table.add_column("Instansi / Domain", style="green", width=24)
+        table.add_column("Judul Dokumen", style="white")
+        table.add_column("Skor", justify="right", style="cyan", width=6)
+
+        for idx, res in enumerate(results, 1):
+            inst_label = res.institution or res.domain
+            table.add_row(str(idx), inst_label, res.title[:65], f"{res.authority_score:.2f}")
+
+        self.console.print(table)
+        self.console.print(f"\n[dim]Pilih nomor dokumen [1-{len(results)}] untuk dimasukkan ke Vault, atau tekan Enter untuk batal.[/dim]")
+
+        try:
+            choice = self.console.input("[bold cyan]pilih > [/bold cyan]").strip()
+        except (KeyboardInterrupt, EOFError):
+            self.console.print()
+            return
+
+        if not choice or not choice.isdigit():
+            return
+
+        selected_idx = int(choice) - 1
+        if 0 <= selected_idx < len(results):
+            selected_hit = results[selected_idx]
+            self.cmd_web_scout(selected_hit.url)
 

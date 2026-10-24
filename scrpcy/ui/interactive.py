@@ -1384,7 +1384,7 @@ def interactive_input_prompt(
             m_label = _format_model_display_name(current_model)
             if context_label and (mode == "chat" or is_chat_mode):
                 right_st = f"{context_label} • {m_label}"
-            elif current_skill:
+            elif current_skill and current_skill != "scrpcy_manual":
                 right_st = f"{current_skill} • {m_label} • {current_effort}"
             else:
                 right_st = f"{m_label} • {current_effort}"
@@ -1760,11 +1760,22 @@ def interactive_menu(
                 if is_sel:
                     opt_row.append("> ", style="bold cyan")
                     opt_row.append(f"[{idx}] ", style="bold cyan")
-                    opt_row.append(label, style="bold bright_white")
                 else:
                     opt_row.append("  ", style="dim")
                     opt_row.append(f"[{idx}] ", style="dim")
-                    opt_row.append(label, style="white")
+
+                base_style = "bold bright_white" if is_sel else "white"
+                if isinstance(label, Text):
+                    lbl_text = label.copy()
+                elif isinstance(label, str) and "[" in label and "]" in label:
+                    try:
+                        lbl_text = Text.from_markup(label, style=base_style)
+                    except Exception:
+                        lbl_text = Text(label, style=base_style)
+                else:
+                    lbl_text = Text(str(label), style=base_style)
+
+                opt_row.append_text(lbl_text)
                 lines.append(opt_row)
 
             lines.append(Text(""))

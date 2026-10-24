@@ -64,3 +64,73 @@ def test_adaptive_critic_honors_concise_contract() -> None:
     assert report.score >= 7
     assert report.passed is True
     assert report.needs_citation_mapping is False
+
+
+def test_task_contract_tolerance_margin_properties() -> None:
+    contract = TaskContract(
+        primary_goal="Analisis komparatif",
+        min_words=300,
+        max_words=500,
+        tolerance_pct=0.15,
+    )
+    # 300 * 0.85 = 255
+    assert contract.effective_min_words == 255
+    # 500 * 1.15 = 575
+    assert contract.effective_max_words == 575
+
+    # 285 words is below 300 but within 15% tolerance
+    assert contract.is_word_count_acceptable(285) is True
+    # 520 words is above 500 but within 15% tolerance
+    assert contract.is_word_count_acceptable(520) is True
+
+    # 240 words is strictly below tolerance
+    assert contract.is_word_count_acceptable(240) is False
+    # 600 words is strictly above tolerance
+    assert contract.is_word_count_acceptable(600) is False
+
+
+def test_ambiguous_intent_detection_and_heuristic_synthesis() -> None:
+    extractor = TaskContractExtractor()
+    query = "Tolong bandingkan metode X dan Y untuk bab 2 skripsi saya"
+    assert extractor.is_ambiguous_intent(query) is True
+
+    # Heuristic synthesis should harmonize comparison within literature review
+    contract = extractor.extract(query)
+    assert "komparatif" in contract.primary_goal.lower() or "perbandingan" in contract.primary_goal.lower()
+    assert "bab 2" in contract.primary_goal.lower() or "tinjauan" in contract.primary_goal.lower()
+    assert any("parameter" in d.lower() for d in contract.definition_of_done)
+    assert contract.min_words >= 400
+
+
+def test_ambiguous_intent_llm_disambiguation() -> None:
+    from unittest.mock import MagicMock, patch
+
+    mock_llm_json = """{
+        "primary_goal": "Harmonisasi komparasi metode X dan Y pada tinjauan pustaka Bab 2",
+        "in_scope": ["Parameter evaluasi metode X vs Y", "Landasan teoritis untuk skripsi"],
+        "out_of_scope": ["Sejarah panjang", "Opini spekulatif"],
+        "format_requirements": "Matriks perbandingan akademis dan sintesis",
+        "min_words": 380,
+        "max_words": 750,
+        "definition_of_done": ["Parameter komparasi jelas", "Sitasi empiris valid"],
+        "is_modular_section_needed": false
+    }"""
+
+    mock_engine = MagicMock()
+    mock_engine.config.default_model = "test-model"
+    mock_engine.config.get_api_key_for_model.return_value = "real-api-key"
+    mock_engine._acompletion_fn = None
+
+    extractor = TaskContractExtractor(engine=mock_engine)
+    query = "Tolong bandingkan metode X dan Y untuk bab 2 skripsi saya"
+
+    with patch("litellm.completion") as mock_completion:
+        mock_resp = MagicMock()
+        mock_resp.choices = [MagicMock(message=MagicMock(content=mock_llm_json))]
+        mock_completion.return_value = mock_resp
+
+        contract = extractor.extract(query)
+        assert "Harmonisasi komparasi" in contract.primary_goal
+        assert contract.min_words == 380
+        assert contract.max_words == 750
+        assert len(contract.definition_of_done) == 2

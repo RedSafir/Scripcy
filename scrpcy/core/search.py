@@ -19,7 +19,28 @@ from scrpcy.exceptions import (
 )
 
 SEMANTIC_SCHOLAR_SEARCH_URL = "https://api.semanticscholar.org/graph/v1/paper/search"
+SEMANTIC_SCHOLAR_BATCH_URL = "https://api.semanticscholar.org/graph/v1/paper/batch"
 ARXIV_QUERY_URL = "https://export.arxiv.org/api/query"
+CROSSREF_WORKS_URL = "https://api.crossref.org/works"
+UNPAYWALL_API_URL = "https://api.unpaywall.org/v2"
+OPENCITATIONS_COCI_URL = "https://opencitations.net/index/coci/api/v1/citations"
+
+CS_AI_KEYWORDS = {
+    "computer science", "artificial intelligence", "machine learning", "deep learning",
+    "neural", "llm", "transformer", "nlp", "natural language", "computer vision",
+    "algorithm", "cryptography", "reinforcement learning", "quantum", "physics",
+    "mathematics", "cybersecurity", "software", "database", "distributed systems",
+    "compiler", "operating system", "data science", "robotics", "speech recognition",
+    "generative ai", "image processing", "graph neural", "information retrieval",
+    "benchmark", "convolutional", "recurrent", "lstm", "encoder", "decoder", "arxiv",
+    "network", "networks", "residual", "resnet",
+}
+
+
+def is_cs_ai_domain(query: str) -> bool:
+    """Check whether a search query falls within Computer Science, AI, Math, or Physics domains."""
+    q = query.lower()
+    return any(re.search(rf"\b{re.escape(k)}\b", q) for k in CS_AI_KEYWORDS)
 
 ATOM_NS = {
     "atom": "http://www.w3.org/2005/Atom",
@@ -129,15 +150,17 @@ class PaperSearcher:
         if source == "arxiv":
             return await self.search_arxiv(clean_query, limit=limit)
 
-        # Automatic fallback: try Semantic Scholar, fallback to ArXiv on error or rate-limiting
+        # Automatic fallback: try Semantic Scholar, fallback to ArXiv ONLY if CS/AI domain
         try:
             results = await self.search_semantic_scholar(clean_query, limit=limit)
             if results:
                 return results
-        except (RateLimitError, SearchError, httpx.RequestError):
+        except Exception:
             pass
 
-        return await self.search_arxiv(clean_query, limit=limit)
+        if is_cs_ai_domain(clean_query):
+            return await self.search_arxiv(clean_query, limit=limit)
+        return []
 
     async def search_semantic_scholar(
         self,
@@ -210,6 +233,70 @@ class PaperSearcher:
             result.ensure_cite_key()
             results.append(result)
 
+        return results
+
+    async def batch_get_papers_semantic_scholar(
+        self,
+        paper_ids: list[str],
+    ) -> list[SearchResult]:
+        """Fetch metadata for multiple papers in bulk via Semantic Scholar Batch API."""
+        if not paper_ids:
+            return []
+
+        client = await self._get_client()
+        params = {
+            "fields": "paperId,title,abstract,year,authors,externalIds,openAccessPdf,url",
+        }
+        headers = {}
+        if self.api_key:
+            headers["x-api-key"] = self.api_key
+
+        results: list[SearchResult] = []
+        chunk_size = 100
+        for i in range(0, len(paper_ids), chunk_size):
+            chunk = paper_ids[i : i + chunk_size]
+            try:
+                response = await client.post(
+                    SEMANTIC_SCHOLAR_BATCH_URL,
+                    json={"ids": chunk},
+                    params=params,
+                    headers=headers,
+                )
+                if response.status_code == 200:
+                    items = response.json()
+                    for item in items:
+                        if not item:
+                            continue
+                        title = (item.get("title") or "").strip()
+                        if not title:
+                            continue
+                        authors = [
+                            a.get("name", "").strip()
+                            for a in item.get("authors", [])
+                            if a.get("name") and a.get("name").strip()
+                        ]
+                        ext_ids = item.get("externalIds") or {}
+                        doi = ext_ids.get("DOI")
+                        arxiv_id = ext_ids.get("ArXiv")
+                        open_access = item.get("openAccessPdf") or {}
+                        pdf_url = open_access.get("url") if isinstance(open_access, dict) else None
+                        if not pdf_url and arxiv_id:
+                            pdf_url = f"https://arxiv.org/pdf/{arxiv_id}.pdf"
+
+                        res = SearchResult(
+                            title=title,
+                            authors=authors,
+                            abstract=item.get("abstract"),
+                            year=item.get("year"),
+                            doi=doi,
+                            pdf_url=pdf_url,
+                            source_api="semantic_scholar",
+                            paper_id=item.get("paperId"),
+                        )
+                        res.ensure_cite_key()
+                        results.append(res)
+            except Exception:
+                continue
         return results
 
     async def get_paper_citations(
@@ -432,6 +519,140 @@ class PaperSearcher:
             results.append(result)
 
         return results
+
+    async def search_crossref(
+        self,
+        query: str,
+        limit: int = 10,
+        email: str | None = None,
+    ) -> list[SearchResult]:
+        """Query CrossRef REST API for scholarly literature matching query terms."""
+        clean_query = query.strip()
+        if not clean_query:
+            return []
+
+        client = await self._get_client()
+        clean_email = email.strip() if email else "researcher@scrpcy.org"
+        params = {
+            "query": clean_query,
+            "rows": limit,
+        }
+        headers = {
+            "User-Agent": f"scrpcy/1.0 (mailto:{clean_email})",
+        }
+
+        try:
+            response = await client.get(
+                CROSSREF_WORKS_URL,
+                params=params,
+                headers=headers,
+                follow_redirects=True,
+            )
+        except httpx.TimeoutException as exc:
+            raise SearchError(f"CrossRef request timed out: {exc}") from exc
+        except httpx.RequestError as exc:
+            raise SearchError(f"CrossRef connection error: {exc}") from exc
+
+        if response.status_code == 429:
+            raise RateLimitError("CrossRef API rate limit reached (HTTP 429).")
+        if response.status_code >= 400:
+            raise SearchError(f"CrossRef API returned HTTP {response.status_code}: {response.text}")
+
+        try:
+            items = response.json().get("message", {}).get("items", [])
+        except Exception as exc:
+            raise SearchError(f"Failed to parse CrossRef JSON: {exc}") from exc
+
+        results: list[SearchResult] = []
+        for item in items:
+            title_list = item.get("title") or []
+            title = title_list[0].strip() if title_list else ""
+            if not title:
+                continue
+
+            authors = []
+            for a in item.get("author", []):
+                given = a.get("given", "").strip()
+                family = a.get("family", "").strip()
+                name = f"{given} {family}".strip() or family or given
+                if name:
+                    authors.append(name)
+
+            date_parts = item.get("published", {}).get("date-parts", [[None]])
+            year = date_parts[0][0] if date_parts and date_parts[0] and isinstance(date_parts[0][0], int) else None
+
+            raw_abstract = item.get("abstract") or ""
+            abstract = re.sub(r"<[^>]+>", "", raw_abstract).strip() if raw_abstract else None
+
+            doi = item.get("DOI")
+
+            pdf_url = None
+            for link in item.get("link", []):
+                if link.get("content-type") == "application/pdf" and link.get("URL"):
+                    pdf_url = link.get("URL")
+                    break
+
+            res = SearchResult(
+                title=title,
+                authors=authors,
+                abstract=abstract,
+                year=year,
+                doi=doi,
+                pdf_url=pdf_url,
+                source_api="crossref",
+                paper_id=doi,
+            )
+            res.ensure_cite_key()
+            results.append(res)
+        return results
+
+    async def lookup_unpaywall(
+        self,
+        doi: str,
+        email: str | None = None,
+    ) -> str | None:
+        """Query Unpaywall API to discover Green Open Access PDF location for a DOI."""
+        if not doi:
+            return None
+        clean_doi = doi.strip().replace("https://doi.org/", "").replace("http://dx.doi.org/", "")
+        client = await self._get_client()
+        clean_email = email.strip() if email else "researcher@scrpcy.org"
+        url = f"{UNPAYWALL_API_URL}/{clean_doi}"
+        params = {"email": clean_email}
+
+        try:
+            resp = await client.get(url, params=params, follow_redirects=True)
+            if resp.status_code == 200:
+                data = resp.json()
+                best_oa = data.get("best_oa_location") or {}
+                return best_oa.get("url_for_pdf") or best_oa.get("url")
+        except Exception:
+            pass
+        return None
+
+    async def get_opencitations(
+        self,
+        doi: str,
+        api_token: str | None = None,
+    ) -> list[str]:
+        """Query OpenCitations COCI API to retrieve citing DOIs for a given DOI."""
+        if not doi:
+            return []
+        clean_doi = doi.strip().replace("https://doi.org/", "").replace("http://dx.doi.org/", "")
+        client = await self._get_client()
+        url = f"{OPENCITATIONS_COCI_URL}/{clean_doi}"
+        headers = {}
+        if api_token:
+            headers["authorization"] = api_token
+
+        try:
+            resp = await client.get(url, headers=headers, follow_redirects=True)
+            if resp.status_code == 200:
+                data = resp.json()
+                return [item.get("citing") for item in data if item.get("citing")]
+        except Exception:
+            pass
+        return []
 
     async def download_paper(
         self,

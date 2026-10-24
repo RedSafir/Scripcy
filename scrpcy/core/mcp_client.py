@@ -33,6 +33,10 @@ class CitationItem(BaseModel):
     year: int | None = Field(default=None, description="Year of publication.")
     doi: str | None = Field(default=None, description="Digital Object Identifier.")
     cite_key: str | None = Field(default=None, description="Citation key identifier.")
+    url: str | None = Field(default=None, description="Web URL if applicable.")
+    institution: str | None = Field(default=None, description="Publishing institution or government agency.")
+    access_date: str | None = Field(default=None, description="Date retrieved.")
+    source_type: str = Field(default="paper", description="Type of source: 'paper' or 'official_web'.")
 
     @classmethod
     def from_any(cls, item: Any) -> CitationItem:
@@ -46,6 +50,10 @@ class CitationItem(BaseModel):
                 year=item.year,
                 doi=item.doi,
                 cite_key=item.cite_key,
+                url=getattr(item, "url", None),
+                institution=getattr(item, "institution", None),
+                access_date=getattr(item, "access_date", None),
+                source_type=getattr(item, "source_type", "paper"),
             )
         if isinstance(item, dict):
             return cls(
@@ -54,6 +62,10 @@ class CitationItem(BaseModel):
                 year=item.get("year"),
                 doi=item.get("doi"),
                 cite_key=item.get("cite_key"),
+                url=item.get("url"),
+                institution=item.get("institution"),
+                access_date=item.get("access_date"),
+                source_type=item.get("source_type", "paper"),
             )
         if isinstance(item, str):
             return cls(title=item, cite_key=item)
@@ -146,6 +158,11 @@ def format_reference_entry_apa(item: CitationItem) -> str:
         if not clean_doi.startswith("http"):
             clean_doi = f"https://doi.org/{clean_doi}"
         doi_str = f" {clean_doi}"
+
+    if getattr(item, "source_type", None) == "official_web" or (item.url and not item.doi):
+        inst_or_auth = item.institution or author_str.rstrip(".")
+        retrieved_str = f" Diakses pada {item.access_date}, dari " if getattr(item, "access_date", None) else " "
+        return f"{inst_or_auth}. {year_str} {title_str}{retrieved_str}{item.url}"
 
     return f"{author_str} {year_str} {title_str}{doi_str}"
 

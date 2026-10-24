@@ -363,10 +363,15 @@ class StudioProcessingMixin:
                 pass
 
         # If user is currently active inside this exact chat session, display visual notification pill cleanly on main thread
+        fg_tasks = getattr(self, "_foreground_monitored_tasks", set())
+        is_monitored_in_fg = (task_id in fg_tasks)
+
         if self.sub_mode == "chat" and self.active_chat_session and self.active_chat_session.id == session_id:
             def _notify_task() -> None:
                 if task_status == "completed":
                     if task_type in ("chat", "agent"):
+                        if is_monitored_in_fg:
+                            return
                         self.console.print(f"\n[bold cyan]●[/bold cyan] [bold bright_white]Tugas Latar Belakang Selesai:[/bold bright_white] [cyan]{task_name}[/cyan]")
                         msgs = self.chat_manager.get_messages(session_id) if self.chat_manager else []
                         latest_assistant_msg = None
@@ -375,12 +380,13 @@ class StudioProcessingMixin:
                                 latest_assistant_msg = m
                                 break
                         if latest_assistant_msg:
-                            self.console.print(f"\n[bold cyan]✦ Respons AI ({self.active_skill_name}):[/bold cyan]\n")
+                            skill_lbl = f" ({self.active_skill_name})" if self.active_skill_name and self.active_skill_name != "scrpcy_manual" else ""
+                            self.console.print(f"\n[bold cyan]✦ Respons AI{skill_lbl}:[/bold cyan]\n")
                             render_academic_markdown(latest_assistant_msg.content, console=self.console)
                             self.console.print()
                     else:
                         self.console.print(f"\n[bold cyan]●[/bold cyan] [bold bright_white]Tugas Latar Belakang Selesai:[/bold bright_white] [cyan]{task_name}[/cyan] [dim]({summary or 'Selesai'})[/dim]")
-                elif task_status == "failed":
+                elif task_status == "failed" and not is_monitored_in_fg:
                     self.console.print(f"\n[bold red][x] Tugas Latar Belakang Gagal:[/bold red] [cyan]{task_name}[/cyan] [dim]({error_msg})[/dim]")
             self._enqueue_ui_event(_notify_task)
 
@@ -466,37 +472,52 @@ class StudioProcessingMixin:
         return
 
     def _background_download_worker(self, task_id: str, papers: list[ScoutResult]) -> str:
-        """Background agent worker downloading and ingesting academic papers into vault."""
+        """Background agent worker downloading and ingesting academic papers into vault sequentially."""
         total = len(papers)
         success = 0
         failed = 0
 
-        for idx, paper in enumerate(papers, 1):
-            if not paper.has_pdf or not paper.pdf_url:
-                self.task_manager.log(task_id, f"[-] Skipped #{idx} '{paper.title[:45]}': No open-access PDF available.")
-                failed += 1
-                continue
+        self.task_manager.log(task_id, f"Mengunduh {total} naskah secara sekuensial (1 per 1)...")
+        self.task_manager.update_progress(task_id, f"Mengunduh {total} naskah sekuensial...")
 
-            self.task_manager.log(task_id, f"[{idx}/{total}] Downloading: '{paper.title[:45]}...'")
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            for idx, p in enumerate(papers, 1):
+                if not p.has_pdf or not p.pdf_url:
+                    if p.doi:
+                        email = getattr(self.config, "unpaywall_email", None)
+                        try:
+                            oa_url = loop.run_until_complete(self.scout.searcher.lookup_unpaywall(p.doi, email=email))
+                            if oa_url:
+                                p.pdf_url = oa_url
+                                p.has_pdf = True
+                                p.relevance_reason = (p.relevance_reason or "") + " (Versi Green OA via Unpaywall)"
+                        except Exception:
+                            pass
 
-            try:
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
+                if not p.has_pdf or not p.pdf_url:
+                    self.task_manager.log(task_id, f"[-] Dilewati #{idx} '{p.title[:45]}': Tidak ada PDF open-access.")
+                    failed += 1
+                    continue
+
+                self.task_manager.log(task_id, f"[{idx}/{total}] Mengunduh PDF: '{p.title[:45]}...'")
+                self.task_manager.update_progress(task_id, f"Mengunduh [{idx}/{total}]: {p.title[:30]}...")
                 try:
-                    dl_path = loop.run_until_complete(self.scout.download_scout_paper(paper))
-                finally:
-                    loop.close()
+                    dl_path = loop.run_until_complete(self.scout.download_scout_paper(p))
+                    self.active_documents.add(dl_path.stem)
+                    success += 1
+                    self.task_manager.log(task_id, f"[✓] Added #{idx} to vault & indexed: {p.title[:50]}")
+                except Exception as exc:
+                    self.task_manager.log(task_id, f"[x] Gagal mengunduh #{idx} '{p.title[:40]}': {exc}")
+                    failed += 1
 
-                self.active_documents.add(dl_path.stem)
-                self._sync_vault_cache()
-                self.task_manager.log(task_id, f"[✓] Added #{idx} to vault & indexed: {paper.title[:50]}")
-                success += 1
-            except Exception as exc:
-                self.task_manager.log(task_id, f"[x] Error downloading #{idx} '{paper.title[:40]}': {exc}")
-                failed += 1
+            self._sync_vault_cache()
+        finally:
+            loop.close()
 
-        summary = f"Downloaded {success}/{total} paper(s) into vault ({failed} failed/skipped)."
-        self.task_manager.log(task_id, f"Finished: {summary}")
+        summary = f"Berhasil mengunduh {success}/{total} dokumen ke vault ({failed} gagal/dilewati)."
+        self.task_manager.log(task_id, f"Selesai: {summary}")
         return summary
 
     def _determine_target_scout_quota(self, query: str, contract: Any = None) -> int:
@@ -611,50 +632,70 @@ class StudioProcessingMixin:
 
         self.last_scout_results = curated
 
-        # Ingestion loop: prioritize full-text OA PDF, automatically fallback to official abstract for paywalled papers
+        # Concurrent Ingestion (like uv / parallel pip package download)
         ingested_count = 0
         tried_titles: set[str] = set()
-
-        for idx, paper in enumerate(curated, 1):
-            if ingested_count >= target_quota:
+        papers_to_ingest = []
+        for paper in curated:
+            if paper.title.lower() not in tried_titles:
+                tried_titles.add(paper.title.lower())
+                papers_to_ingest.append(paper)
+            if len(papers_to_ingest) >= target_quota:
                 break
-            if paper.title.lower() in tried_titles:
-                continue
-            tried_titles.add(paper.title.lower())
 
-            has_direct_pdf = bool(paper.has_pdf and paper.pdf_url)
-            safe_stem = sanitize_filename(paper.title)
+        self.task_manager.log(task_id, f"Mengunduh {len(papers_to_ingest)} naskah secara sekuensial (1 per 1)...")
+        self.task_manager.update_progress(task_id, f"Mengunduh {len(papers_to_ingest)} naskah...")
 
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            try:
-                if has_direct_pdf:
-                    self.task_manager.log(task_id, f"[{ingested_count + 1}/{target_quota}] Mengunduh PDF: '{paper.title[:45]}...'")
-                    dl_path = loop.run_until_complete(self.scout.download_scout_paper(paper))
-                    self.active_documents.add(dl_path.stem)
-                    self._sync_vault_cache()
-                    self.task_manager.log(task_id, f"[✓] Ingested PDF #{ingested_count + 1}: {paper.title[:50]}")
-                    ingested_count += 1
-                elif paper.abstract:
-                    self.task_manager.log(task_id, f"[{ingested_count + 1}/{target_quota}] Mengindeks abstrak resmi (paywalled): '{paper.title[:45]}...'")
-                    self.scout.ingest_abstract_paper(paper)
-                    self.active_documents.add(safe_stem)
-                    self._sync_vault_cache()
-                    self.task_manager.log(task_id, f"[✓] Ingested abstrak resmi #{ingested_count + 1}: {paper.title[:50]}")
-                    ingested_count += 1
-            except Exception as exc:
-                self.task_manager.log(task_id, f"[!] Kendala unduh '{paper.title[:35]}': {exc}")
-                if paper.abstract:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            for p_idx, p_obj in enumerate(papers_to_ingest, 1):
+                stem = sanitize_filename(p_obj.title)
+                # Check Unpaywall if no PDF but has DOI
+                if not (p_obj.has_pdf and p_obj.pdf_url) and p_obj.doi:
+                    email = getattr(self.config, "unpaywall_email", None)
                     try:
-                        self.scout.ingest_abstract_paper(paper)
-                        self.active_documents.add(safe_stem)
-                        self._sync_vault_cache()
-                        self.task_manager.log(task_id, f"[✓] Fallback abstrak berhasil diindeks: {paper.title[:45]}")
-                        ingested_count += 1
+                        oa_url = loop.run_until_complete(self.scout.searcher.lookup_unpaywall(p_obj.doi, email=email))
+                        if oa_url:
+                            p_obj.pdf_url = oa_url
+                            p_obj.has_pdf = True
+                            p_obj.relevance_reason = (p_obj.relevance_reason or "") + " (Versi Green OA via Unpaywall)"
                     except Exception:
                         pass
-            finally:
-                loop.close()
+
+                has_pdf = bool(p_obj.has_pdf and p_obj.pdf_url)
+                if has_pdf:
+                    self.task_manager.log(task_id, f"[{p_idx}/{len(papers_to_ingest)}] Mengunduh PDF: '{p_obj.title[:45]}...'")
+                    self.task_manager.update_progress(task_id, f"Mengunduh [{p_idx}/{len(papers_to_ingest)}]: {p_obj.title[:30]}...")
+                    try:
+                        dl_p = loop.run_until_complete(self.scout.download_scout_paper(p_obj))
+                        self.active_documents.add(dl_p.stem)
+                        ingested_count += 1
+                        self.task_manager.log(task_id, f"[✓] Ingested PDF [{ingested_count}/{len(papers_to_ingest)}]: {p_obj.title[:50]}")
+                    except Exception as err:
+                        self.task_manager.log(task_id, f"[!] Kendala unduh '{p_obj.title[:35]}': {err}")
+                        if p_obj.abstract:
+                            try:
+                                self.scout.ingest_abstract_paper(p_obj)
+                                self.active_documents.add(stem)
+                                ingested_count += 1
+                                self.task_manager.log(task_id, f"[✓] Fallback abstrak diindeks: {p_obj.title[:45]}")
+                            except Exception:
+                                pass
+                elif p_obj.abstract:
+                    self.task_manager.log(task_id, f"[{p_idx}/{len(papers_to_ingest)}] Mengindeks abstrak resmi (paywalled): '{p_obj.title[:45]}...'")
+                    self.task_manager.update_progress(task_id, f"Indeks abstrak [{p_idx}/{len(papers_to_ingest)}]: {p_obj.title[:30]}...")
+                    try:
+                        self.scout.ingest_abstract_paper(p_obj)
+                        self.active_documents.add(stem)
+                        ingested_count += 1
+                        self.task_manager.log(task_id, f"[✓] Ingested abstrak [{ingested_count}/{len(papers_to_ingest)}]: {p_obj.title[:50]}")
+                    except Exception:
+                        pass
+
+            self._sync_vault_cache()
+        finally:
+            loop.close()
 
         # If still below target_quota and we have active documents, expand via Reference Mapping
         if ingested_count < target_quota and self.active_documents:

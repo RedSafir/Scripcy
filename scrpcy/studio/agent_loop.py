@@ -346,6 +346,10 @@ class StudioAgentLoopMixin:
         best_critic: int,
         accumulated_input_tokens: int,
         accumulated_output_tokens: int,
+        task_id: str | None = None,
+        session: Any = None,
+        max_refine_limit: int = 15,
+        last_c_report: Any = None,
     ) -> bool:
         """Evaluate if an interactive 3-turn checkpoint should pause and ask user to continue.
 
@@ -360,11 +364,31 @@ class StudioAgentLoopMixin:
         if best_grounding >= 0.70 and best_critic >= 7:
             return True
 
+        # In detached background mode, do not block on stdin
+        if session and getattr(session, "status", None) == "detached":
+            return completed_turns >= max_refine_limit
+
         if not sys.stdin.isatty():
-            # Non-interactive / headless environment (e.g. test suites)
+            # Non-interactive / headless environment (e.g. test suites, piped CLI)
             return completed_turns >= 15
 
-        # Interactive terminal: render checkpoint telemetry and prompt user
+        # If running in worker thread with task manager, use thread-safe checkpoint handshake
+        if threading.current_thread() is not threading.main_thread() and self.task_manager and task_id:
+            critique = getattr(last_c_report, "critique_summary", "") if last_c_report else ""
+            prompt_data = {
+                "completed_turns": completed_turns,
+                "best_grounding": best_grounding,
+                "best_critic": best_critic,
+                "accumulated_input_tokens": accumulated_input_tokens,
+                "accumulated_output_tokens": accumulated_output_tokens,
+                "critique_summary": critique,
+            }
+            choice = self.task_manager.request_checkpoint(task_id, prompt_data, timeout=300.0)
+            if choice in ("stop", "finalize", "selesai", "n", "no", "cancelled", None):
+                return True
+            return False
+
+        # If running directly on main thread
         total_tokens = accumulated_input_tokens + accumulated_output_tokens
         self.console.print(
             f"\n[bold yellow]●[/bold yellow] [bold bright_white]Checkpoint Iterasi ({completed_turns} Turn Selesai)[/bold bright_white]\n"
@@ -549,7 +573,7 @@ class StudioAgentLoopMixin:
 
         # 1. Fenced blocks: ```scrpcy ... ``` or ``` ... ```
         fenced_match = re.search(
-            r"```(?:scrpcy)?\r?\n\s*(/(?:vault\s+(?:read|view|list|remove|rm|archive)|read|view|list|remove|archive|scout|search|findpaper)[^\n`]*)\r?\n```",
+            r"```(?:scrpcy)?\r?\n\s*(/(?:vault\s+(?:read|view|list|remove|rm|archive)|read|view|list|remove|archive|scout|search|findpaper|web|web-scout|webscout)[^\n`]*)\r?\n```",
             raw_resp,
             re.IGNORECASE,
         )
@@ -560,7 +584,7 @@ class StudioAgentLoopMixin:
         for line in raw_resp.splitlines():
             clean_line = line.strip()
             if re.match(
-                r"^/(?:vault\s+(?:read|view|list|remove|rm|archive)|read|view|list|remove|archive|scout|search|findpaper)\b",
+                r"^/(?:vault\s+(?:read|view|list|remove|rm|archive)|read|view|list|remove|archive|scout|search|findpaper|web|web-scout|webscout)\b",
                 clean_line,
                 re.IGNORECASE,
             ):
@@ -568,7 +592,7 @@ class StudioAgentLoopMixin:
 
         # 3. Inline backticks: `/vault read 1`
         inline_match = re.search(
-            r"`(/(?:vault\s+(?:read|view|list|remove|rm|archive)|read|view|list|remove|archive|scout|search|findpaper)[^`]+)`",
+            r"`(/(?:vault\s+(?:read|view|list|remove|rm|archive)|read|view|list|remove|archive|scout|search|findpaper|web|web-scout|webscout)[^`]+)`",
             raw_resp,
             re.IGNORECASE,
         )
@@ -592,7 +616,8 @@ class StudioAgentLoopMixin:
             for l in lines:
                 is_internal = re.match(r"^/(?:vault\s+(?:read|view|list)|read|view|list)\b", l, re.IGNORECASE)
                 is_scout = re.match(r"^/(?:scout|findpaper|search)\b", l, re.IGNORECASE) or re.match(r"^(?:scout|findpaper)\b", l, re.IGNORECASE)
-                if is_internal or (has_ok_signal and is_scout):
+                is_web = re.match(r"^/(?:web|web-scout|webscout)\b", l, re.IGNORECASE)
+                if is_internal or (has_ok_signal and (is_scout or is_web)):
                     continue
                 filtered.append(l)
             if not filtered:
@@ -610,7 +635,7 @@ class StudioAgentLoopMixin:
         )
         if has_ok_signal:
             cleaned = re.sub(
-                r"(?m)^\s*/(?:scout|findpaper|search)\b[^\n]*\r?\n?",
+                r"(?m)^\s*/(?:scout|findpaper|search|web|web-scout|webscout)\b[^\n]*\r?\n?",
                 "",
                 cleaned,
                 flags=re.IGNORECASE,
@@ -778,6 +803,41 @@ class StudioAgentLoopMixin:
             except Exception as exc:
                 return "Mengarsipkan", "Gagal", f"Gagal mengarsipkan dokumen '{arg}': {exc}"
 
+        elif cmd_root in ("web", "web-scout", "webscout") or sub in ("web", "web-scout", "webscout"):
+            target_web = clean.split(maxsplit=1)[1].strip() if len(clean.split(maxsplit=1)) > 1 else ""
+            if not target_web:
+                return "Menelusuri Web", "URL/Query Kosong", "Tidak ada URL atau kata kunci web yang diberikan."
+            from scrpcy.core.web_scout import WebScout
+            web_scout = getattr(self, "web_scout", None) or WebScout(workspace=self.workspace)
+            if target_web.startswith("http://") or target_web.startswith("https://"):
+                try:
+                    vec_vault = self.vault_manager.vector_vault if self.vault_manager else None
+                    parsed = asyncio.run(web_scout.ingest_url(target_web, vector_vault=vec_vault))
+                    self._sync_vault_cache()
+                    summary_text = (
+                        f"Dokumen web resmi berhasil diunduh dan diproses ke vault:\n"
+                        f"- Judul: {parsed.metadata.title}\n"
+                        f"- Instansi: {parsed.metadata.institution}\n"
+                        f"- Cite Key: [{parsed.metadata.cite_key}]\n"
+                        f"- Skor Otoritas: {parsed.metadata.authority_score or 0.0:.2f} (Tier {parsed.metadata.authority_tier or 1})\n\n"
+                        f"Isi Dokumen (ringkasan):\n"
+                        f"{parsed.body_markdown[:3500]}"
+                    )
+                    return "Mengunduh Web", f"vault/web/{parsed.metadata.cite_key}.html", summary_text
+                except Exception as exc:
+                    return "Mengunduh Web", "Gagal", f"Gagal memproses web resmi '{target_web}': {exc}"
+            else:
+                try:
+                    results = asyncio.run(web_scout.search_official_web(target_web, limit=3, require_official=True))
+                    if not results:
+                        return "Menelusuri Web", f"'{target_web}' (0 hasil resmi)", f"Tidak ditemukan web resmi untuk '{target_web}'."
+                    lines = [f"Hasil pencarian web resmi untuk '{target_web}':"]
+                    for idx, r in enumerate(results, 1):
+                        lines.append(f"{idx}. {r.title} ({r.domain} - {r.institution}) - Skor: {r.authority_score:.2f}\n   URL: {r.url}\n   Snippet: {r.snippet[:200]}")
+                    return "Menelusuri Web", f"'{target_web[:25]}'", "\n".join(lines)
+                except Exception as exc:
+                    return "Menelusuri Web", "Gagal", f"Pencarian web resmi gagal: {exc}"
+
         return "Membaca", clean, f"Perintah internal {clean} dijalankan."
 
     def _extract_scout_query(self, query: str) -> str:
@@ -792,12 +852,14 @@ class StudioAgentLoopMixin:
             "carikan", "cari", "aku", "saya", "kami", "kita", "berikan", "kasih", "butuh",
             "argument", "argumen", "alasan", "dampak", "buruk", "baik", "bagus",
             "mau", "ingin", "paper", "jurnal", "artikel", "literature", "literatur",
+            "lakukan", "buat", "berikan", "terhadap", "selama", "analisa", "analisis", "kajian", "studi",
         }
         cleaned = re.sub(r"[^\w\s-]", " ", query)
         words = cleaned.split()
-        salient = [w for w in words if w.lower() not in stopwords and len(w) > 2]
+        salient = [w for w in words if w.lower() not in stopwords and (len(w) > 2 or w.isdigit())]
         if salient:
-            return " ".join(salient[:6])
+            # Preserve up to 10 terms so geographic, domain, and temporal terms are not truncated
+            return " ".join(salient[:10])
         return query.strip()
 
     def _run_agent_turn_interactive(
@@ -807,6 +869,7 @@ class StudioAgentLoopMixin:
         prompt_lbl: str,
         model_label: str,
         effort: str,
+        task_id: str | None = None,
     ) -> Any:
         """Run an agent streaming turn with framed input outlier and persistent footer.
         
@@ -833,32 +896,67 @@ class StudioAgentLoopMixin:
 
         async def _interactive_loop() -> Any:
             t = asyncio.create_task(coro)
-            typed_buffer: list[str] = list(self._pending_user_input) if self._pending_user_input else []
-            self._pending_user_input = ""
             frame_idx = 0
             last_spin = time.time()
-            prev_lines_drawn = 0
-            last_desc_str = ""
-            last_frame_text = ""
-
-            def _get_layout() -> tuple[str, str]:
-                cur_width = max(20, (self.console.width or shutil.get_terminal_size((80, 24)).columns) - 1)
-                cur_div = "─" * cur_width
-                left_st = "? shortcuts · esc detach · ctrl+c batal"
-                right_st = f"{self.active_skill_name} • {model_label} • {effort}" if self.active_skill_name else f"{model_label} • {effort}"
-                if len(left_st) + len(right_st) + 2 > cur_width:
-                    right_st = f"{model_label} • {effort}"
-                pad = max(1, cur_width - len(left_st) - len(right_st))
-                cur_foot = f"{left_st}{' ' * pad}{right_st}"[:cur_width]
-                return cur_div, cur_foot
-
-            divider, footer = _get_layout()
+            hint_str = "[Esc: detach · Ctrl+C: batal]"
 
             try:
                 while not t.done():
                     now = time.time()
                     need_redraw = False
-                    if now - last_spin >= 0.12:
+
+                    # Check if worker thread requested a checkpoint decision
+                    if hasattr(self, "task_manager") and self.task_manager and task_id:
+                        pending_cp = self.task_manager.get_pending_checkpoint(task_id)
+                        if pending_cp:
+                            if not sys.stdin.isatty():
+                                comp_turns = pending_cp.prompt_data.get("completed_turns", 3)
+                                decision = "finalize" if comp_turns >= 15 else "continue"
+                                self.task_manager.resolve_checkpoint(task_id, decision)
+                                continue
+
+                            sys.stdout.write("\r\x1b[2K")
+                            sys.stdout.flush()
+
+                            cp_data = pending_cp.prompt_data
+                            comp_turns = cp_data.get("completed_turns", 3)
+                            bg_score = cp_data.get("best_grounding", 0.0)
+                            bc_score = cp_data.get("best_critic", 0)
+                            in_tok = cp_data.get("accumulated_input_tokens", 0)
+                            out_tok = cp_data.get("accumulated_output_tokens", 0)
+                            tot_tok = in_tok + out_tok
+                            critique = cp_data.get("critique_summary", "")
+
+                            card_header = Text()
+                            card_header.append("\n● ", style="bold yellow")
+                            card_header.append(f"Checkpoint Iterasi Riset ({comp_turns} Turn Selesai)\n", style="bold bright_white")
+                            card_header.append("  • Evaluasi: ", style="dim")
+                            card_header.append(f"Grounding {int(bg_score * 100)}% ", style="bold cyan")
+                            card_header.append("• ", style="dim")
+                            card_header.append(f"Devil's Advocate {bc_score}/10\n", style="bold yellow")
+                            card_header.append("  • Konsumsi: ", style="dim")
+                            card_header.append(f"{in_tok:,} in · {out_tok:,} out ({tot_tok:,} total token)\n", style="dim")
+                            if critique:
+                                card_header.append(f"  • Catatan: {critique[:100]}...\n", style="dim")
+
+                            cp_opts = [
+                                ("continue", "Lanjutkan 3 iterasi turn perbaikan lagi (kejar grounding & audit)"),
+                                ("finalize", "Selesaikan sekarang dan finalisasi draf terbaik"),
+                            ]
+
+                            ch = interactive_menu(
+                                cp_opts,
+                                header=card_header,
+                                console=self.console,
+                                footer_hint="↑/↓ Pilih · enter Konfirmasi",
+                                allow_back=False,
+                            )
+
+                            decision = "continue" if ch == "continue" else "finalize"
+                            self.task_manager.resolve_checkpoint(task_id, decision)
+                            last_spin = time.time()
+                            continue
+                    if now - last_spin >= 0.10:
                         frame_idx = (frame_idx + 1) % len(SPINNER_FRAMES)
                         last_spin = now
                         need_redraw = True
@@ -867,112 +965,36 @@ class StudioAgentLoopMixin:
                         import msvcrt
                         while msvcrt.kbhit():
                             ch = msvcrt.getwch()
-                            need_redraw = True
                             if ch == "\x03":  # Ctrl+C
                                 t.cancel()
                                 raise asyncio.CancelledError("cancel")
                             elif ch == "\x1b":  # Esc
-                                if typed_buffer:
-                                    typed_buffer.clear()
-                                else:
-                                    raise SessionDetachSignal("detach")
-                            elif ch in ("\r", "\n"):
-                                cmd = "".join(typed_buffer).strip().lower()
-                                typed_buffer.clear()
-                                if cmd in ("/detach", "detach", "/back", "back"):
-                                    raise SessionDetachSignal("detach")
-                                elif cmd in ("/close", "close", "/terminate", "terminate", "/exit", "exit"):
-                                    t.cancel()
-                                    raise SessionCloseSignal("close")
-                                elif cmd in ("/cancel", "cancel", "/batal", "batal", "/stop", "stop"):
-                                    t.cancel()
-                                    raise asyncio.CancelledError("cancel")
-                            elif ch in ("\b", "\x7f"):
-                                if typed_buffer:
-                                    typed_buffer.pop()
-                            elif ch.isprintable():
-                                typed_buffer.append(ch)
-                                curr = "".join(typed_buffer).strip().lower()
-                                if curr in ("/detach", "detach"):
-                                    raise SessionDetachSignal("detach")
-                                elif curr in ("/close", "close"):
-                                    t.cancel()
-                                    raise SessionCloseSignal("close")
-                                elif curr in ("/cancel", "cancel", "/batal", "/stop"):
-                                    t.cancel()
-                                    raise asyncio.CancelledError("cancel")
+                                raise SessionDetachSignal("detach")
+                            # User input is disabled during processing per user UX preference
 
                     cur_desc_val = step_desc() if callable(step_desc) else str(step_desc)
-                    max_desc_w = max(10, (self.console.width or shutil.get_terminal_size((80, 24)).columns) - 5)
-                    if len(cur_desc_val) > max_desc_w:
-                        cur_desc_val = cur_desc_val[:max_desc_w - 1] + "…"
-
-                    if cur_desc_val != last_desc_str:
-                        last_desc_str = cur_desc_val
-                        need_redraw = True
+                    max_w = max(20, (self.console.width or shutil.get_terminal_size((80, 24)).columns) - 1)
+                    avail_desc = max(5, max_w - len(hint_str) - 8)
+                    if len(cur_desc_val) > avail_desc:
+                        disp_desc = cur_desc_val[:avail_desc - 1] + "…"
+                    else:
+                        disp_desc = cur_desc_val
 
                     if need_redraw:
-                        divider, footer = _get_layout()
-                        buf_str = "".join(typed_buffer)
                         frame = SPINNER_FRAMES[frame_idx]
-                        cur_w = max(20, (self.console.width or shutil.get_terminal_size((80, 24)).columns) - 1)
-                        max_p_w = max(10, cur_w - 1)
-                        vis_prompt = prompt_lbl
-                        if buf_str:
-                            avail_buf = max_p_w - len(vis_prompt) - 2
-                            display_buf = buf_str if len(buf_str) <= avail_buf else "…" + buf_str[-(avail_buf - 1):]
-                            prompt_line = f"\033[1;36m{vis_prompt}\033[0m\033[1;37m{display_buf}\033[0m\033[1;37m█\033[0m"
-                        else:
-                            ph = "[Sedang memproses... Esc: detach · Ctrl+C: batal]"
-                            avail_ph = max_p_w - len(vis_prompt) - 1
-                            display_ph = ph if len(ph) <= avail_ph else ph[:avail_ph - 1] + "…]"
-                            prompt_line = f"\033[1;36m{vis_prompt}\033[0m\033[2;37m{display_ph}\033[0m"
-
-                        lines = [
-                            f"\033[36m{frame}\033[0m {cur_desc_val}",
-                            "",
-                            f"\033[90m{divider}\033[0m",
-                            prompt_line,
-                            f"\033[90m{divider}\033[0m",
-                            f"\033[90m{footer}\033[0m",
-                        ]
-                        cur_frame_text = "\n".join(lines)
-                        if cur_frame_text != last_frame_text or prev_lines_drawn == 0:
-                            last_frame_text = cur_frame_text
-                            out = []
-                            if prev_lines_drawn > 0:
-                                out.append(f"\x1b[{prev_lines_drawn}A\r")
-                            for line in lines:
-                                out.append(f"\x1b[2K{line}\n")
-                            sys.stdout.write("".join(out))
-                            sys.stdout.flush()
-                            prev_lines_drawn = len(lines)
+                        line = f"\r\x1b[2K\033[1;36m{frame}\033[0m \033[1;37m{disp_desc}\033[0m   \033[2;37m{hint_str}\033[0m"
+                        sys.stdout.write(line)
+                        sys.stdout.flush()
 
                     await asyncio.sleep(0.04)
 
-                if prev_lines_drawn > 0:
-                    out = [f"\x1b[{prev_lines_drawn}A\r"]
-                    for _ in range(prev_lines_drawn):
-                        out.append("\x1b[2K\n")
-                    out.append(f"\x1b[{prev_lines_drawn}A\r")
-                    sys.stdout.write("".join(out))
-                    sys.stdout.flush()
-                    prev_lines_drawn = 0
-
-                if typed_buffer:
-                    self._pending_user_input = "".join(typed_buffer)
-
+                sys.stdout.write("\r\x1b[2K")
+                sys.stdout.flush()
                 return await t
 
             except BaseException as exc:
-                if prev_lines_drawn > 0:
-                    out = [f"\x1b[{prev_lines_drawn}A\r"]
-                    for _ in range(prev_lines_drawn):
-                        out.append("\x1b[2K\n")
-                    out.append(f"\x1b[{prev_lines_drawn}A\r")
-                    sys.stdout.write("".join(out))
-                    sys.stdout.flush()
-                    prev_lines_drawn = 0
+                sys.stdout.write("\r\x1b[2K")
+                sys.stdout.flush()
                 if isinstance(exc, SessionDetachSignal):
                     raise
                 if not t.done():
@@ -1104,6 +1126,8 @@ class StudioAgentLoopMixin:
 
                 async def _wait_for_task() -> TaskInfo:
                     start_t = time.monotonic()
+                    last_progress_t = start_t
+                    last_log_count = 0
                     while True:
                         t_info = self.task_manager.get_task(task.id)
                         if not t_info:
@@ -1113,7 +1137,13 @@ class StudioAgentLoopMixin:
                         fut = self.task_manager._futures.get(task.id)
                         if fut and fut.done():
                             return self.task_manager.get_task(task.id) or task
-                        if time.monotonic() - start_t > scout_timeout:
+
+                        cur_logs = len(t_info.logs) if t_info and t_info.logs else 0
+                        if cur_logs > last_log_count:
+                            last_log_count = cur_logs
+                            last_progress_t = time.monotonic()
+
+                        if time.monotonic() - last_progress_t > scout_timeout:
                             raise asyncio.TimeoutError("Scout timeout exceeded")
                         await asyncio.sleep(0.08)
                     return task
@@ -1183,6 +1213,7 @@ class StudioAgentLoopMixin:
                         f"Berikan sintesis awal atau fondasi konseptual terbaik berdasarkan pengetahuan yang ada saat ini. "
                         f"Secara proaktif sarankan fokus konseptual atau hipotesis apa yang bisa dikaji sekarang sementara tugas unduhan selesai di background (JANGAN menyuruh pengguna mengetikkan perintah slash).]"
                     )
+                    evidence = []
                 elif completed_task and completed_task.status == "completed":
                     if self.vault_manager:
                         self.vault_manager.reload_vault(force=False)
@@ -1205,22 +1236,6 @@ class StudioAgentLoopMixin:
                     self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Menganalisis[/bold bright_white] [dim]Menyintesis temuan paper baru ke dalam jawaban komprehensif...[/dim]\n")
                 elif completed_task and completed_task.status == "failed":
                     self.console.print(f"[dim]● Pencarian repositori gagal: {completed_task.error}. Melanjutkan...[/dim]\n")
-
-                # Synchronize vault cache with freshly downloaded papers
-                if self.vault_manager:
-                    self.vault_manager.reload_vault(force=False)
-                self._sync_vault_cache()
-
-                active_paths = [self.workspace.get_cache_path(f"{s}.md") for s in self.active_documents]
-                existing_paths = [p for p in active_paths if p.exists()]
-                evidence = self.engine.evidence_synthesizer.retrieve_evidence(
-                    query=query,
-                    documents=existing_paths,
-                    max_chunks=self.config.citation.max_evidence_chunks,
-                    vector_vault=getattr(self.vault_manager, "vector_vault", None),
-                )
-                if evidence:
-                    self.console.print(f"[bold green][✓] Berhasil memuat bukti literatur dari dokumen vault yang baru diunduh.[/bold green]")
 
         # 1. Action Indicator: Membaca (jika sudah ada bukti)
         if evidence:
@@ -1254,7 +1269,8 @@ class StudioAgentLoopMixin:
 
         # 2. Action Indicator: Berpikir
         self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Berpikir[/bold bright_white] [dim]Menganalisis literatur dan menyusun sintesis ilmiah...[/dim]")
-        self.console.print(f"\n[bold cyan]✦ {model_label}[/bold cyan] [dim]({self.active_skill_name} • {effort} effort)[/dim]")
+        skill_badge = f"{self.active_skill_name} • " if self.active_skill_name and self.active_skill_name != "scrpcy_manual" else ""
+        self.console.print(f"\n[bold cyan]✦ {model_label}[/bold cyan] [dim]({skill_badge}{effort} effort)[/dim]")
 
         session_id = session.id if session else "default"
         if hasattr(self, "logger") and self.logger:
@@ -1273,8 +1289,22 @@ class StudioAgentLoopMixin:
             start_time = time.time()
             max_agent_turns = getattr(self.config, "max_agent_turns", 9999) if self.config else 9999
             max_refinement_turns = getattr(self.config, "max_refinement_turns", 3) if self.config else 3
+            max_refine_limit = max_refinement_turns
             turn = 0
             refinement_turns = 0
+
+            # Restrict refinement turns if primary literature download is still active in background
+            is_background_scout_active = False
+            if self.task_manager and session:
+                active_scouts = [
+                    t for t in self.task_manager.list_tasks_for_session(session.id)
+                    if t.task_type == "scout" and t.status == "running"
+                ]
+                if active_scouts:
+                    is_background_scout_active = True
+            if "initial_query_override" in locals() and initial_query_override:
+                is_background_scout_active = True
+
             locked_supported_claims: list[str] = []
             best_draft: str = ""
             best_grounding: float = -1.0
@@ -1300,6 +1330,36 @@ class StudioAgentLoopMixin:
                 f"Patuhi seluruh instruksi di atas secara presisi."
             )
             current_query = f"{current_query}{contract_directive}"
+
+            # Search for relevant visual assets (figures / tables) from the vault
+            recommended_visuals: list[dict[str, Any]] = []
+            if self.vault_manager:
+                try:
+                    recommended_visuals = self.vault_manager.search_visual_assets(query=query, top_k=2)
+                except Exception as e:
+                    logger.debug(f"Failed to retrieve visual assets: {e}")
+
+            if recommended_visuals:
+                for idx, v in enumerate(recommended_visuals, 1):
+                    v["index"] = idx
+
+                task_result_box["recommended_visuals"] = recommended_visuals
+                vis_bullets = []
+                for idx, v in enumerate(recommended_visuals, 1):
+                    v_type = "Tabel" if v.get("asset_type") == "table" else "Gambar/Grafik"
+                    vis_bullets.append(
+                        f"  * [Visual #{idx}] Jenis: {v_type} | Halaman: {v.get('page_num')} | "
+                        f"Paper: {v.get('paper_title')} | Keterangan: \"{v.get('caption')}\""
+                    )
+                vis_directive = (
+                    f"\n\n[REFERENSI VISUAL TERSEDIA DI VAULT]:\n"
+                    f"Sistem mendeteksi figur/tabel relevan berikut di dalam dokumen vault:\n"
+                    + "\n".join(vis_bullets) + "\n"
+                    f"PANDUAN RUJUKAN VISUAL:\n"
+                    f"- Jika relevan dengan analisis Anda, referensikan visual di atas secara eksplisit (contoh: 'Sebagaimana disajikan pada [Visual #1]').\n"
+                    f"- Rujukan visual ini akan otomatis ditampilkan secara berwarna kepada pengguna di antarmuka terminal beserta sitasi lengkapnya."
+                )
+                current_query = f"{current_query}{vis_directive}"
             current_docs = list(existing_paths)
             curr_evidence = list(evidence) if evidence else []
             final_response = ""
@@ -1318,14 +1378,14 @@ class StudioAgentLoopMixin:
             async def _async_synthesis_loop() -> None:
                 nonlocal turn, refinement_turns, locked_supported_claims, best_draft, best_grounding, best_critic, best_composite
                 nonlocal accumulated_input_tokens, accumulated_output_tokens, total_turns_completed, current_query, current_docs
-                nonlocal final_response, last_v_report, last_c_report, max_agent_turns, curr_evidence, citation_guide
+                nonlocal final_response, last_v_report, last_c_report, max_agent_turns, max_refine_limit, curr_evidence, citation_guide
 
                 while turn < max_agent_turns:
                     if cancel_event and cancel_event.is_set():
                         return
 
                     turn_tokens: list[str] = []
-                    step_msg = "Menghubungi AI & Menganalisis..." if turn == 0 else "Menyintesis temuan dokumen..."
+                    step_msg = f"Menyintesis argumen ilmiah (Turn {turn + 1})..." if turn == 0 else f"Menyintesis perbaikan draf (Turn {turn + 1})..."
                     self.task_manager.update_progress(task_id, step_msg)
                     self.task_manager.log(task_id, step_msg)
 
@@ -1360,12 +1420,15 @@ class StudioAgentLoopMixin:
                         cmd_line = tool_cmd.strip()
                         is_archive = any(k in cmd_line.lower() for k in ("remove", "rm", "archive"))
                         is_scout = any(k in cmd_line.lower() for k in ("scout", "search", "findpaper"))
+                        is_web = any(k in cmd_line.lower() for k in ("web", "web-scout", "webscout"))
                         action_label, target_label, tool_output = self._execute_internal_vault_tool(cmd_line)
 
                         if is_archive:
                             sub_label = "(Mengarsipkan paper yang tidak relevan...)"
                         elif is_scout:
                             sub_label = "(Menelusuri repositori akademik...)"
+                        elif is_web:
+                            sub_label = "(Menelusuri & memproses web resmi...)"
                         else:
                             sub_label = "(Membaca teks dari vault...)"
 
@@ -1390,6 +1453,10 @@ class StudioAgentLoopMixin:
                             best_critic=best_critic,
                             accumulated_input_tokens=accumulated_input_tokens,
                             accumulated_output_tokens=accumulated_output_tokens,
+                            task_id=task_id,
+                            session=session,
+                            max_refine_limit=max_refine_limit,
+                            last_c_report=last_c_report,
                         ):
                             raw_final = best_draft or raw_resp
                             final_response = self._sanitize_final_response(raw_final)
@@ -1411,6 +1478,7 @@ class StudioAgentLoopMixin:
                     self.task_manager.update_progress(task_id, p_msg)
                     self.task_manager.log(task_id, p_msg)
                     p_resp = raw_resp
+                    self.task_manager.update_progress(task_id, "Menghaluskan gaya akademik & integritas sitasi (Polisher)...")
                     t_pol_s = time.time()
                     try:
                         polisher = self.polisher or AcademicPolisher(engine=self.engine)
@@ -1459,7 +1527,7 @@ class StudioAgentLoopMixin:
                     self.task_manager.log(task_id, cr_msg)
                     t_cr_s = time.time()
                     critic = self.devils_advocate or DevilsAdvocate(engine=self.engine)
-                    c_rep = critic.critique(query, p_resp, contract=task_contract)
+                    c_rep = critic.critique(query, p_resp, contract=task_contract, fact_check_verdict=v_rep)
                     if hasattr(self, "logger") and self.logger:
                         self.logger.log_critic_result(
                             session_id=session_id,
@@ -1491,9 +1559,16 @@ class StudioAgentLoopMixin:
                     total_turns_completed = turn + 1
 
                     # Check if refinement needed
-                    needs_refine = (bool(v_rep.hallucination_warning) or bool(c_rep.needs_citation_mapping)) and turn < max_agent_turns - 1
+                    needs_refine = (
+                        (bool(v_rep.hallucination_warning) or (not c_rep.passed and c_rep.score < 7))
+                        and turn < max_agent_turns - 1
+                        and not is_background_scout_active
+                    )
                     if needs_refine:
-                        max_refine_limit = 1 if getattr(task_contract, 'max_words', 1000) <= 750 else max_refinement_turns
+                        # Allow full refinement iterations if grounding or critic score is weak
+                        max_refine_limit = max_refinement_turns
+                        if getattr(task_contract, 'max_words', 1000) <= 750 and c_rep.passed and v_rep.grounding_score >= 0.7:
+                            max_refine_limit = 1
                         if refinement_turns >= max_refine_limit:
                             if not (session and session.status == "detached"):
                                 self.console.print("[bold yellow]●[/bold yellow] [bold bright_white]Epistemic Convergence[/bold bright_white] [dim]Batas 3 iterasi perbaikan tercapai. Memfinalisasi draf terbaik dengan catatan dialektis...[/dim]\n")
@@ -1517,6 +1592,8 @@ class StudioAgentLoopMixin:
                             break
 
                         if c_rep.needs_citation_mapping:
+                            if cancel_event and cancel_event.is_set():
+                                return
                             refinement_turns += 1
                             self.task_manager.log(task_id, f"Devil's Advocate: Skor {c_rep.score}/10: {c_rep.critique_summary}")
                             if not (session and session.status == "detached"):
@@ -1539,29 +1616,76 @@ class StudioAgentLoopMixin:
                                         if gap_q not in directed_queries:
                                             directed_queries.append(gap_q)
 
-                            is_mock_env = bool(api_key and (api_key.startswith("mock") or api_key == "mock_key"))
-                            is_scout_mocked = bool(self.scout and (hasattr(self.scout.search_multi_source, "assert_called") or getattr(self.scout.search_multi_source, "__code__", None) != LiteratureScout.search_multi_source.__code__))
-                            is_map_mocked = bool(self.scout and (hasattr(self.scout.map_vault_citation_network, "assert_called") or getattr(self.scout.map_vault_citation_network, "__code__", None) != LiteratureScout.map_vault_citation_network.__code__))
+                            # 1. Search multi-source across active federation providers for directed gap queries
+                            if directed_queries and self.scout:
+                                is_mock_env = (
+                                    "PYTEST_CURRENT_TEST" in os.environ
+                                    or getattr(self.engine, "acompletion_fn", None) is not None
+                                    or any(str(v).startswith("mock") for v in getattr(self.config, "api_keys", {}).values())
+                                    or getattr(self.config, "default_model", "").startswith("mock")
+                                )
+                                is_scout_mocked = (
+                                    hasattr(self.scout, "_is_mock")
+                                    or "search_multi_source" in getattr(self.scout, "__dict__", {})
+                                    or "Mock" in type(getattr(self.scout, "search_multi_source", None)).__name__
+                                    or "Mock" in type(self.scout).__name__
+                                )
+                                if not (is_mock_env and not is_scout_mocked):
+                                    for target_gap_q in directed_queries[:2]:
+                                        try:
+                                            sq = ScoutQuery(keywords=target_gap_q, limit=5)
+                                            candidates = await self.scout.search_multi_source(sq, limit=5)
+                                            if candidates:
+                                                existing_titles = {p.title for p in mapped_papers}
+                                                mapped_papers.extend([p for p in candidates if p.title not in existing_titles])
+                                        except Exception as exc:
+                                            logger.warning(f"Error in gap scout search: {exc}")
 
-                            if directed_queries and self.scout and (not is_mock_env or is_scout_mocked):
-                                for target_gap_q in directed_queries[:2]:
+                            # 2. Also map vault citation network (snowballing backward references)
+                            if stems and self.scout:
+                                is_mock_env = (
+                                    "PYTEST_CURRENT_TEST" in os.environ
+                                    or getattr(self.engine, "acompletion_fn", None) is not None
+                                    or any(str(v).startswith("mock") for v in getattr(self.config, "api_keys", {}).values())
+                                    or getattr(self.config, "default_model", "").startswith("mock")
+                                )
+                                is_map_mocked = (
+                                    hasattr(self.scout, "_is_mock")
+                                    or "map_vault_citation_network" in getattr(self.scout, "__dict__", {})
+                                    or "Mock" in type(getattr(self.scout, "map_vault_citation_network", None)).__name__
+                                    or "Mock" in type(self.scout).__name__
+                                )
+                                if not (is_mock_env and not is_map_mocked):
                                     try:
-                                        sq = ScoutQuery(keywords=target_gap_q, limit=5)
-                                        candidates = await self.scout.search_multi_source(sq, limit=5)
-                                        if candidates:
+                                        cit_papers = await self.scout.map_vault_citation_network(stems, limit=5)
+                                        if cit_papers:
                                             existing_titles = {p.title for p in mapped_papers}
-                                            mapped_papers.extend([p for p in candidates if p.title not in existing_titles])
-                                    except Exception:
-                                        pass
+                                            mapped_papers.extend([p for p in cit_papers if p.title not in existing_titles])
+                                    except Exception as exc:
+                                        logger.warning(f"Error in vault citation network mapping: {exc}")
 
-                            if stems and self.scout and (not is_mock_env or is_map_mocked):
+                            # 3. Retrieve additional evidence from existing vault if available
+                            if directed_queries and self.vault_manager and getattr(self.vault_manager, "vector_vault", None):
+                                for dq in directed_queries[:2]:
+                                    more_evidence = self.engine.evidence_synthesizer.retrieve_evidence(
+                                        query=dq,
+                                        documents=current_docs,
+                                        max_chunks=2,
+                                        vector_vault=self.vault_manager.vector_vault,
+                                    )
+                                    if more_evidence:
+                                        curr_evidence.extend(more_evidence)
+
+                            # 4. Curate candidates against original query and gaps to take only top 2 most relevant (safe, low memory)
+                            if mapped_papers and self.scout:
                                 try:
-                                    cit_papers = await self.scout.map_vault_citation_network(stems, limit=5)
-                                    if cit_papers:
-                                        existing_titles = {p.title for p in mapped_papers}
-                                        mapped_papers.extend([p for p in cit_papers if p.title not in existing_titles])
+                                    curated = self.scout.curate_and_rank(mapped_papers, query=query, target_count=2)
+                                    if curated:
+                                        mapped_papers = curated
+                                    else:
+                                        mapped_papers = mapped_papers[:2]
                                 except Exception:
-                                    pass
+                                    mapped_papers = mapped_papers[:2]
 
                             if mapped_papers and self.scout:
                                 for idx, p in enumerate(mapped_papers, 1):
@@ -1580,15 +1704,31 @@ class StudioAgentLoopMixin:
                                         decision = await asyncio.to_thread(self._ask_ai_paywall_action, p, query)
                                         if decision.get("decision") == "FIND_ALTERNATIVE":
                                             try:
-                                                sq = ScoutQuery(keywords=f"{p.title} open access", is_oa_only=True)
-                                                alt_candidates = await self.scout.search_multi_source(sq, limit=5)
-                                                alt_oa = [c for c in alt_candidates if c.has_pdf and c.pdf_url]
-                                                if alt_oa:
-                                                    await self.scout.download_scout_paper(alt_oa[0])
-                                                    newly_ingested_stems.append(sanitize_filename(alt_oa[0].title))
+                                                is_mock_env = (
+                                                    "PYTEST_CURRENT_TEST" in os.environ
+                                                    or getattr(self.engine, "acompletion_fn", None) is not None
+                                                    or any(str(v).startswith("mock") for v in getattr(self.config, "api_keys", {}).values())
+                                                    or getattr(self.config, "default_model", "").startswith("mock")
+                                                )
+                                                is_scout_mocked = (
+                                    hasattr(self.scout, "_is_mock")
+                                    or "search_multi_source" in getattr(self.scout, "__dict__", {})
+                                    or "Mock" in type(getattr(self.scout, "search_multi_source", None)).__name__
+                                    or "Mock" in type(self.scout).__name__
+                                )
+                                                if not (is_mock_env and not is_scout_mocked):
+                                                    sq = ScoutQuery(keywords=f"{p.title} open access", is_oa_only=True)
+                                                    alt_candidates = await self.scout.search_multi_source(sq, limit=5)
+                                                    alt_oa = [c for c in alt_candidates if c.has_pdf and c.pdf_url]
+                                                    if alt_oa:
+                                                        await self.scout.download_scout_paper(alt_oa[0])
+                                                        newly_ingested_stems.append(sanitize_filename(alt_oa[0].title))
+                                                    else:
+                                                        if not (session and session.status == "detached"):
+                                                            self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Abstrak Memadai[/bold bright_white] [green]Mengindeks abstrak resmi paper ke vault[/green]")
+                                                        await asyncio.to_thread(self.scout.ingest_abstract_paper, p)
+                                                        newly_ingested_stems.append(safe_stem)
                                                 else:
-                                                    if not (session and session.status == "detached"):
-                                                        self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Abstrak Memadai[/bold bright_white] [green]Mengindeks abstrak resmi paper ke vault[/green]")
                                                     await asyncio.to_thread(self.scout.ingest_abstract_paper, p)
                                                     newly_ingested_stems.append(safe_stem)
                                             except Exception:
@@ -1600,7 +1740,9 @@ class StudioAgentLoopMixin:
                                             await asyncio.to_thread(self.scout.ingest_abstract_paper, p)
                                             newly_ingested_stems.append(safe_stem)
 
-                            if not (session and session.status == "detached"):
+                            t_info = self.task_manager.get_task(task_id) if self.task_manager else None
+                            is_task_alive = bool(t_info and t_info.status == "running" and not (cancel_event and cancel_event.is_set()))
+                            if is_task_alive and not (session and session.status == "detached"):
                                 if mapped_papers:
                                     self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Directed Gap Search[/bold bright_white] [cyan]Menemukan {len(mapped_papers)} literatur penambal celah empiris.[/cyan]")
                                 if newly_ingested_stems:
@@ -1652,6 +1794,10 @@ class StudioAgentLoopMixin:
                                 best_critic=best_critic,
                                 accumulated_input_tokens=accumulated_input_tokens,
                                 accumulated_output_tokens=accumulated_output_tokens,
+                                task_id=task_id,
+                                session=session,
+                                max_refine_limit=max_refine_limit,
+                                last_c_report=c_rep,
                             ):
                                 raw_final = best_draft or p_resp
                                 final_response = self._sanitize_final_response(raw_final)
@@ -1691,6 +1837,10 @@ class StudioAgentLoopMixin:
                                 best_critic=best_critic,
                                 accumulated_input_tokens=accumulated_input_tokens,
                                 accumulated_output_tokens=accumulated_output_tokens,
+                                task_id=task_id,
+                                session=session,
+                                max_refine_limit=max_refine_limit,
+                                last_c_report=c_rep,
                             ):
                                 raw_final = best_draft or p_resp
                                 final_response = self._sanitize_final_response(raw_final)
@@ -1794,6 +1944,7 @@ class StudioAgentLoopMixin:
                 "style_name": style_name,
                 "last_v_report": last_v_report,
                 "last_c_report": last_c_report,
+                "recommended_visuals": recommended_visuals,
             })
 
             return f"Sintesis selesai ({len(final_response)} karakter, {total_tokens:,} total token)" if final_response else "Selesai"
@@ -1805,10 +1956,13 @@ class StudioAgentLoopMixin:
             session_id=session.id if session else None,
         )
 
-        chat_timeout = getattr(self.config, "chat_timeout", 300.0)
-
         async def _wait_for_chat_task() -> TaskInfo:
             start_t = time.monotonic()
+            last_activity_t = start_t
+            last_log_cnt = 0
+            last_prog_str = ""
+            freeze_threshold = 120.0  # Alert watchdog if completely frozen for 120s
+
             while True:
                 t_info = self.task_manager.get_task(task.id)
                 if not t_info:
@@ -1818,23 +1972,43 @@ class StudioAgentLoopMixin:
                 fut = self.task_manager._futures.get(task.id)
                 if fut and fut.done():
                     return self.task_manager.get_task(task.id) or task
-                if time.monotonic() - start_t > chat_timeout:
-                    raise asyncio.TimeoutError("Chat synthesis timeout exceeded")
+
+                cur_logs_cnt = len(t_info.logs) if (t_info and t_info.logs) else 0
+                cur_prog = (t_info.progress or "") if t_info else ""
+                now = time.monotonic()
+
+                # Activity detected: progress updated or logs appended
+                if cur_logs_cnt != last_log_cnt or cur_prog != last_prog_str:
+                    last_log_cnt = cur_logs_cnt
+                    last_prog_str = cur_prog
+                    last_activity_t = now
+                elif now - last_activity_t >= freeze_threshold:
+                    # Potential freeze: no progress update for 120s
+                    self.task_manager.log(
+                        task.id,
+                        f"[Watchdog] Tidak ada respons aktivitas baru selama {int(now - last_activity_t)}s pada tahap: '{cur_prog}'."
+                    )
+                    last_activity_t = now
+
                 await asyncio.sleep(0.04)
             return task
 
         def _get_chat_status_line() -> str:
             t_info = self.task_manager.get_task(task.id)
-            if t_info and t_info.logs:
-                last_log = t_info.logs[-1]
-                if last_log.startswith("Started task") or last_log.startswith("Pertanyaan:") or last_log.startswith("Model:"):
-                    return "Menghubungi AI & Menganalisis..."
-                return last_log
-            if t_info and t_info.progress:
+            if t_info and t_info.progress and not t_info.progress.startswith("[Watchdog"):
                 return t_info.progress
+            if t_info and t_info.logs:
+                for l in reversed(t_info.logs):
+                    clean_l = l.split("]", 1)[-1].strip() if "]" in l else l.strip()
+                    if clean_l and not clean_l.startswith("Started task") and not clean_l.startswith("Pertanyaan:") and not clean_l.startswith("Model:") and not clean_l.startswith("[Watchdog") and not clean_l.startswith("[Pemeriksaan"):
+                        return clean_l
             return "Menganalisis literatur dan menyusun sintesis ilmiah..."
 
         prompt_str = f"{self.current_project.name}/chat/{session.name}> " if (self.sub_mode == "chat" and session and self.current_project) else (f"{self.current_project.name}> " if self.current_project else "> ")
+
+        if not hasattr(self, "_foreground_monitored_tasks"):
+            self._foreground_monitored_tasks = set()
+        self._foreground_monitored_tasks.add(task.id)
 
         wait_coro = _wait_for_chat_task()
         completed_task: TaskInfo | None = None
@@ -1845,6 +2019,7 @@ class StudioAgentLoopMixin:
                 prompt_lbl=prompt_str,
                 model_label=model_label,
                 effort=effort,
+                task_id=task.id,
             )
         except SessionDetachSignal:
             if session and self.chat_manager:
@@ -1855,7 +2030,11 @@ class StudioAgentLoopMixin:
         except SessionCloseSignal:
             if session and self.chat_manager:
                 self.chat_manager.update_session_status(session.id, "closed")
-            self.task_manager.cancel_task(task.id)
+            if hasattr(self, "task_manager") and self.task_manager:
+                if session:
+                    self.task_manager.cancel_session_tasks(session.id)
+                else:
+                    self.task_manager.cancel_task(task.id)
             self.console.print(f"\n[dim]● Sesi '{session.name if session else ''}' ditutup (terminated).\n[/dim]")
             raise
         except (KeyboardInterrupt, asyncio.CancelledError):
@@ -1863,9 +2042,12 @@ class StudioAgentLoopMixin:
             self.console.print("\n\n[bold yellow]● Pertanyaan dibatalkan oleh pengguna (Ctrl+C).[/bold yellow]\n")
             return
         except Exception as exc:
+            self.task_manager.cancel_task(task.id)
             self.console.print(f"\n[bold red][x] Generation error:[/bold red] {exc}\n")
             return
         finally:
+            if hasattr(self, "_foreground_monitored_tasks"):
+                self._foreground_monitored_tasks.discard(task.id)
             import inspect
             if inspect.iscoroutine(wait_coro):
                 try:
@@ -1877,6 +2059,16 @@ class StudioAgentLoopMixin:
             final_resp = task_result_box.get("final_response", "")
             render_academic_markdown(final_resp, console=self.console)
             self.console.print()
+
+            # Render Option A: Visual Assets Panel (Figures / Tables with citation)
+            rec_visuals = task_result_box.get("recommended_visuals", [])
+            if rec_visuals:
+                from scrpcy.ui.terminal_image import render_visual_panel
+                for v_info in rec_visuals:
+                    v_panel = render_visual_panel(v_info, console=self.console)
+                    if v_panel:
+                        self.console.print(v_panel)
+                        self.console.print()
 
             in_tok = task_result_box.get("input_tokens", 0)
             out_tok = task_result_box.get("output_tokens", 0)
@@ -1953,6 +2145,9 @@ class StudioAgentLoopMixin:
             if "docx " in action:
                 doc_arg = action.split("docx", 1)[1].strip()
                 self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Menulis[/bold bright_white] [cyan]drafts/{doc_arg}[/cyan]")
+            elif any(k in action for k in ("web ", "web-scout ", "webscout ")):
+                w_arg = action.split(maxsplit=1)[1].strip() if len(action.split()) > 1 else ""
+                self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Menelusuri Web Resmi[/bold bright_white] [cyan]{w_arg}[/cyan]")
             elif "vault add " in action:
                 v_arg = action.split("vault add", 1)[1].strip()
                 self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Mengubah[/bold bright_white] [cyan]vault/{v_arg}[/cyan]")

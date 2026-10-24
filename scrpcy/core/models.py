@@ -17,7 +17,7 @@ FRONTMATTER_PATTERN = FRONTMATTER_REGEX
 
 
 class DocumentMetadata(BaseModel):
-    """Structured publication metadata extracted from academic documents."""
+    """Structured publication metadata extracted from academic documents and official web pages."""
 
     model_config = ConfigDict(extra="ignore", populate_by_name=True)
 
@@ -40,6 +40,30 @@ class DocumentMetadata(BaseModel):
     cite_key: str | None = Field(
         default=None,
         description="Citation or BibTeX key (e.g. vaswani2017attention).",
+    )
+    source_type: str = Field(
+        default="paper",
+        description="Type of source: 'paper' or 'official_web'.",
+    )
+    url: str | None = Field(
+        default=None,
+        description="Source web URL if applicable.",
+    )
+    institution: str | None = Field(
+        default=None,
+        description="Publishing government agency, university, or official institution.",
+    )
+    access_date: str | None = Field(
+        default=None,
+        description="Date the web page was retrieved (YYYY-MM-DD).",
+    )
+    authority_score: float | None = Field(
+        default=None,
+        description="Heuristic domain/content authority score (0.0 to 1.0).",
+    )
+    authority_tier: int | None = Field(
+        default=None,
+        description="Authority tier (1=Government/IGO/Academic, 2=Standards, 3=News, 4=Unverified).",
     )
 
     @field_validator("title", mode="before")
@@ -97,8 +121,14 @@ class DocumentMetadata(BaseModel):
             return self.cite_key
 
         first_author = "unknown"
-        if self.authors:
-            # Extract last name of first author
+        if self.institution and (not self.authors or self.authors == [self.institution]):
+            m_acr = re.search(r"\(([A-Za-z0-9]+)\)", self.institution)
+            if m_acr:
+                first_author = m_acr.group(1).lower()
+            else:
+                words = [w for w in re.sub(r"[^\w\s]", "", self.institution).split() if w]
+                first_author = words[0].lower() if words else "inst"
+        elif self.authors:
             name_parts = self.authors[0].strip().split()
             if name_parts:
                 first_author = re.sub(r"[^\w]", "", name_parts[-1].lower())
@@ -116,13 +146,26 @@ class DocumentMetadata(BaseModel):
 
     def to_yaml_dict(self) -> dict[str, Any]:
         """Convert metadata to a clean dictionary for YAML serialization."""
-        return {
+        data: dict[str, Any] = {
             "title": self.title,
             "authors": self.authors,
             "year": self.year,
             "doi": self.doi,
             "cite_key": self.cite_key,
         }
+        if self.source_type and self.source_type != "paper":
+            data["source_type"] = self.source_type
+        if self.url:
+            data["url"] = self.url
+        if self.institution:
+            data["institution"] = self.institution
+        if self.access_date:
+            data["access_date"] = self.access_date
+        if self.authority_score is not None:
+            data["authority_score"] = self.authority_score
+        if self.authority_tier is not None:
+            data["authority_tier"] = self.authority_tier
+        return data
 
     def to_frontmatter(self) -> str:
         """Render metadata as a YAML frontmatter block enclosed by '---' markers."""

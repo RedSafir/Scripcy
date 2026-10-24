@@ -16,6 +16,14 @@ from pydantic import BaseModel, Field
 from scrpcy.core.engine import LLMEngine, estimate_tokens
 
 
+def _clean_json_payload(raw: str) -> str:
+    clean = raw.strip()
+    if clean.startswith("```"):
+        clean = re.sub(r"^```[a-zA-Z]*\r?\n", "", clean)
+        clean = re.sub(r"\r?\n```$", "", clean)
+    return clean.strip()
+
+
 class RubricCriterion(BaseModel):
     """Dynamic evaluation criterion conditioned on user request."""
 
@@ -52,6 +60,12 @@ class TaskContract(BaseModel):
     format_requirements: str = Field(default="Analisis akademis terstruktur", description="Structure, layout, and style requested.")
     min_words: int = Field(default=300, description="Minimum recommended word count.")
     max_words: int = Field(default=750, description="Maximum word ceiling to prevent token truncation.")
+    tolerance_pct: float = Field(
+        default=0.15,
+        ge=0.0,
+        le=0.5,
+        description="Tolerance margin percentage for word limits (default 15%).",
+    )
     definition_of_done: list[str] = Field(
         default_factory=list,
         description="Atomic boolean checklist items representing concrete completion.",
@@ -64,6 +78,20 @@ class TaskContract(BaseModel):
         default_factory=list,
         description="Dynamic rubric criteria for evaluation.",
     )
+
+    @property
+    def effective_min_words(self) -> int:
+        """Lower word limit with tolerance margin (e.g. 300 * 0.85 = 255)."""
+        return int(self.min_words * (1.0 - self.tolerance_pct))
+
+    @property
+    def effective_max_words(self) -> int:
+        """Upper word limit with tolerance margin (e.g. 500 * 1.15 = 575)."""
+        return int(self.max_words * (1.0 + self.tolerance_pct))
+
+    def is_word_count_acceptable(self, actual_words: int) -> bool:
+        """Verify whether actual word count is within tolerance margin."""
+        return self.effective_min_words <= actual_words <= self.effective_max_words
 
 
 class AdaptiveCriticVerdict(BaseModel):
@@ -85,11 +113,96 @@ class AdaptiveCriticVerdict(BaseModel):
     output_tokens: int = Field(default=0)
 
 
+INTENT_CATEGORIES: dict[str, list[str]] = {
+    "comparison": ["bandingkan", "komparasi", "perbandingan", "vs", "versus", "perbedaan"],
+    "argument": ["argumen", "argument", "pro kontra", "sisi positif", "sisi negatif", "sudut pandang", "tesis", "dialektika", "debat"],
+    "fact": ["berapa", "apakah benar", "kapan", "validkah", "siapa", "data statistik"],
+    "literature_review": ["tinjauan pustaka", "bab 2", "bab 1", "bab 3", "draf lengkap", "sintesis komprehensif"],
+}
+
+
 class TaskContractExtractor:
     """Extracts dynamic execution contract and evaluation rubric from user query."""
 
     def __init__(self, engine: LLMEngine | None = None) -> None:
         self.engine = engine
+
+    def is_ambiguous_intent(self, query: str) -> bool:
+        """Determine if query contains competing signals across multiple intent categories."""
+        lower_q = query.lower()
+        matched = [
+            cat for cat, keywords in INTENT_CATEGORIES.items()
+            if any(k in lower_q for k in keywords)
+        ]
+        return len(matched) >= 2
+
+    def _extract_via_llm(self, query: str) -> TaskContract | None:
+        """Disambiguate overlapping user intents and formulate a harmonized contract via LLMEngine."""
+        if not self.engine or not getattr(self.engine, "config", None):
+            return None
+        try:
+            model_name = self.engine.config.default_model
+            api_key = self.engine.config.get_api_key_for_model(model_name)
+            if not api_key or api_key.startswith("mock") or getattr(self.engine, "_acompletion_fn", None) is not None:
+                return None
+
+            import litellm
+            litellm.suppress_debug_info = True
+            litellm.set_verbose = False
+            litellm.drop_params = True
+
+            effective_model = model_name
+            api_base = None
+            if model_name.startswith("9router/"):
+                submodel = model_name.split("/", 1)[1]
+                effective_model = f"openai/{submodel}"
+                api_base = "http://localhost:20128/v1"
+
+            system_prompt = (
+                "You are an elite academic research supervisor and contract designer.\n"
+                "The user query contains multiple or competing cognitive intents (e.g. comparing methods while writing a chapter draft).\n"
+                "Disambiguate the core objective, balance the priorities, and formulate an explicit Task Contract.\n"
+                "Respond in strict JSON with:\n"
+                "- primary_goal: string\n"
+                "- in_scope: list of 2-4 strings\n"
+                "- out_of_scope: list of 2-3 strings\n"
+                "- format_requirements: string\n"
+                "- min_words: integer (e.g. 350 to 900)\n"
+                "- max_words: integer (e.g. 700 to 1400)\n"
+                "- definition_of_done: list of 3-5 concrete boolean criteria strings\n"
+                "- is_modular_section_needed: boolean"
+            )
+
+            kwargs: dict[str, Any] = {
+                "model": effective_model,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": f"USER QUERY: {query}"},
+                ],
+                "api_key": api_key,
+                "temperature": 0.2,
+                "response_format": {"type": "json_object"},
+                "timeout": 15,
+            }
+            if api_base:
+                kwargs["api_base"] = api_base
+
+            resp = litellm.completion(**kwargs)
+            content = resp.choices[0].message.content or "{}"
+            data = json.loads(_clean_json_payload(content))
+
+            return TaskContract(
+                primary_goal=data.get("primary_goal", f"Analisis terpadu: {query[:80]}"),
+                in_scope=data.get("in_scope", []),
+                out_of_scope=data.get("out_of_scope", []),
+                format_requirements=data.get("format_requirements", "Analisis akademis terstruktur"),
+                min_words=int(data.get("min_words", 350)),
+                max_words=int(data.get("max_words", 800)),
+                definition_of_done=data.get("definition_of_done", []),
+                is_modular_section_needed=bool(data.get("is_modular_section_needed", False)),
+            )
+        except Exception:
+            return None
 
     def _extract_topics(self, text: str) -> list[str]:
         """Extract clean core topics from text."""
@@ -122,15 +235,57 @@ class TaskContractExtractor:
         topics = self._extract_topics(q_clean)
         topic_str = ", ".join(topics[:3]) if topics else q_clean[:40]
 
+        # Case 0: Ambiguous Multi-Intent Heuristic Synthesis (e.g., Comparison within Literature Review / Bab 2)
+        if any(k in lower_q for k in INTENT_CATEGORIES["comparison"]) and any(k in lower_q for k in INTENT_CATEGORIES["literature_review"]):
+            return TaskContract(
+                primary_goal=f"Analisis komparatif metodologis {topic_str} untuk integrasi tinjauan pustaka (Bab 2)",
+                in_scope=[
+                    f"Parameter komparasi antar metode/teori dalam {topic_str}",
+                    "Kelebihan, limitasi, dan trade-off untuk landasan teoritis",
+                    "Sintesis kritis posisi penelitian terhadap metode yang dibandingkan",
+                ],
+                out_of_scope=["Penulisan bab komprehensif monolitik tanpa komparasi", "Ulasan sejarah panjang yang tidak relevan"],
+                format_requirements="Tinjauan komparatif akademis terstruktur (matriks komparasi + narasi sintesis kritis).",
+                min_words=450,
+                max_words=1000,
+                definition_of_done=[
+                    "Menetapkan parameter komparasi yang jelas dan relevan.",
+                    "Menyajikan perbandingan berimbang dengan sitasi bukti empiris vault.",
+                    "Menyajikan sintesis kritis atau arahan pemilihan metode untuk bab skripsi.",
+                ],
+                is_modular_section_needed=False,
+                rubric=[
+                    RubricCriterion(
+                        name="Ketajaman Komparasi Teoretis",
+                        weight=0.45,
+                        description="Kedalaman komparasi parameter metode untuk tinjauan pustaka.",
+                        score_5_benchmark="Parameter tajam, evaluatif, dan relevan dengan konteks skripsi.",
+                        score_3_benchmark="Hanya komparasi deskriptif superfisial.",
+                        score_1_benchmark="Gagal membandingkan metode secara terarah.",
+                    ),
+                    RubricCriterion(
+                        name="Rigor Bukti Vault",
+                        weight=0.40,
+                        description="Klaim perbandingan ditopang sitasi vault akurat.",
+                        score_5_benchmark="Setiap metrik perbandingan merujuk sitasi vault.",
+                        score_3_benchmark="Sebagian klaim komparasi tidak bersitasi.",
+                        score_1_benchmark="Tanpa sitasi atau terdapat halusinasi.",
+                    ),
+                ],
+            )
+
         # Case 1: Argument / Debate / Dialectic exploration
-        if any(k in lower_q for k in ["argumen", "argument", "pro kontra", "sisi positif", "sisi negatif", "sudut pandang", "tesis", "dialektika", "debat"]):
+        if any(k in lower_q for k in INTENT_CATEGORIES["argument"]):
+            is_brief = any(k in lower_q for k in ["singkat", "ringkas", "pendek", "brief"])
+            min_w = 60 if is_brief else 350
+            max_w = 400 if is_brief else 650
             return TaskContract(
                 primary_goal=f"Eksplorasi dialektika argumen seputar {topic_str}",
                 in_scope=[f"Argumen pro dan landasan bukti empiris {topic_str}", f"Sanggahan kontra dan limitasi {topic_str}", "Tesis sentral dan celah riset"],
                 out_of_scope=["Penulisan bab komprehensif monolitik", "Penurunan rumus matematis yang tidak diminta", "Pengantar buku teks umum"],
                 format_requirements="Matriks Dialektika: Tesis Sentral, Poin Pendukung (Pro + sitasi), Poin Sanggahan (Kontra + sitasi), dan Celah Riset (Gap).",
-                min_words=350,
-                max_words=650,
+                min_words=min_w,
+                max_words=max_w,
                 definition_of_done=[
                     "Menyajikan tesis sentral yang jelas (1-2 kalimat).",
                     "Menyajikan minimal 2 argumen pendukung dengan rujukan sitasi vault.",
@@ -280,8 +435,8 @@ class TaskContractExtractor:
             in_scope=[f"Konsep dan temuan relevan terkait {topic_str}", "Aplikasi dan implikasi riset"],
             out_of_scope=["Spekulasi di luar literatur", "Penyimpangan topik"],
             format_requirements="Respons akademis terstruktur dan berbobot ilmiah formal.",
-            min_words=250,
-            max_words=700,
+            min_words=50,
+            max_words=600,
             definition_of_done=[
                 "Menjawab inti pertanyaan secara substantif.",
                 "Mengaitkan jawaban dengan literatur vault jika tersedia.",
@@ -309,18 +464,18 @@ class TaskContractExtractor:
         )
 
     def extract(self, query: str) -> TaskContract:
-        """Extract contract using rule heuristics with optional zero-shot LLM refinement."""
-        heuristic_contract = self.extract_heuristic(query)
+        """Extract contract using rule heuristics or LLM disambiguation for ambiguous intent."""
+        # 1. When ambiguous intent signals are detected and AI engine is available, disambiguate via LLM
+        if self.is_ambiguous_intent(query) and self.engine:
+            ai_contract = self._extract_via_llm(query)
+            if ai_contract:
+                return ai_contract
 
-        # For queries with long or complex user instructions, optionally refine with fast LLM call if available
-        if len(query.split()) > 40 and self.engine and getattr(self.engine, "config", None):
-            try:
-                model_name = self.engine.config.default_model
-                api_key = self.engine.config.get_api_key_for_model(model_name)
-                if api_key and not api_key.startswith("mock") and getattr(self.engine, "_acompletion_fn", None) is None:
-                    # Can enhance contract via LLM if needed; heuristic provides robust baseline
-                    pass
-            except Exception:
-                pass
+        # 2. For queries with long or complex user instructions, optionally refine with LLM
+        if len(query.split()) > 40 and self.engine:
+            ai_contract = self._extract_via_llm(query)
+            if ai_contract:
+                return ai_contract
 
-        return heuristic_contract
+        # 3. Fallback to rule-based heuristic extraction
+        return self.extract_heuristic(query)

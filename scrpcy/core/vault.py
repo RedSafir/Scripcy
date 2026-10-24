@@ -89,7 +89,7 @@ class VaultManager:
         items: list[VaultItem] = []
         seen_paths: set[Path] = set()
 
-        candidate_dirs = [self.workspace.papers_dir, self.vault_dir]
+        candidate_dirs = [self.workspace.papers_dir, getattr(self.workspace, "web_dir", self.vault_dir / "web"), self.vault_dir]
         for cdir in candidate_dirs:
             if not cdir.exists():
                 continue
@@ -125,6 +125,22 @@ class VaultManager:
             return self.vector_vault.list_inventory().get("tables", [])
         except Exception:
             return []
+
+    def search_visual_assets(self, query: str, top_k: int = 2) -> list[dict[str, Any]]:
+        """Search and rank relevant academic figures and tables in the vault."""
+        try:
+            return self.vector_vault.search_visual_assets(query, top_k=top_k)
+        except Exception as e:
+            logger.debug(f"search_visual_assets error: {e}")
+            return []
+
+    def clean_and_reindex_visuals(self, engine: Any = None, model_name: str | None = None) -> dict[str, int]:
+        """Purge junk images/tables and re-extract clean figures and tables for all papers."""
+        try:
+            return self.vector_vault.reindex_all_visuals(engine=engine, model_name=model_name)
+        except Exception as e:
+            logger.warning(f"clean_and_reindex_visuals error: {e}")
+            return {"papers": 0, "images": 0, "tables": 0}
 
     def list_archived_files(self) -> list[VaultItem]:
         """List all soft-removed files inside vault/.archive/."""

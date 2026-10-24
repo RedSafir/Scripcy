@@ -199,3 +199,113 @@ class TestAgentLoopVerificationIntegration:
         assert "Grounding:" in output
         assert "Critic:" in output
         assert "Tokens:" in output
+
+
+class TestDualLayerCriticAudit:
+    """Tests separating Layer 1 (Contract Conformance) and Layer 2 (Epistemic Rigor)."""
+
+    def test_dod_checked_but_hallucinated_fails_epistemic_rigor(self) -> None:
+        from scrpcy.core.contracts import TaskContract
+        critic = DevilsAdvocate()
+        contract = TaskContract(
+            primary_goal="Analisis komparatif restorasi",
+            min_words=50,
+            max_words=200,
+            definition_of_done=["Menyajikan parameter", "Menyajikan data komparasi"],
+        )
+
+        answer = (
+            "Parameter komparasi mencakup laju penurunan emisi dan biaya implementasi teknologi pembasahan kembali [Page2023]. "
+            "Karakteristik hidrologis gambut tropis menunjukkan bahwa elevasi muka air tanah perlu dipertahankan pada ambang batas -40 cm. "
+            "Namun demikian, terdapat tantangan teknis struktural pada sekat kanal sekunder yang belum terselesaikan di lapangan riset [Smith2022]."
+        )
+        assert len(answer.split()) >= 45
+
+        # Fact check reports low grounding & hallucination warning
+        failing_fact_check = VerificationReport(
+            grounding_score=0.45,
+            total_claims=4,
+            supported_claims=1,
+            unsupported_claims=3,
+            hallucination_warning="Klaim angka penurunan emisi tidak ditemukan pada dokumen vault.",
+        )
+
+        report = critic.critique_heuristic(
+            query="Bandingkan metode restorasi",
+            answer=answer,
+            contract=contract,
+            fact_check_verdict=failing_fact_check,
+        )
+
+        # Layer 1 succeeds, but Layer 2 fails
+        assert report.contract_conformance is True
+        assert report.epistemic_rigor is False
+        assert report.passed is False
+        assert report.score < 7
+        assert any("grounding" in w.lower() or "halusinasi" in w.lower() for w in report.weaknesses)
+
+    def test_word_count_tolerance_285_words_passes_conformance(self) -> None:
+        from scrpcy.core.contracts import TaskContract
+        critic = DevilsAdvocate()
+        contract = TaskContract(
+            primary_goal="Analisis restorasi",
+            min_words=300,
+            max_words=500,
+            tolerance_pct=0.15,
+        )
+
+        # Build an answer of exactly 285 words (which is within [255, 575])
+        body_words = ["emisi", "lahan", "gambut", "mengalami", "dinamika", "signifikan", "[Page2023]", "namun", "terdapat", "limitasi"]
+        repeated = (body_words * 29)[:285]
+        answer_285 = " ".join(repeated)
+        assert len(answer_285.split()) == 285
+
+        passing_fact_check = VerificationReport(
+            grounding_score=0.90,
+            total_claims=5,
+            supported_claims=5,
+            unsupported_claims=0,
+        )
+
+        report = critic.critique_heuristic(
+            query="Analisis restorasi",
+            answer=answer_285,
+            contract=contract,
+            fact_check_verdict=passing_fact_check,
+        )
+
+        assert report.contract_conformance is True
+        assert report.epistemic_rigor is True
+        assert report.passed is True
+        assert report.score >= 7
+
+    def test_word_count_below_tolerance_fails_conformance(self) -> None:
+        from scrpcy.core.contracts import TaskContract
+        critic = DevilsAdvocate()
+        contract = TaskContract(
+            primary_goal="Analisis mendalam",
+            min_words=300,
+            max_words=600,
+            tolerance_pct=0.15,  # min effective: 255 words
+        )
+
+        # 150 words is far below 255 words
+        short_answer = " ".join(["gambut", "terbakar", "emisi", "[Smith2023]", "namun", "ada", "kendala"] * 25)[:150]
+
+        passing_fact_check = VerificationReport(
+            grounding_score=0.95,
+            total_claims=3,
+            supported_claims=3,
+            unsupported_claims=0,
+        )
+
+        report = critic.critique_heuristic(
+            query="Analisis mendalam",
+            answer=short_answer,
+            contract=contract,
+            fact_check_verdict=passing_fact_check,
+        )
+
+        assert report.contract_conformance is False
+        assert report.passed is False
+        assert any("batas minimum toleransi" in d for d in report.conformance_details)

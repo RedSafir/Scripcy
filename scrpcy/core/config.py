@@ -127,10 +127,45 @@ class ScrpcyConfig(BaseModel):
         default="./skills",
         description="Directory containing custom skill markdown prompts.",
     )
+    openalex_api_key: str | None = Field(
+        default=None,
+        description="Optional API key for OpenAlex (grants high-volume daily limits).",
+    )
+    semantic_scholar_api_key: str | None = Field(
+        default=None,
+        description="Optional API key for Semantic Scholar.",
+    )
+    enable_semantic_scholar: bool = Field(
+        default=True,
+        description="Whether Semantic Scholar is enabled in literature search federation.",
+    )
+    enable_crossref: bool = Field(
+        default=True,
+        description="Whether CrossRef is enabled in literature search federation.",
+    )
+    enable_opencitations: bool = Field(
+        default=False,
+        description="Whether OpenCitations is enabled in literature search federation.",
+    )
+    opencitations_api_key: str | None = Field(
+        default=None,
+        description="Optional API token for OpenCitations.",
+    )
+    unpaywall_email: str | None = Field(
+        default=None,
+        description="Email address used for Unpaywall and polite-pool API queries.",
+    )
 
     def get_api_key(self, provider: str) -> str | None:
         """Resolve API key for a provider, checking stored config then environment variables."""
         norm_provider = provider.lower().strip()
+        if norm_provider == "openalex" and self.openalex_api_key:
+            return self.openalex_api_key
+        if norm_provider in ("semantic_scholar", "semanticscholar") and self.semantic_scholar_api_key:
+            return self.semantic_scholar_api_key
+        if norm_provider == "opencitations" and self.opencitations_api_key:
+            return self.opencitations_api_key
+
         if norm_provider in self.api_keys and self.api_keys[norm_provider]:
             return self.api_keys[norm_provider]
 
@@ -145,6 +180,10 @@ class ScrpcyConfig(BaseModel):
             "mistral": ["MISTRAL_API_KEY"],
             "openrouter": ["OPENROUTER_API_KEY"],
             "9router": ["ROUTER9_API_KEY", "NINE_ROUTER_API_KEY", "OPENAI_API_KEY"],
+            "openalex": ["OPENALEX_API_KEY"],
+            "semantic_scholar": ["SEMANTIC_SCHOLAR_API_KEY", "S2_API_KEY"],
+            "semanticscholar": ["SEMANTIC_SCHOLAR_API_KEY", "S2_API_KEY"],
+            "opencitations": ["OPENCITATIONS_API_KEY"],
         }
 
         for env_var in env_mapping.get(norm_provider, [f"{norm_provider.upper()}_API_KEY"]):

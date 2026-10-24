@@ -321,75 +321,311 @@ class StudioDashboardMixin:
 
             return
 
-    def run_interactive_dashboard_settings(self) -> None:
-
-        """Dashboard settings menu."""
-
+    def run_interactive_settings(self) -> None:
+        """Unified Antigravity-style interactive settings hub for Dashboard and Project modes."""
         while True:
-
-            cur_m = _format_model_display_name(self.config.default_model)
+            cur_m_raw = self.get_active_project_model() if self.current_project else self.config.default_model
+            cur_m = _format_model_display_name(cur_m_raw)
+            cur_eff = self.get_active_project_effort() if self.current_project else "high"
+            cur_cit = self.config.citation.style.upper()
 
             header = Text()
-
-            header.append("Scrpcy Global Settings\n", style="bold bright_white")
-
-            header.append(f"Default Model: {cur_m} · Citation: {self.config.citation.style}", style="dim")
-
-
+            header.append("scrpcy", style="bold cyan")
+            header.append(" • ", style="dim")
+            header.append("Settings & Configuration\n", style="bold bright_white")
+            header.append(f"Model: {cur_m} ({cur_eff}) · Citation: {cur_cit} · Search: OpenAlex (Primary)", style="dim")
 
             opts = [
-
-                ("model", f"Switch Default Model ({cur_m})"),
-
-                ("citation", f"Citation Style ({self.config.citation.style.upper()})"),
-
-                ("keys", "Manage API Keys"),
-
-                ("back", "Back"),
-
+                ("model", f"Model & AI Reasoning ({cur_m} · {cur_eff} effort)"),
+                ("federation", "Academic Search & Providers (OpenAlex, S2, CrossRef, Unpaywall)"),
+                ("citation", f"Citation & Bibliography ({cur_cit})"),
+                ("agent", f"Agent Loop & Research Limits (Turns: {getattr(self.config, 'max_agent_turns', 15)}, Tokens: {getattr(self.config, 'max_output_tokens', 8192)})"),
+                ("keys", "API Keys Management (BYOK Credentials)"),
+                ("back", "Back to " + (f"Project '{self.current_project.name}'" if self.current_project else "Dashboard")),
             ]
 
-
-
-            ch = interactive_menu(opts, header=header, console=self.console)
+            ch = interactive_menu(
+                opts,
+                header=header,
+                console=self.console,
+                footer_hint="↑/↓ Navigate · enter Select · 1-6 Quick jump · esc Back",
+                allow_back=True,
+            )
 
             if ch in ("back", None):
+                return
+            if ch == "model":
+                self._run_interactive_model_settings()
+            elif ch == "federation":
+                self._run_interactive_federation_settings()
+            elif ch == "citation":
+                self.run_interactive_citation_settings()
+            elif ch == "agent":
+                self._run_interactive_agent_limits_settings()
+            elif ch == "keys":
+                self._run_interactive_keys_settings()
 
+    def run_interactive_dashboard_settings(self) -> None:
+        """Alias for backward compatibility."""
+        self.run_interactive_settings()
+
+    def _run_interactive_model_settings(self) -> None:
+        """Model selection and reasoning effort settings."""
+        while True:
+            cur_m_raw = self.get_active_project_model() if self.current_project else self.config.default_model
+            cur_m_label = _format_model_display_name(cur_m_raw)
+            cur_eff = self.get_active_project_effort() if self.current_project else "high"
+
+            header = Text()
+            header.append("Model & AI Reasoning Settings\n", style="bold bright_white")
+            header.append(f"Current Model: {cur_m_label} · Reasoning Effort: {cur_eff}", style="dim")
+
+            opts = [
+                ("switch", f"Switch Model (Currently: {cur_m_label})"),
+                ("effort", f"Change Reasoning Effort (Currently: {cur_eff})"),
+                ("back", "Back to Settings"),
+            ]
+
+            ch = interactive_menu(opts, header=header, console=self.console, allow_back=True)
+            if ch in ("back", None):
                 return
 
-            if ch == "model":
+            if ch == "switch":
+                r9_base = self.config.api_bases.get("9router", "http://localhost:20128/v1")
+                live_r9_models = fetch_9router_models(r9_base)
+                all_options: list[str] = [f"9router/{m}" for m in live_r9_models]
+                presets = [
+                    "gemini/gemini-2.5-flash",
+                    "gemini/gemini-2.5-pro",
+                    "anthropic/claude-3-5-sonnet",
+                    "deepseek/deepseek-chat",
+                    "openai/gpt-4o",
+                ]
+                for p in presets:
+                    if p not in all_options:
+                        all_options.append(p)
 
-                self.cmd_models("")
+                chosen = interactive_model_selector(
+                    current_model=cur_m_raw,
+                    current_effort=cur_eff,
+                    available_models=all_options,
+                    console=self.console,
+                )
+                if chosen:
+                    chosen_m, chosen_eff = chosen
+                    if self.current_project:
+                        self.project_manager.set_project_model(self.current_project.name, chosen_m)
+                        self.project_manager.set_project_effort(self.current_project.name, chosen_eff)
+                        self.current_project.model = chosen_m
+                    else:
+                        self.config.default_model = chosen_m
+                        self.config.save()
+                    if self.engine:
+                        self.engine.default_model = chosen_m
 
-            elif ch == "citation":
+            elif ch == "effort":
+                eff_opts = [
+                    ("low", "low    - Respons cepat, ideal untuk eksplorasi dan draf ringkas"),
+                    ("medium", "medium - Penalaran standar untuk sintesis akademis seimbang"),
+                    ("high", "high   - Penalaran mendalam untuk masalah kompleks (default)"),
+                    ("back", "Back"),
+                ]
+                eff_ch = interactive_menu(eff_opts, header="Pilih Level Reasoning Effort:", console=self.console, allow_back=True)
+                if eff_ch and eff_ch != "back":
+                    if self.current_project:
+                        self.project_manager.set_project_effort(self.current_project.name, eff_ch)
+                    else:
+                        self.config.reasoning_effort = eff_ch
+                        self.config.save()
 
-                self.run_interactive_citation_settings()
+    def _run_interactive_federation_settings(self) -> None:
+        """Academic Search & Literature Federation toggles and configurations."""
+        while True:
+            s2_en = getattr(self.config, "enable_semantic_scholar", True)
+            cr_en = getattr(self.config, "enable_crossref", True)
+            oc_en = getattr(self.config, "enable_opencitations", False)
+            up_email = self.config.unpaywall_email or "researcher@scrpcy.org (default)"
 
-            elif ch == "keys":
+            header = Text()
+            header.append("Academic Search & Literature Federation\n", style="bold bright_white")
+            header.append("Atur provider pencarian paper, toggle status, dan konfigurasi email Unpaywall.", style="dim")
 
-                self.cmd_models("list")
+            s2_lbl = "[bold cyan]Active[/bold cyan]" if s2_en else "[dim]Disabled[/dim]"
+            cr_lbl = "[bold cyan]Active[/bold cyan]" if cr_en else "[dim]Disabled[/dim]"
+            oc_lbl = "[bold cyan]Active[/bold cyan]" if oc_en else "[dim]Disabled[/dim]"
+
+            opts = [
+                ("s2_toggle", f"Semantic Scholar : {s2_lbl} (Tekan Enter untuk toggle)"),
+                ("cr_toggle", f"CrossRef API     : {cr_lbl} (Tekan Enter untuk toggle · Polite mailto)"),
+                ("oc_toggle", f"OpenCitations    : {oc_lbl} (Tekan Enter untuk toggle)"),
+                ("email", f"Unpaywall Email  : {up_email} (Ubah email Green OA)"),
+                ("openalex_info", "OpenAlex         : [bold cyan]Utama / Primary[/bold cyan] (Selalu aktif)"),
+                ("arxiv_info", "ArXiv Guard      : [bold cyan]Active[/bold cyan] (Khusus CS/AI/Math)"),
+                ("back", "Back to Settings"),
+            ]
+
+            ch = interactive_menu(opts, header=header, console=self.console, allow_back=True)
+            if ch in ("back", None):
+                return
+
+            if ch == "s2_toggle":
+                new_val = not s2_en
+                self.config_manager.update(enable_semantic_scholar=new_val)
+                self.config = self.config_manager.config
+            elif ch == "cr_toggle":
+                new_val = not cr_en
+                self.config_manager.update(enable_crossref=new_val)
+                self.config = self.config_manager.config
+            elif ch == "oc_toggle":
+                new_val = not oc_en
+                self.config_manager.update(enable_opencitations=new_val)
+                self.config = self.config_manager.config
+            elif ch == "email":
+                new_email = interactive_input_prompt(
+                    console=self.console,
+                    prompt_label="Unpaywall Email > ",
+                    initial_buffer=self.config.unpaywall_email or "",
+                ).strip()
+                if new_email and "@" in new_email:
+                    self.config_manager.update(unpaywall_email=new_email)
+                    self.config = self.config_manager.config
 
     def run_interactive_citation_settings(self) -> None:
+        """Select citation style and bibliography options."""
+        while True:
+            cur_style = self.config.citation.style.lower()
+            inc_doi = getattr(self.config.citation, "include_doi", True)
 
-        """Select citation style."""
+            header = Text()
+            header.append("Citation & Bibliography Style\n", style="bold bright_white")
+            header.append(f"Format sitasi aktif: {cur_style.upper()} · Sertakan DOI: {'Ya' if inc_doi else 'Tidak'}", style="dim")
 
-        opts = [
+            opts = [
+                ("apa", f"APA Style (American Psychological Association) {'[bold cyan](Active)[/bold cyan]' if cur_style == 'apa' else ''}"),
+                ("ieee", f"IEEE Style (Numbered [1], [2]) {'[bold cyan](Active)[/bold cyan]' if cur_style == 'ieee' else ''}"),
+                ("bibtex", rf"BibTeX Citation Keys (\[Vaswani2017]) {'[bold cyan](Active)[/bold cyan]' if cur_style == 'bibtex' else ''}"),
+                ("doi_toggle", f"Sertakan DOI di Bibliografi: {'[bold cyan]Ya[/bold cyan]' if inc_doi else '[dim]Tidak[/dim]'} (Tekan Enter)"),
+                ("back", "Back to Settings"),
+            ]
 
-            ("apa", "APA Style (American Psychological Association)"),
+            ch = interactive_menu(opts, header=header, console=self.console, allow_back=True)
+            if ch in ("back", None):
+                return
 
-            ("ieee", "IEEE Style (Numbered [1], [2])"),
+            if ch in ("apa", "ieee", "bibtex"):
+                self.config.citation.style = ch
+                self.config.save()
+            elif ch == "doi_toggle":
+                self.config.citation.include_doi = not inc_doi
+                self.config.save()
 
-            ("bibtex", "BibTeX Citation Keys ([Vaswani2017])"),
+    def _run_interactive_agent_limits_settings(self) -> None:
+        """Configure agent loop turn limits and token budget."""
+        while True:
+            turns = getattr(self.config, "max_agent_turns", 15)
+            refine = getattr(self.config, "max_refinement_turns", 8)
+            tokens = getattr(self.config, "max_output_tokens", 8192)
 
-            ("back", "Back"),
+            header = Text()
+            header.append("Agent Loop & Research Limits\n", style="bold bright_white")
+            header.append(f"Maksimal Turn: {turns} · Batas Refinement: {refine} · Plafon Token: {tokens}", style="dim")
 
-        ]
+            opts = [
+                ("turns", f"Maksimal Agent Loop Turns: {turns} turns"),
+                ("refine", f"Maksimal Refinement Rounds (Devil's Advocate): {refine} rounds"),
+                ("tokens", f"Maksimal Output Tokens: {tokens} tokens"),
+                ("back", "Back to Settings"),
+            ]
 
-        ch = interactive_menu(opts, header="Pilih Gaya Sitasi:", console=self.console)
+            ch = interactive_menu(opts, header=header, console=self.console, allow_back=True)
+            if ch in ("back", None):
+                return
 
-        if ch and ch != "back":
+            if ch == "turns":
+                t_opts = [
+                    ("5", "5 turns   - Sangat cepat, eksplorasi singkat"),
+                    ("10", "10 turns  - Standar responsif"),
+                    ("15", "15 turns  - Mendalam / Deep Analysis (default)"),
+                    ("25", "25 turns  - Riset ekstensif multi-paper"),
+                    ("back", "Back"),
+                ]
+                t_ch = interactive_menu(t_opts, header="Pilih Batas Maksimal Agent Turns:", console=self.console, allow_back=True)
+                if t_ch and t_ch != "back":
+                    self.config_manager.update(max_agent_turns=int(t_ch))
+                    self.config = self.config_manager.config
+            elif ch == "refine":
+                r_opts = [
+                    ("3", "3 rounds  - Cepat"),
+                    ("5", "5 rounds  - Standar"),
+                    ("8", "8 rounds  - Rigorous Fact-Checking (default)"),
+                    ("12", "12 rounds - Maksimum validasi dialektis"),
+                    ("back", "Back"),
+                ]
+                r_ch = interactive_menu(r_opts, header="Pilih Batas Putaran Refinement:", console=self.console, allow_back=True)
+                if r_ch and r_ch != "back":
+                    self.config_manager.update(max_refinement_turns=int(r_ch))
+                    self.config = self.config_manager.config
+            elif ch == "tokens":
+                tok_opts = [
+                    ("4096", "4,096 tokens  (~3,000 kata)"),
+                    ("8192", "8,192 tokens  (~6,000 kata - Default)"),
+                    ("16384", "16,384 tokens (~12,000 kata - Bab Lengkap)"),
+                    ("32768", "32,768 tokens (~24,000 kata - Naskah Ekstensif)"),
+                    ("back", "Back"),
+                ]
+                tok_ch = interactive_menu(tok_opts, header="Pilih Plafon Output Tokens:", console=self.console, allow_back=True)
+                if tok_ch and tok_ch != "back":
+                    self.config_manager.update(max_output_tokens=int(tok_ch))
+                    self.config = self.config_manager.config
 
-            self.cmd_settings(f"set citation.style {ch}")
+    def _run_interactive_keys_settings(self) -> None:
+        """Manage API keys for LLM and Academic Search providers."""
+        while True:
+            header = Text()
+            header.append("API Keys & Credentials (BYOK)\n", style="bold bright_white")
+            header.append("Disimpan secara lokal di mesin Anda (~/.scrpcy/config.json).", style="dim")
+
+            providers = [
+                ("gemini", "Google Gemini"),
+                ("anthropic", "Anthropic Claude"),
+                ("openai", "OpenAI"),
+                ("deepseek", "DeepSeek"),
+                ("groq", "Groq"),
+                ("9router", "9Router Gateway"),
+                ("openalex", "OpenAlex"),
+                ("semantic_scholar", "Semantic Scholar"),
+                ("opencitations", "OpenCitations"),
+            ]
+
+            opts = []
+            for p_id, p_name in providers:
+                val = self.config.get_api_key(p_id)
+                if val:
+                    masked = f"{val[:3]}...{val[-4:]}" if len(val) > 8 else "***"
+                    status = f"[bold cyan]Configured ({masked})[/bold cyan]"
+                else:
+                    status = "[dim]Not Set[/dim]"
+                opts.append((p_id, f"{p_name:<20} : {status}"))
+            opts.append(("back", "Back to Settings"))
+
+            ch = interactive_menu(opts, header=header, console=self.console, allow_back=True)
+            if ch in ("back", None):
+                return
+
+            prov_name = dict(providers).get(ch, ch)
+            prompt_str = f"API Key {prov_name} (kosongkan untuk batal, 'clear' untuk hapus) > "
+            new_key = interactive_input_prompt(
+                console=self.console,
+                prompt_label=prompt_str,
+                initial_buffer="",
+            ).strip()
+
+            if new_key.lower() == "clear":
+                self.config.set_api_key(ch, "")
+                self.config.save()
+            elif new_key:
+                self.config.set_api_key(ch, new_key)
+                self.config.save()
 
     def print_dashboard_help(self) -> None:
         """Render simple available commands for Dashboard mode."""

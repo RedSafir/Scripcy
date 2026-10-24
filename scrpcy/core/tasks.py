@@ -75,6 +75,16 @@ class TaskInfo(BaseModel):
             return 0.0
 
 
+class CheckpointRequest:
+    """Thread-safe request from background agent loop to UI main thread."""
+
+    def __init__(self, task_id: str, prompt_data: dict[str, Any]) -> None:
+        self.task_id = task_id
+        self.prompt_data = prompt_data
+        self.response: Any = None
+        self.done_event = threading.Event()
+
+
 class TaskManager:
     """Manages background threads, logging, cancellation, and task status with SQLite persistence."""
 
@@ -87,6 +97,7 @@ class TaskManager:
         self._completion_callbacks: list[Callable[[TaskInfo], None]] = []
         self._lock = threading.RLock()
         self._counter = 1
+        self._checkpoints: dict[str, CheckpointRequest] = {}
         if self.db_path:
             self.set_db_path(self.db_path)
 
@@ -374,6 +385,10 @@ class TaskManager:
             return False
 
         with self._lock:
+            req = self._checkpoints.get(target.id)
+            if req:
+                req.response = "cancelled"
+                req.done_event.set()
             event = self._cancel_events.get(target.id)
             if event:
                 event.set()
@@ -392,6 +407,19 @@ class TaskManager:
         return False
 
     cancel = cancel_task
+
+    def cancel_session_tasks(self, session_id: str) -> list[str]:
+        """Cancel all running tasks associated with a specific session."""
+        with self._lock:
+            running_ids = [
+                t.id for t in self._tasks.values()
+                if t.session_id == session_id and t.status == "running"
+            ]
+        cancelled = []
+        for tid in running_ids:
+            if self.cancel_task(tid):
+                cancelled.append(tid)
+        return cancelled
 
     def clear_completed(self) -> int:
         """Remove finished or cancelled tasks from memory and database."""
@@ -417,3 +445,31 @@ class TaskManager:
     def shutdown(self, wait: bool = False) -> None:
         """Shut down background executor."""
         self._executor.shutdown(wait=wait, cancel_futures=True)
+
+
+    def request_checkpoint(self, task_id: str, prompt_data: dict[str, Any], timeout: float = 300.0) -> Any:
+        """Called by background worker thread to pause and ask user for decision."""
+        req = CheckpointRequest(task_id, prompt_data)
+        with self._lock:
+            self._checkpoints[task_id] = req
+        signaled = req.done_event.wait(timeout=timeout)
+        with self._lock:
+            self._checkpoints.pop(task_id, None)
+        if not signaled:
+            return None
+        return req.response
+
+    def get_pending_checkpoint(self, task_id: str) -> CheckpointRequest | None:
+        """Called by main UI thread to inspect if worker is waiting for decision."""
+        with self._lock:
+            return self._checkpoints.get(task_id)
+
+    def resolve_checkpoint(self, task_id: str, response: Any) -> bool:
+        """Called by main UI thread to provide user decision and unblock worker."""
+        with self._lock:
+            req = self._checkpoints.get(task_id)
+            if req:
+                req.response = response
+                req.done_event.set()
+                return True
+        return False

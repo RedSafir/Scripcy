@@ -410,9 +410,22 @@ class LLMEngine:
         if not query or not query.strip():
             raise EngineError("Query string cannot be empty.")
 
-        skill = self.skills_loader.get_skill(skill_name)
-        active_model = model or skill.model or self.config.default_model
-        active_temp = temperature if temperature is not None else (skill.temperature if skill.temperature is not None else 0.2)
+        if skill_name and skill_name != "scrpcy_manual":
+            try:
+                skill = self.skills_loader.get_skill(skill_name)
+                active_model = model or skill.model or self.config.default_model
+                active_temp = temperature if temperature is not None else (skill.temperature if skill.temperature is not None else 0.2)
+                sys_prompt = skill.system_prompt
+            except Exception:
+                from scrpcy.core.skills import DEFAULT_SCRPCY_MANUAL_PROMPT
+                active_model = model or self.config.default_model
+                active_temp = temperature if temperature is not None else 0.2
+                sys_prompt = DEFAULT_SCRPCY_MANUAL_PROMPT
+        else:
+            from scrpcy.core.skills import DEFAULT_SCRPCY_MANUAL_PROMPT
+            active_model = model or self.config.default_model
+            active_temp = temperature if temperature is not None else 0.2
+            sys_prompt = DEFAULT_SCRPCY_MANUAL_PROMPT
         api_key = self.config.get_api_key_for_model(active_model)
         api_base = self.config.get_api_base_for_model(active_model)
 
@@ -438,7 +451,6 @@ class LLMEngine:
                 f"### RESEARCH QUESTION / INSTRUCTION:\n{query}"
             )
 
-        sys_prompt = skill.system_prompt
         if "### SCRPCY ENVIRONMENT & SEAMLESS ACTION PROTOCOL:" not in sys_prompt:
             from scrpcy.core.skills import SCRPCY_AGENTIC_PROTOCOL
             sys_prompt = f"{sys_prompt}\n\n{SCRPCY_AGENTIC_PROTOCOL}"
@@ -465,7 +477,7 @@ class LLMEngine:
             kwargs["max_tokens"] = max_output_tokens
 
         accumulated_output: list[str] = []
-        input_tokens_est = estimate_tokens(user_content + skill.system_prompt)
+        input_tokens_est = estimate_tokens(user_content + sys_prompt)
 
         try:
             response_stream = await self._invoke_acompletion(**kwargs)
@@ -523,8 +535,15 @@ class LLMEngine:
         )
 
         accumulated: list[str] = []
-        skill = self.skills_loader.get_skill(skill_name)
-        active_model = model or skill.model or self.config.default_model
+        active_model = model or self.config.default_model
+        resolved_skill_name = skill_name
+        if skill_name and skill_name != "scrpcy_manual":
+            try:
+                skill = self.skills_loader.get_skill(skill_name)
+                active_model = model or skill.model or self.config.default_model
+                resolved_skill_name = skill.name
+            except Exception:
+                pass
 
         async for token in self.stream_query(
             query=query,
@@ -544,5 +563,5 @@ class LLMEngine:
             answer=full_answer,
             evidence_chunks=evidence_chunks,
             model=active_model,
-            skill=skill.name,
+            skill=resolved_skill_name,
         )

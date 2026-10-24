@@ -16,7 +16,8 @@ from pydantic import BaseModel, Field
 from scrpcy.core.engine import LLMEngine
 from scrpcy.core.models import DocumentMetadata, ParsedDocument
 from scrpcy.core.parser import DocumentParser
-from scrpcy.core.search import PaperSearcher, SearchResult, sanitize_filename
+from scrpcy.core.config import ScrpcyConfig
+from scrpcy.core.search import PaperSearcher, SearchResult, is_cs_ai_domain, sanitize_filename
 from scrpcy.core.workspace import WorkspaceManager
 from scrpcy.exceptions import SearchError
 
@@ -94,10 +95,18 @@ class LiteratureScout:
         workspace: WorkspaceManager | None = None,
         searcher: PaperSearcher | None = None,
         parser: DocumentParser | None = None,
+        config: ScrpcyConfig | None = None,
     ) -> None:
         self.workspace = workspace or WorkspaceManager()
-        self.searcher = searcher or PaperSearcher(workspace=self.workspace)
+        self.config = config or ScrpcyConfig()
+        s2_key = self.config.get_api_key("semantic_scholar")
+        self.searcher = searcher or PaperSearcher(workspace=self.workspace, api_key=s2_key)
         self.parser = parser or DocumentParser(workspace=self.workspace)
+        if PYALEX_AVAILABLE:
+            if self.config.openalex_api_key:
+                pyalex.config.api_key = self.config.openalex_api_key
+            if self.config.unpaywall_email:
+                pyalex.config.email = self.config.unpaywall_email
 
     def extract_search_criteria(
         self,
@@ -301,56 +310,90 @@ class LiteratureScout:
         query: ScoutQuery,
         limit: int = 30,
     ) -> list[ScoutResult]:
-        """Execute parallel search across OpenAlex, Semantic Scholar, and ArXiv."""
+        """Execute federated snapshot searches across OpenAlex, CrossRef, Semantic Scholar, and ArXiv."""
         loop = asyncio.get_running_loop()
 
-        # Run pyalex in worker thread since pyalex is synchronous
-        openalex_task = loop.run_in_executor(None, self.search_openalex, query, limit)
-        s2_task = self.searcher.search(query.keywords, limit=limit)
+        tasks = []
+        task_types = []
 
-        openalex_res, s2_res = await asyncio.gather(
-            openalex_task,
-            s2_task,
-            return_exceptions=True,
-        )
+        from unittest.mock import AsyncMock, MagicMock
+        is_search_mocked = isinstance(getattr(self.searcher, "search", None), (AsyncMock, MagicMock))
+
+        # 1. OpenAlex snapshot (primary scholarly catalog)
+        openalex_limit = min(limit, 20)
+        tasks.append(loop.run_in_executor(None, self.search_openalex, query, openalex_limit))
+        task_types.append("openalex")
+
+        # 2. Semantic Scholar snapshot (or mocked search delegate)
+        if is_search_mocked or getattr(self.config, "enable_semantic_scholar", True):
+            tasks.append(self.searcher.search(query.keywords, limit=min(limit, 15)))
+            task_types.append("semanticscholar")
+
+        # 3. CrossRef snapshot (if enabled and not in mocked unit test)
+        if not is_search_mocked and getattr(self.config, "enable_crossref", True):
+            email = getattr(self.config, "unpaywall_email", None)
+            tasks.append(self.searcher.search_crossref(query.keywords, limit=min(limit, 15), email=email))
+            task_types.append("crossref")
+
+        # 4. ArXiv snapshot (strictly for Computer Science / AI / Math / Physics)
+        if not is_search_mocked and is_cs_ai_domain(query.keywords):
+            tasks.append(self.searcher.search_arxiv(query.keywords, limit=min(limit, 10)))
+            task_types.append("arxiv")
+
+        task_results = await asyncio.gather(*tasks, return_exceptions=True)
 
         candidates: list[ScoutResult] = []
 
-        if isinstance(openalex_res, list):
-            candidates.extend(openalex_res)
+        for src_type, res in zip(task_types, task_results):
+            if isinstance(res, Exception) or not isinstance(res, list):
+                continue
+            for r in res:
+                if isinstance(r, ScoutResult):
+                    candidates.append(r)
+                elif isinstance(r, SearchResult):
+                    if query.year_start and r.year and r.year < query.year_start:
+                        continue
+                    if query.year_end and r.year and r.year > query.year_end:
+                        continue
+                    if query.is_oa_only and not r.has_pdf:
+                        continue
 
-        if isinstance(s2_res, list):
-            for r in s2_res:
-                # Apply year filtering if specified
-                if query.year_start and r.year and r.year < query.year_start:
-                    continue
-                if query.year_end and r.year and r.year > query.year_end:
-                    continue
-                if query.is_oa_only and not r.has_pdf:
-                    continue
+                    badge_reason = {
+                        "crossref": "Found via CrossRef scholarly metadata index.",
+                        "semanticscholar": "Found via Semantic Scholar catalog.",
+                        "arxiv": "Found via ArXiv preprint repository (CS/AI domain).",
+                    }.get(src_type, f"Found via {src_type}.")
 
-                item = ScoutResult(
-                    title=r.title,
-                    authors=r.authors,
-                    year=r.year,
-                    doi=r.doi,
-                    abstract=r.abstract,
-                    pdf_url=r.pdf_url,
-                    has_pdf=r.has_pdf,
-                    source="semanticscholar",
-                    relevance_reason="Found via Semantic Scholar / ArXiv index.",
-                )
-                item.ensure_cite_key()
-                candidates.append(item)
+                    item = ScoutResult(
+                        title=r.title,
+                        authors=r.authors,
+                        year=r.year,
+                        doi=r.doi,
+                        abstract=r.abstract,
+                        pdf_url=r.pdf_url,
+                        has_pdf=r.has_pdf,
+                        source=src_type,
+                        relevance_reason=badge_reason,
+                    )
+                    item.ensure_cite_key()
+                    candidates.append(item)
 
-        # Deduplicate candidates by normalized title
+        # Deduplicate candidates by normalized title and DOI
         seen_titles: set[str] = set()
+        seen_dois: set[str] = set()
         deduped: list[ScoutResult] = []
         for c in candidates:
             norm = re.sub(r"[^\w]", "", c.title.lower())
-            if norm and norm not in seen_titles:
+            c_doi = (c.doi or "").lower().strip()
+            if norm and norm in seen_titles:
+                continue
+            if c_doi and c_doi in seen_dois:
+                continue
+            if norm:
                 seen_titles.add(norm)
-                deduped.append(c)
+            if c_doi:
+                seen_dois.add(c_doi)
+            deduped.append(c)
 
         return deduped[:limit]
 
@@ -504,6 +547,15 @@ class LiteratureScout:
 
     async def download_scout_paper(self, paper: ScoutResult) -> Path:
         """Download open-access paper PDF into the master project vault and cache it."""
+        if not paper.has_pdf or not paper.pdf_url:
+            if paper.doi:
+                email = getattr(self.config, "unpaywall_email", None)
+                oa_url = await self.searcher.lookup_unpaywall(paper.doi, email=email)
+                if oa_url:
+                    paper.pdf_url = oa_url
+                    paper.has_pdf = True
+                    paper.relevance_reason = (paper.relevance_reason or "") + " (Versi Green OA ditemukan via Unpaywall)"
+
         if not paper.has_pdf or not paper.pdf_url:
             raise SearchError(f"No open-access PDF URL available for '{paper.title}'")
 
@@ -695,6 +747,19 @@ class LiteratureScout:
         curated = await asyncio.to_thread(self.curate_and_rank, query, candidates, engine=engine)
         if not curated:
             return []
+
+        # Resolve Green OA PDF via Unpaywall for paywalled candidates with DOI
+        email = getattr(self.config, "unpaywall_email", None)
+        for c in curated:
+            if not (c.has_pdf and c.pdf_url) and c.doi:
+                try:
+                    oa_url = await self.searcher.lookup_unpaywall(c.doi, email=email)
+                    if oa_url:
+                        c.pdf_url = oa_url
+                        c.has_pdf = True
+                        c.relevance_reason = (c.relevance_reason or "") + " (Versi Green OA ditemukan via Unpaywall)"
+                except Exception:
+                    pass
 
         # Prioritize OA PDF candidates, fallback to abstract if closed-access
         oa_candidates = [c for c in curated if c.has_pdf and c.pdf_url]

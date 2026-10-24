@@ -94,6 +94,67 @@ def test_agentic_loop_internal_vault_read(
     assert call_count == 2
 
 
+def test_agentic_loop_internal_web_scout(
+    temp_workspace: WorkspaceManager,
+    tmp_path: Path,
+) -> None:
+    """When AI requests an internal web tool (/web https://www.bps.go.id/inflasi), Scrpcy ingests it, shows live indicators, and completes."""
+    console = Console(file=io.StringIO(), force_terminal=True, color_system=None)
+    pm = ProjectManager(registry_file=tmp_path / "reg.json")
+    proj = pm.create_project("inflasi_study", temp_workspace.root_dir)
+    cfg = ScrpcyConfig(workspace_path=str(temp_workspace.root_dir))
+
+    call_count = 0
+
+    async def mock_acompletion(**kwargs: Any):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            yield MockStreamChunk("```scrpcy\n/web https://www.bps.go.id/inflasi-2023\n```")
+        else:
+            yield MockStreamChunk("Berdasarkan rilis resmi BPS 2023, laju inflasi tercatat 2,61 persen. [status: ok]")
+
+    engine = LLMEngine(
+        config=cfg,
+        acompletion_fn=mock_acompletion,
+    )
+
+    studio = CLIStudio(
+        workspace=temp_workspace,
+        config=cfg,
+        console=console,
+        project_manager=pm,
+        engine=engine,
+    )
+    studio.open_project(proj)
+    studio.config.api_keys["gemini"] = "mock_key"
+
+    temp_workspace.save_to_cache(
+        "bps2023inflasi.md",
+        "---\ntitle: Inflasi Indonesia 2023\nauthors: ['BPS']\nyear: 2023\ncite_key: bps2023inflasi\nsource_type: official_web\n---\nInflasi tahun 2023 adalah 2,61 persen.",
+    )
+
+    mock_parsed = MagicMock()
+    mock_parsed.metadata.title = "Inflasi Indonesia 2023"
+    mock_parsed.metadata.institution = "Badan Pusat Statistik (BPS)"
+    mock_parsed.metadata.cite_key = "bps2023inflasi"
+    mock_parsed.metadata.authority_score = 0.95
+    mock_parsed.metadata.authority_tier = 1
+    mock_parsed.body_markdown = "Inflasi tahun 2023 adalah 2,61 persen."
+
+    async def mock_ingest(url, **kwargs):
+        return mock_parsed
+
+    with patch.object(studio.web_scout, "ingest_url", side_effect=mock_ingest):
+        studio.handle_chat("Berapa angka inflasi resmi Indonesia tahun 2023?")
+
+    output = studio.console.file.getvalue()
+    assert "Mengunduh Web" in output or "Menelusuri & memproses web resmi" in output
+    assert "Menganalisis" in output
+    assert "2,61 persen" in output
+    assert call_count == 2
+
+
 def test_agentic_loop_direct_final_response(
     temp_workspace: WorkspaceManager,
     tmp_path: Path,

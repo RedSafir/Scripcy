@@ -28,6 +28,8 @@ __all__ = [
     "MockMCPTransport",
     "MockMetadataExtractor",
     "NoOpenAccessPDFError",
+    "OfficialDomainFilter",
+    "OfficialSourceRejectedError",
     "PDFParseError",
     "ParsedDocument",
     "PaperSearcher",
@@ -40,7 +42,11 @@ __all__ = [
     "SkillNotFoundError",
     "SkillsLoader",
     "StdioMCPTransport",
+    "SubstantiveVisualAsset",
     "SynthesisResult",
+    "WebScout",
+    "WebScoutError",
+    "WebSearchResult",
     "WordCraftClient",
     "WorkspaceError",
     "WorkspaceManager",
@@ -97,6 +103,12 @@ _LAZY_EXPORTS = {
     "SearchError": "scrpcy.exceptions",
     "SkillNotFoundError": "scrpcy.exceptions",
     "WorkspaceError": "scrpcy.exceptions",
+    "WebScoutError": "scrpcy.exceptions",
+    "OfficialSourceRejectedError": "scrpcy.exceptions",
+    "OfficialDomainFilter": "scrpcy.core.web_scout",
+    "WebScout": "scrpcy.core.web_scout",
+    "WebSearchResult": "scrpcy.core.web_scout",
+    "SubstantiveVisualAsset": "scrpcy.core.web_scout",
 }
 
 

@@ -38,6 +38,7 @@ class WorkspaceManager:
         self.cache_dir = self.root_dir / "cache"
         self.vault_dir = self.root_dir / "vault"
         self.papers_dir = self.vault_dir / "papers"
+        self.web_dir = self.vault_dir / "web"
         self.images_dir = self.vault_dir / "images"
         self.tables_dir = self.vault_dir / "tables"
 
@@ -51,6 +52,7 @@ class WorkspaceManager:
             self.cache_dir.mkdir(parents=True, exist_ok=True)
             self.vault_dir.mkdir(parents=True, exist_ok=True)
             self.papers_dir.mkdir(parents=True, exist_ok=True)
+            self.web_dir.mkdir(parents=True, exist_ok=True)
             self.images_dir.mkdir(parents=True, exist_ok=True)
             self.tables_dir.mkdir(parents=True, exist_ok=True)
         except OSError as exc:

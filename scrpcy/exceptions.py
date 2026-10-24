@@ -61,4 +61,9 @@ class MCPConnectionError(MCPError):
     """Raised when communication with the MCP server fails or times out."""
 
 
+class WebScoutError(ScrpcyError):
+    """Base exception for web searching, official filtering, and web ingestion errors."""
 
+
+class OfficialSourceRejectedError(WebScoutError):
+    """Raised when a candidate web source is rejected for failing official authority criteria."""

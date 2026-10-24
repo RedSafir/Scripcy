@@ -582,14 +582,34 @@ class StudioVaultMixin:
             return
         img = images[idx]
         img_p = Path(img.get("file_path", ""))
-        self.console.print(f"\n[bold bright_white]Gambar #{arg} [{img_p.name}][/bold bright_white]")
-        self.console.print(f"[dim]Paper Sumber : {img.get('paper_id')} (Halaman {img.get('page_num')})[/dim]")
-        self.console.print(f"[dim]Dimensi      : {img.get('width')} x {img.get('height')} px[/dim]")
-        self.console.print(f"[dim]File Path    : {img_p}[/dim]")
-        if img.get("caption"):
-            self.console.print(f"[dim]Caption Teks : {img.get('caption')}[/dim]")
-        if img.get("ai_analysis"):
-            self.console.print(f"\n[bold cyan]Interpretasi Visual Multimodal AI:[/bold cyan]\n{img.get('ai_analysis')}\n")
+        from scrpcy.ui.terminal_image import render_visual_panel
+        v_dict = dict(img)
+        v_dict["index"] = idx + 1
+        v_dict["asset_type"] = "image"
+        v_panel = render_visual_panel(v_dict, console=self.console)
+        if v_panel:
+            self.console.print()
+            self.console.print(v_panel)
+            self.console.print()
+        else:
+            self.console.print(f"\n[bold bright_white]Gambar #{arg} [{img_p.name}][/bold bright_white]")
+            self.console.print(f"[dim]Paper Sumber : {img.get('paper_id')} (Halaman {img.get('page_num')})[/dim]")
+            self.console.print(f"[dim]Dimensi      : {img.get('width')} x {img.get('height')} px[/dim]")
+            self.console.print(f"[dim]File Path    : {img_p}[/dim]")
+            if img.get("caption"):
+                self.console.print(f"[dim]Caption Teks : {img.get('caption')}[/dim]")
+            if img.get("ai_analysis"):
+                self.console.print(f"\n[bold cyan]Interpretasi Visual Multimodal AI:[/bold cyan]\n{img.get('ai_analysis')}\n")
+
+    def cmd_vault_reindex_visuals(self) -> None:
+        """Purge junk images/tables and re-extract informative academic figures."""
+        if not self.vault_manager:
+            self.console.print("[red][x] Tidak ada vault aktif.[/red]\n")
+            return
+        self.console.print("[bold cyan]● Memulai pembersihan & pengindeksan ulang visual ilmiah...[/bold cyan]")
+        model_name = self.get_active_project_model()
+        res = self.vault_manager.clean_and_reindex_visuals(engine=self.engine, model_name=model_name)
+        self.console.print(f"[bold green][✓] Pembersihan visual tuntas: {res.get('papers', 0)} paper diproses, {res.get('images', 0)} gambar informatif terindeks, {res.get('tables', 0)} tabel terindeks.[/bold green]\n")
 
     def print_vault_help(self) -> None:
         """Render instructions for Vault sub-mode."""
@@ -646,6 +666,8 @@ class StudioVaultMixin:
             self.clear_screen()
         elif cmd in ("curate", "kurasi"):
             self._cmd_vault_curate(arg)
+        elif cmd in ("reindex-visuals", "clean-visuals", "reindex_visuals"):
+            self.cmd_vault_reindex_visuals()
         else:
             self.console.print(f"[yellow]Unknown vault command: '{clean}'. Type 'help' to see vault commands, or 'back' to return.[/yellow]\n")
 

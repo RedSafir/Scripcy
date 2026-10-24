@@ -160,19 +160,11 @@ class StudioChatHubMixin:
 
 
             columns = [
-
                 {"name": "#", "justify": "right", "width": 3, "style": "dim"},
-
-                {"name": "Session Name", "style": "bold white", "width": 24},
-
+                {"name": "Session Name", "style": "bold white", "width": 30},
                 {"name": "Status", "justify": "center", "width": 14},
-
-                {"name": "Persona / Skill", "style": "cyan", "width": 20},
-
                 {"name": "Exchanges", "justify": "center", "width": 12, "style": "dim"},
-
-                {"name": "Last Updated", "style": "dim", "width": 16},
-
+                {"name": "Last Updated", "style": "dim", "width": 18},
             ]
 
 
@@ -214,19 +206,11 @@ class StudioChatHubMixin:
                 last_str = s.updated_at[:16].replace("T", " ") if s.updated_at else ""
 
                 return [
-
                     str(idx + 1),
-
                     name_text,
-
                     st_badge,
-
-                    s.active_skill,
-
                     f"{s.message_count} msgs",
-
                     last_str,
-
                 ]
 
 
@@ -291,8 +275,9 @@ class StudioChatHubMixin:
                 self.sub_mode = "sessions"
 
             elif action == "terminate" and selected_sess:
-
                 self.chat_manager.update_session_status(selected_sess.id, "closed")
+                if hasattr(self, "task_manager") and self.task_manager:
+                    self.task_manager.cancel_session_tasks(selected_sess.id)
 
             elif action == "delete" and selected_sess:
                 confirmed = interactive_confirm(
@@ -303,6 +288,8 @@ class StudioChatHubMixin:
                     console=self.console,
                 )
                 if confirmed:
+                    if hasattr(self, "task_manager") and self.task_manager:
+                        self.task_manager.cancel_session_tasks(selected_sess.id)
                     self.chat_manager.delete_session(selected_sess.id)
                     if self.active_chat_session and self.active_chat_session.id == selected_sess.id:
                         self.active_chat_session = None
@@ -354,7 +341,9 @@ class StudioChatHubMixin:
 
 
 
-        self.console.print(f"\n[bold cyan]● Sesi Aktif: {session.name}[/bold cyan] [dim]({session.active_skill} • {model_label})[/dim]")
+        eff = self.get_active_project_effort()
+        skill_lbl = f" • {session.active_skill}" if session.active_skill and session.active_skill != "scrpcy_manual" else ""
+        self.console.print(f"\n[bold cyan]● Sesi Aktif: {session.name}[/bold cyan] [dim]({model_label} • {eff} effort{skill_lbl})[/dim]")
 
         # Show last few messages for orientation
         messages = self.chat_manager.get_messages(session.id, limit=4)
@@ -440,8 +429,9 @@ class StudioChatHubMixin:
 
 
             if clean_lower in ("/close", "close", "/terminate", "terminate", "/exit", "exit"):
-
                 self.chat_manager.update_session_status(session.id, "closed")
+                if hasattr(self, "task_manager") and self.task_manager:
+                    self.task_manager.cancel_session_tasks(session.id)
 
                 self.console.print(f"\n[dim]● Sesi '{session.name}' ditutup (terminated).[/dim]\n")
 
@@ -605,6 +595,8 @@ class StudioChatHubMixin:
                 all_sessions = self.chat_manager.list_sessions()
                 total = len(all_sessions)
                 for s in all_sessions:
+                    if hasattr(self, "task_manager") and self.task_manager:
+                        self.task_manager.cancel_session_tasks(s.id)
                     self.chat_manager.delete_session(s.id)
                 self.active_chat_session = None
                 self.console.print(f"[bold green][✓] Berhasil menghapus semua ({total}) sesi chat.[/bold green]\n")
@@ -618,6 +610,8 @@ class StudioChatHubMixin:
             for t in targets:
                 session = self.chat_manager.get_session(t)
                 if session:
+                    if hasattr(self, "task_manager") and self.task_manager:
+                        self.task_manager.cancel_session_tasks(session.id)
                     self.chat_manager.delete_session(session.id)
                     deleted_names.append(session.name)
                     if self.active_chat_session and self.active_chat_session.id == session.id:
@@ -715,7 +709,8 @@ class StudioChatHubMixin:
             elif msg.role == "system":
                 self.render_system_message(msg.content)
             else:
-                self.console.print(f"[bold cyan]AI ({self.active_chat_session.active_skill}):[/bold cyan]\n")
+                ai_lbl = f"AI ({self.active_chat_session.active_skill})" if self.active_chat_session and self.active_chat_session.active_skill and self.active_chat_session.active_skill != "scrpcy_manual" else "AI"
+                self.console.print(f"[bold cyan]{ai_lbl}:[/bold cyan]\n")
                 render_academic_markdown(msg.content, console=self.console)
                 if msg.citations:
                     self.console.print(f"[dim]Citations: {', '.join(msg.citations)}[/dim]")
