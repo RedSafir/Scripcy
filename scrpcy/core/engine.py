@@ -12,6 +12,7 @@ from typing import Any, Callable
 from pydantic import BaseModel, Field
 
 from scrpcy.core.config import ScrpcyConfig
+from scrpcy.core.crusher import MarkdownMinifier
 from scrpcy.core.models import ParsedDocument
 from scrpcy.core.skills import Skill, SkillsLoader
 from scrpcy.core.tracker import TokenTracker
@@ -342,15 +343,16 @@ class EvidenceSynthesizer:
         return selected
 
     def format_context_prompt(self, chunks: list[EvidenceChunk]) -> str:
-        """Render evidence passages into a clean prompt context block."""
+        """Render evidence passages into a clean prompt context block with MarkdownMinifier compression."""
         if not chunks:
             return ""
 
         formatted_blocks = ["### RETRIEVED RESEARCH EVIDENCE CONTEXT:"]
         for idx, chunk in enumerate(chunks, 1):
+            compact_text = MarkdownMinifier.minify(chunk.text)
             block = (
                 f"[Evidence {idx}] (Source ID: {chunk.source}, Relevance Score: {chunk.score:.2f}):\n"
-                f"\"\"\"\n{chunk.text}\n\"\"\""
+                f"\"\"\"\n{compact_text}\n\"\"\""
             )
             formatted_blocks.append(block)
 

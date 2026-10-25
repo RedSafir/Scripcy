@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 from scrpcy.core.contractor import ContractDecomposer, ExecutionPlan, SubContract
 from scrpcy.core.contracts import TaskContract
 from scrpcy.core.critic import DevilsAdvocate
+from scrpcy.core.crusher import SmartCrusher
 from scrpcy.core.engine import EvidenceChunk, LLMEngine
 from scrpcy.core.search import sanitize_filename
 from scrpcy.core.subagent import ExtractedFact, SubagentArtifact, SubagentPool
@@ -229,14 +230,10 @@ class SubagentOrchestrator:
         parts: list[str] = []
 
         if verified_facts:
-            fact_lines = []
-            for f in verified_facts[:10]:
-                yr = f", {f.year}" if f.year else ""
-                vis = f" {f.visual_ref}" if f.visual_ref else ""
-                fact_lines.append(f"  - {f.claim_or_metric} [Sumber: {f.citation_stem}{yr}]{vis}")
+            tsv_ledger = SmartCrusher.crush_verified_facts_ledger(verified_facts[:10])
             parts.append(
-                "[LEDGER FAKTA TERVERIFIKASI DARI SUBAGENT (GUNAKAN SEBAGAI INTI JAWABAN)]:\n"
-                + "\n".join(fact_lines)
+                "[LEDGER FAKTA TERVERIFIKASI SUBAGENT (TSV SMARTCRUSHER - INTI JAWABAN)]:\n"
+                f"```tsv\n{tsv_ledger}\n```"
             )
 
         margin_disp = int(round(contract.token_margin_pct * 100))

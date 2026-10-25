@@ -692,18 +692,37 @@ class StudioAgentLoopMixin:
         cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
         return cleaned
 
-    def _format_vault_citation_guide(self) -> str:
+    def _format_vault_citation_guide(
+        self,
+        active_evidence_stems: set[str] | list[str] | None = None,
+    ) -> str:
         """Generate formatted citation guidelines and list of active vault papers for the prompt."""
         if not self.vault_manager or not self.workspace:
             return ""
         active_items = self.vault_manager.list_active_files()
         if not active_items:
             return ""
+
+        stems_filter = set(active_evidence_stems) if active_evidence_stems else None
+
+        primary_items = []
+        secondary_items = []
+        for item in active_items:
+            if stems_filter is None or item.stem in stems_filter or item.cite_key in stems_filter:
+                primary_items.append(item)
+            else:
+                secondary_items.append(item)
+
+        # If filter yielded nothing (e.g. source ID mismatch), show all
+        if not primary_items:
+            primary_items = active_items
+            secondary_items = []
+
         lines = [
             "### PANDUAN SITASI DAN REFERENSI VAULT (GAYA APA):",
-            "Dokumen ilmiah yang terverifikasi ada di vault proyek saat ini:",
+            "Dokumen ilmiah terverifikasi yang dirujuk sebagai bukti dalam kueri ini:",
         ]
-        for idx, item in enumerate(active_items, 1):
+        for idx, item in enumerate(primary_items, 1):
             cache_path = self.workspace.get_cache_path(f"{item.stem}.md")
             meta = self.vault_manager._read_frontmatter_metadata(cache_path) if cache_path.exists() else None
             authors_str = ", ".join(meta.authors[:3]) if (meta and meta.authors) else item.stem.replace("_", " ").title()
@@ -712,6 +731,11 @@ class StudioAgentLoopMixin:
             cite_apa = f"({first_auth} et al., {year_str})" if (meta and meta.authors and len(meta.authors) > 2) else f"({first_auth}, {year_str})"
             cite_key = meta.cite_key if (meta and meta.cite_key) else (item.cite_key or item.stem)
             lines.append(f"- [{idx}] {authors_str} ({year_str}). \"{item.title or item.stem}\". File: {item.filename} | Sitasi in-text APA: {cite_apa} atau [{cite_key}]")
+
+        if secondary_items:
+            other_names = ", ".join(it.cite_key or it.stem for it in secondary_items[:8])
+            lines.append(f"\n[Dokumen tambahan di vault yang dapat dibaca via internal tool jika diperlukan]: {other_names}")
+
         lines.extend([
             "",
             "ATURAN SITASI & INTEGRITAS REFERENSI:",
@@ -1408,7 +1432,8 @@ class StudioAgentLoopMixin:
             accumulated_output_tokens = 0
             total_turns_completed = 0
             current_query = initial_query_override if "initial_query_override" in locals() and initial_query_override else query
-            citation_guide = self._format_vault_citation_guide()
+            active_stems = {c.source for c in evidence} if evidence else None
+            citation_guide = self._format_vault_citation_guide(active_evidence_stems=active_stems)
             if citation_guide:
                 current_query = f"{citation_guide}\n\n{current_query}"
 
@@ -1512,7 +1537,9 @@ class StudioAgentLoopMixin:
                                 max_chunks=self.config.citation.max_evidence_chunks,
                                 vector_vault=getattr(self.vault_manager, "vector_vault", None),
                             )
-                            citation_guide = self._format_vault_citation_guide()
+                            citation_guide = self._format_vault_citation_guide(
+                                active_evidence_stems={c.source for c in curr_evidence} if curr_evidence else None
+                            )
                             if turn > 0:
                                 ev_summaries = "; ".join(f"{ev.task_name} ({ev.summary})" for ev in completed_io_events)
                                 current_query = (
@@ -1573,7 +1600,9 @@ class StudioAgentLoopMixin:
                                 max_chunks=self.config.citation.max_evidence_chunks,
                                 vector_vault=getattr(self.vault_manager, "vector_vault", None),
                             )
-                            citation_guide = self._format_vault_citation_guide()
+                            citation_guide = self._format_vault_citation_guide(
+                                active_evidence_stems={c.source for c in curr_evidence} if curr_evidence else None
+                            )
                         if orch_res.assembly_directive:
                             current_query = f"{current_query}\n\n{orch_res.assembly_directive}"
 
@@ -2071,7 +2100,9 @@ class StudioAgentLoopMixin:
                                     max_chunks=self.config.citation.max_evidence_chunks,
                                     vector_vault=getattr(self.vault_manager, "vector_vault", None),
                                 )
-                                citation_guide = self._format_vault_citation_guide()
+                                citation_guide = self._format_vault_citation_guide(
+                                active_evidence_stems={c.source for c in curr_evidence} if curr_evidence else None
+                            )
                                 max_agent_turns = max(max_agent_turns, turn + 2)
 
                             gap_sc = SubContract(
