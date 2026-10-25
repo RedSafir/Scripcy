@@ -12,7 +12,16 @@ from rich.markup import escape
 from rich.table import Table
 from rich.text import Text
 
+import math
+import os
+import re
+import shutil
+
+from rich.cells import cell_len
+
 _KEY_BUFFER: collections.deque[str] = collections.deque()
+_LAST_OBSERVED_TERM_SIZE: tuple[int, int] | None = None
+_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
 
 
 def init_windows_terminal() -> None:
@@ -29,13 +38,15 @@ def init_windows_terminal() -> None:
         except Exception:
             pass
 
-        target_mode = 0x0001 | 0x0002 | 0x0004 | 0x0008
+        # Enable VT processing (0x0001 | 0x0002 | 0x0004) and explicitly CLEAR
+        # DISABLE_NEWLINE_AUTO_RETURN (0x0008) so '\n' always returns cursor to column 0.
+        target_mode = 0x0001 | 0x0002 | 0x0004
         for handle_id in (-11, -12):
             h = kernel32.GetStdHandle(handle_id)
             if h and h != -1:
                 mode = ctypes.c_ulong()
                 if kernel32.GetConsoleMode(h, ctypes.byref(mode)):
-                    kernel32.SetConsoleMode(h, mode.value | target_mode)
+                    kernel32.SetConsoleMode(h, (mode.value | target_mode) & ~0x0008)
 
         GENERIC_READ = 0x80000000
         GENERIC_WRITE = 0x40000000
@@ -53,7 +64,7 @@ def init_windows_terminal() -> None:
         if h_con and h_con != -1:
             mode = ctypes.c_ulong()
             if kernel32.GetConsoleMode(h_con, ctypes.byref(mode)):
-                kernel32.SetConsoleMode(h_con, mode.value | target_mode)
+                kernel32.SetConsoleMode(h_con, (mode.value | target_mode) & ~0x0008)
             kernel32.CloseHandle(h_con)
     except Exception:
         pass
@@ -62,13 +73,141 @@ def init_windows_terminal() -> None:
 init_windows_terminal()
 
 
+def get_live_terminal_size(console: Console | None = None) -> tuple[int, int]:
+    """Query live terminal (columns, rows) directly from OS console without stale caching."""
+    if console is not None:
+        explicit_w = getattr(console, "_width", None)
+        explicit_h = getattr(console, "_height", None)
+        if explicit_w is not None:
+            return (max(20, int(explicit_w)), max(8, int(explicit_h or 24)))
+
+    if sys.platform == "win32":
+        try:
+            import ctypes
+
+            class _COORD(ctypes.Structure):
+                _fields_ = [("X", ctypes.c_short), ("Y", ctypes.c_short)]
+
+            class _SMALL_RECT(ctypes.Structure):
+                _fields_ = [
+                    ("Left", ctypes.c_short),
+                    ("Top", ctypes.c_short),
+                    ("Right", ctypes.c_short),
+                    ("Bottom", ctypes.c_short),
+                ]
+
+            class _CSBI(ctypes.Structure):
+                _fields_ = [
+                    ("dwSize", _COORD),
+                    ("dwCursorPosition", _COORD),
+                    ("wAttributes", ctypes.c_ushort),
+                    ("srWindow", _SMALL_RECT),
+                    ("dwMaximumWindowSize", _COORD),
+                ]
+
+            kernel32 = ctypes.windll.kernel32
+            csbi = _CSBI()
+            for handle_id in (-11, -12):
+                h = kernel32.GetStdHandle(handle_id)
+                if h and h != -1 and kernel32.GetConsoleScreenBufferInfo(h, ctypes.byref(csbi)):
+                    win_cols = csbi.srWindow.Right - csbi.srWindow.Left + 1
+                    win_rows = csbi.srWindow.Bottom - csbi.srWindow.Top + 1
+                    buf_cols = csbi.dwSize.X
+                    cols = min(win_cols, buf_cols) if (win_cols > 0 and buf_cols > 0) else (win_cols or buf_cols)
+                    if cols > 0 and win_rows > 0:
+                        return (max(20, int(cols)), max(8, int(win_rows)))
+        except Exception:
+            pass
+
+    for fd in (1, 2, 0):
+        try:
+            sz = os.get_terminal_size(fd)
+            if sz.columns > 0 and sz.lines > 0:
+                return (max(20, int(sz.columns)), max(8, int(sz.lines)))
+        except OSError:
+            continue
+
+    fallback_sz = shutil.get_terminal_size((80, 24))
+    return (max(20, int(fallback_sz.columns)), max(8, int(fallback_sz.lines)))
+
+
+def _visible_cell_len(line: str) -> int:
+    """Calculate visible terminal cell width of an ANSI-rendered line."""
+    plain = _ANSI_ESCAPE_RE.sub("", line)
+    return cell_len(plain)
+
+
+def _adapt_table_columns_to_width(
+    columns: list[dict[str, Any]],
+    term_cols: int,
+) -> tuple[list[dict[str, Any]], tuple[int, int]]:
+    """Dynamically scale and reflow table columns and cell padding to fit live terminal width."""
+    if not columns:
+        return [], (0, 1)
+
+    avail = max(24, term_cols - 1)
+    pad_x = 1 if avail < 90 else 2
+    col_count = len(columns)
+    total_pad = col_count * (pad_x * 2)
+    content_budget = max(col_count * 3, avail - total_pad)
+
+    base_widths: list[int] = []
+    flex_indices: list[int] = []
+    for idx, col in enumerate(columns):
+        w = col.get("width")
+        name_len = max(3, len(str(col.get("name", ""))))
+        if w is not None and int(w) > 0:
+            bw = int(w)
+            base_widths.append(bw)
+            if bw >= 18:
+                flex_indices.append(idx)
+        else:
+            base_widths.append(max(16, name_len + 6))
+            flex_indices.append(idx)
+
+    if not flex_indices and len(columns) > 1:
+        widest_idx = max(range(len(base_widths)), key=lambda i: base_widths[i])
+        flex_indices.append(widest_idx)
+
+    total_base = sum(base_widths)
+    adapted_widths = list(base_widths)
+
+    if total_base > content_budget:
+        # Proportionally shrink columns wider than 4 cells so the table never overflows
+        shrinkable_indices = [i for i, w in enumerate(adapted_widths) if w > 4]
+        shrinkable_sum = sum(adapted_widths[i] for i in shrinkable_indices)
+        fixed_sum = total_base - shrinkable_sum
+        target_shrink_sum = max(len(shrinkable_indices) * 4, content_budget - fixed_sum)
+        if shrinkable_sum > 0:
+            ratio = target_shrink_sum / shrinkable_sum
+            for i in shrinkable_indices:
+                min_col_w = 3 if i == 0 else 5
+                adapted_widths[i] = max(min_col_w, int(adapted_widths[i] * ratio))
+    elif total_base < content_budget and flex_indices:
+        # Distribute extra width on wide terminals to primary text columns
+        extra = min(48, content_budget - total_base)
+        per_flex = extra // len(flex_indices)
+        for i in flex_indices:
+            adapted_widths[i] += per_flex
+
+    adapted_cols: list[dict[str, Any]] = []
+    for idx, col in enumerate(columns):
+        c_copy = dict(col)
+        c_copy["width"] = adapted_widths[idx]
+        if c_copy.get("overflow") == "fold" and avail < 95:
+            c_copy["overflow"] = "ellipsis"
+        adapted_cols.append(c_copy)
+
+    return adapted_cols, (0, pad_x)
+
+
 def _clear_lines(num_lines: int, console: Console | None = None) -> None:
     """Cross-platform zero-flicker line clear: erases N lines upward without blanking below."""
     if num_lines <= 0:
         return
     out = [f"\x1b[{num_lines}A\r"]
     for _ in range(num_lines):
-        out.append("\x1b[2K\n")
+        out.append("\r\x1b[2K\n")
     out.append(f"\x1b[{num_lines}A\r")
     target = getattr(console, "file", None) or sys.stdout
     target.write("".join(out))
@@ -86,74 +225,89 @@ def _render_diff_inplace(
     Overwrites the previous terminal output line-by-line without blanking or clearing
     the screen below (no `\\x1b[J`), completely eliminating flicker. Performs dirty-checking:
     if rendered output matches `last_rendered_text`, performs zero I/O writes.
-    Clamps rendering width to terminal columns - 1 to prevent auto-margin-wrap row displacement.
+    Clamps rendering width to terminal columns - 1 to prevent auto-margin-wrap row displacement,
+    and automatically clears reflowed physical rows when the terminal window is resized.
 
     Returns:
         tuple[str, int]: (new_rendered_text, new_lines_drawn_count)
     """
-    import shutil
-    term_cols = shutil.get_terminal_size((80, 24)).columns
-    max_w = max(20, (console.width or term_cols) - 1)
-    orig_w = console.width
-    console.width = max_w
+    term_cols, _ = get_live_terminal_size(console)
+    max_w = max(20, term_cols - 1)
+
+    prev_term_cols = getattr(console, "_scrpcy_last_term_cols", None)
+    prev_line_widths: list[int] = getattr(console, "_scrpcy_last_line_widths", [])
+    resized = prev_term_cols is not None and prev_term_cols != term_cols
+
+    # Preserve raw _width / _height (None in interactive mode) so console.width is never frozen!
+    orig_raw_w = getattr(console, "_width", None)
+    orig_raw_h = getattr(console, "_height", None)
+    console._width = max_w
     try:
         with console.capture() as capture:
             for item in lines:
                 console.print(item, crop=True, no_wrap=True)
         raw_str = capture.get()
     finally:
-        console.width = orig_w
+        console._width = orig_raw_w
+        console._height = orig_raw_h
 
     rendered_lines = raw_str.splitlines()
     cur_text = "\n".join(rendered_lines)
 
-    # 1. State Dirty Checking: if identical, do zero I/O
-    if cur_text == last_rendered_text and prev_lines_drawn > 0:
+    # 1. State Dirty Checking: if identical and terminal size unchanged, do zero I/O
+    if not resized and cur_text == last_rendered_text and prev_lines_drawn > 0:
         return last_rendered_text, prev_lines_drawn
 
-    # 2. In-Place Overwriting:
+    # 2. If terminal was resized while a frame was on screen, clear reflowed physical rows first
+    if resized and prev_lines_drawn > 0:
+        if term_cols < (prev_term_cols or term_cols) and prev_line_widths:
+            reflowed_rows = sum(
+                max(1, math.ceil(w / max(1, term_cols))) for w in prev_line_widths
+            )
+            rows_to_clear = max(prev_lines_drawn, reflowed_rows)
+        else:
+            rows_to_clear = prev_lines_drawn
+        _clear_lines(rows_to_clear, console)
+        prev_lines_drawn = 0
+
+    # 3. In-Place Overwriting:
     out = []
     if prev_lines_drawn > 0:
         out.append(f"\x1b[{prev_lines_drawn}A\r")
 
     for line in rendered_lines:
-        out.append(f"\x1b[2K{line}\n")
+        out.append(f"\r\x1b[2K{line}\n")
 
     if len(rendered_lines) < prev_lines_drawn:
         excess = prev_lines_drawn - len(rendered_lines)
         for _ in range(excess):
-            out.append("\x1b[2K\n")
+            out.append("\r\x1b[2K\n")
         out.append(f"\x1b[{excess}A\r")
 
     target = getattr(console, "file", None) or sys.stdout
     target.write("".join(out))
     target.flush()
 
+    try:
+        setattr(console, "_scrpcy_last_term_cols", term_cols)
+        setattr(
+            console,
+            "_scrpcy_last_line_widths",
+            [_visible_cell_len(line) for line in rendered_lines],
+        )
+    except Exception:
+        pass
+
     return cur_text, len(rendered_lines)
 
 
-def _read_key(timeout: float | None = None) -> str | None:
-    """Read a single keypress or escape sequence cross-platform."""
-    if _KEY_BUFFER:
-        return _KEY_BUFFER.popleft()
-
-    if timeout is not None:
-        start = time.monotonic()
-        while time.monotonic() - start < timeout:
-            if _KEY_BUFFER:
-                return _KEY_BUFFER.popleft()
-            k = _poll_key()
-            if k is not None:
-                return k
-            time.sleep(0.015)
-        return None
-
+def _read_key_immediate() -> str:
+    """Blocking read of a single ready keypress or escape sequence cross-platform."""
     if sys.platform == "win32":
         import msvcrt
 
         ch = msvcrt.getwch()
         if ch in ("\x00", "\xe0"):
-            # Special arrow or function key
             code = msvcrt.getwch()
             if code == "H":
                 return "UP"
@@ -174,7 +328,6 @@ def _read_key(timeout: float | None = None) -> str | None:
             return "BACKSPACE"
         return ch
     else:
-        # Basic POSIX fallback
         import termios
         import tty
 
@@ -184,7 +337,6 @@ def _read_key(timeout: float | None = None) -> str | None:
             tty.setraw(fd)
             ch = sys.stdin.read(1)
             if ch == "\x1b":
-                # Check for escape sequence
                 next1 = sys.stdin.read(1)
                 if next1 == "[":
                     next2 = sys.stdin.read(1)
@@ -215,15 +367,41 @@ def _poll_key() -> str | None:
 
     if sys.platform == "win32":
         import msvcrt
+
         if not msvcrt.kbhit():
             return None
-        return _read_key()
+        return _read_key_immediate()
     else:
         import select
+
         r, _, _ = select.select([sys.stdin], [], [], 0)
         if r:
-            return _read_key()
+            return _read_key_immediate()
         return None
+
+
+def _read_key(timeout: float | None = None) -> str | None:
+    """Read a single keypress or escape sequence, waking up on terminal resize."""
+    global _LAST_OBSERVED_TERM_SIZE
+    if _KEY_BUFFER:
+        return _KEY_BUFFER.popleft()
+
+    start = time.monotonic()
+    while True:
+        if _KEY_BUFFER:
+            return _KEY_BUFFER.popleft()
+        k = _poll_key()
+        if k is not None:
+            return k
+        cur_size = get_live_terminal_size()
+        if _LAST_OBSERVED_TERM_SIZE is None:
+            _LAST_OBSERVED_TERM_SIZE = cur_size
+        elif cur_size != _LAST_OBSERVED_TERM_SIZE:
+            _LAST_OBSERVED_TERM_SIZE = cur_size
+            return "__RESIZE__"
+        if timeout is not None and (time.monotonic() - start >= timeout):
+            return None
+        time.sleep(0.015)
 
 
 
@@ -1151,7 +1329,6 @@ def interactive_help_view(
 ) -> None:
     """Antigravity-style simple available commands view."""
     c = console or Console(force_terminal=True)
-    width = c.width or 80
 
     if mode == "vault":
         commands_list = SLASH_COMMANDS_VAULT
@@ -1192,22 +1369,24 @@ def interactive_help_view(
     last_rendered_text = ""
     try:
         while True:
+            width, _ = get_live_terminal_size(c)
             cursor_idx = max(0, min(cursor_idx, len(commands_list) - 1))
             lines: list[Text] = []
 
             lines.append(Text(title, style="bold bright_white"))
             lines.append(Text(""))
 
+            cmd_col_w = 16 if width < 72 else 22
             for idx, (k, desc) in enumerate(commands_list):
                 is_cursor = idx == cursor_idx
                 row = Text()
                 if is_cursor:
                     row.append("> ", style="bold cyan")
-                    row.append(f"{k:<22}", style="bold bright_white")
+                    row.append(f"{k:<{cmd_col_w}}", style="bold bright_white")
                     row.append(desc, style="bold white")
                 else:
                     row.append("  ", style="dim")
-                    row.append(f"{k:<22}", style="dim")
+                    row.append(f"{k:<{cmd_col_w}}", style="dim")
                     row.append(desc, style="dim")
                 lines.append(row)
 
@@ -1229,7 +1408,9 @@ def interactive_help_view(
             )
 
             key = _read_key()
-            if key in ("ESC", "q", "Q", "ENTER"):
+            if key == "__RESIZE__":
+                continue
+            elif key in ("ESC", "q", "Q", "ENTER"):
                 if prev_lines_drawn > 0:
                     _clear_lines(prev_lines_drawn, c)
                 return
@@ -1257,7 +1438,6 @@ def interactive_input_prompt(
 ) -> str:
     """Prompt user with live slash command autocomplete and interactive help."""
     c = console or Console(force_terminal=True)
-    width = c.width or 80
 
     # Non-interactive fallback (tests, pipes, CI)
     if not sys.stdin.isatty():
@@ -1304,6 +1484,9 @@ def interactive_input_prompt(
     c.show_cursor(False)
     try:
         while True:
+            width, _ = get_live_terminal_size(c)
+            max_line_w = max(20, width - 1)
+
             # Check if user entered help shortcut "?"
             if buffer.strip() == "?":
                 if prev_lines_drawn > 0:
@@ -1321,6 +1504,8 @@ def interactive_input_prompt(
                 )
                 buffer = ""
                 suggestion_cursor = 0
+                width, _ = get_live_terminal_size(c)
+                max_line_w = max(20, width - 1)
 
             suggestions = get_suggestions(buffer)
             if not suggestions:
@@ -1334,35 +1519,64 @@ def interactive_input_prompt(
             # 0. Live Status Line (e.g. background task progress / spinner)
             status_text = status_line_callback() if status_line_callback is not None else None
             if status_text:
-                lines_to_render.append(Text.from_markup(status_text))
+                for st_line in status_text.splitlines():
+                    lines_to_render.append(Text.from_markup(st_line))
                 lines_to_render.append(Text(""))
 
-            divider_line = Text("─" * max(10, width - 1), style="grey23")
+            divider_line = Text("─" * max(10, max_line_w), style="grey23")
 
             # 1. Top Outlier Line
             lines_to_render.append(divider_line)
 
-            # 2. Input line
-            input_row = Text()
-            input_row.append(prompt_label, style="bold cyan")
-            input_row.append(buffer, style="bold bright_white")
-            input_row.append("█", style="blink bold white")
-            lines_to_render.append(input_row)
+            # 2. Input line (wraps cleanly across multiple lines if user types past terminal width)
+            full_input_len = cell_len(prompt_label) + cell_len(buffer) + 1
+            if full_input_len <= max_line_w:
+                input_row = Text()
+                input_row.append(prompt_label, style="bold cyan")
+                input_row.append(buffer, style="bold bright_white")
+                input_row.append("█", style="blink bold white")
+                lines_to_render.append(input_row)
+            else:
+                first_cap = max(1, max_line_w - cell_len(prompt_label))
+                first_chunk = buffer[:first_cap]
+                rem_buf = buffer[first_cap:]
+                first_row = Text()
+                first_row.append(prompt_label, style="bold cyan")
+                first_row.append(first_chunk, style="bold bright_white")
+                if not rem_buf and cell_len(first_row.plain) < max_line_w:
+                    first_row.append("█", style="blink bold white")
+                    lines_to_render.append(first_row)
+                else:
+                    lines_to_render.append(first_row)
+                    chunk_w = max(10, max_line_w)
+                    chunks = [rem_buf[i : i + chunk_w] for i in range(0, len(rem_buf), chunk_w)] or [""]
+                    for c_idx, ch_str in enumerate(chunks):
+                        cont_row = Text(ch_str, style="bold bright_white")
+                        if c_idx == len(chunks) - 1:
+                            if cell_len(cont_row.plain) < max_line_w:
+                                cont_row.append("█", style="blink bold white")
+                                lines_to_render.append(cont_row)
+                            else:
+                                lines_to_render.append(cont_row)
+                                lines_to_render.append(Text("█", style="blink bold white"))
+                        else:
+                            lines_to_render.append(cont_row)
 
             # 3. Suggestions dropdown if typing a slash command
             if suggestions:
                 max_display = 6
                 display_slice = suggestions[:max_display]
+                cmd_col_w = 16 if width < 72 else 22
                 for idx, (cmd_name, cmd_desc) in enumerate(display_slice):
                     is_sel = idx == suggestion_cursor
                     s_row = Text()
                     if is_sel:
                         s_row.append("> ", style="bold cyan")
-                        s_row.append(f"{cmd_name:<22}", style="bold bright_white")
+                        s_row.append(f"{cmd_name:<{cmd_col_w}}", style="bold bright_white")
                         s_row.append(cmd_desc, style="bold white")
                     else:
                         s_row.append("  ", style="dim")
-                        s_row.append(f"{cmd_name:<22}", style="dim")
+                        s_row.append(f"{cmd_name:<{cmd_col_w}}", style="dim")
                         s_row.append(cmd_desc, style="dim")
                     lines_to_render.append(s_row)
 
@@ -1373,14 +1587,7 @@ def interactive_input_prompt(
             # 4. Bottom Outlier Line
             lines_to_render.append(divider_line)
 
-            # 5. Persistent Footer: left '? for shortcuts' and right status
-            if suggestions:
-                s_footer = Text("↑/↓ Navigate · enter Select · tab Complete · esc Cancel · ? for shortcuts", style="dim")
-            elif mode == "chat" or (mode is None and is_chat_mode):
-                s_footer = Text("? for shortcuts · /detach to background · /close to terminate", style="dim")
-            else:
-                s_footer = Text("? for shortcuts", style="dim")
-
+            # 5. Responsive Persistent Footer: adapts left hints & right status across terminal widths
             m_label = _format_model_display_name(current_model)
             if context_label and (mode == "chat" or is_chat_mode):
                 right_st = f"{context_label} • {m_label}"
@@ -1389,9 +1596,35 @@ def interactive_input_prompt(
             else:
                 right_st = f"{m_label} • {current_effort}"
 
-            pad_w = max(2, width - len(s_footer.plain) - len(right_st) - 2)
-            s_footer.append(" " * pad_w)
-            s_footer.append(right_st, style="dim")
+            if suggestions:
+                left_full = "↑/↓ Navigate · enter Select · tab Complete · esc Cancel · ? for shortcuts"
+                left_compact = "↑/↓ · enter · tab · esc"
+            elif mode == "chat" or (mode is None and is_chat_mode):
+                left_full = "? for shortcuts · /detach to background · /close to terminate"
+                left_compact = "? shortcuts · /detach · /close"
+            else:
+                left_full = "? for shortcuts"
+                left_compact = "? shortcuts"
+
+            if len(left_full) + len(right_st) + 3 <= max_line_w:
+                left_chosen = left_full
+                right_chosen = right_st
+            elif len(left_compact) + len(right_st) + 3 <= max_line_w:
+                left_chosen = left_compact
+                right_chosen = right_st
+            elif len(left_compact) + len(m_label) + 3 <= max_line_w:
+                left_chosen = left_compact
+                right_chosen = m_label
+            else:
+                left_chosen = "? shortcuts"
+                avail_r = max(0, max_line_w - len(left_chosen) - 3)
+                right_chosen = m_label[:avail_r] if avail_r > 4 else ""
+
+            s_footer = Text(left_chosen, style="dim")
+            if right_chosen:
+                pad_w = max(2, max_line_w - len(left_chosen) - len(right_chosen) - 1)
+                s_footer.append(" " * pad_w)
+                s_footer.append(right_chosen, style="dim")
             lines_to_render.append(s_footer)
 
             # In-place differential redraw
@@ -1426,11 +1659,13 @@ def interactive_input_prompt(
                             # Status or spinner frame changed; break out to redraw prompt in place
                             break
 
-                if key is None:
-                    # Idle handler or status update requested prompt redraw
+                if key is None or key == "__RESIZE__":
+                    # Idle handler, status update, or terminal resize requested prompt redraw
                     continue
             else:
                 key = _read_key()
+                if key == "__RESIZE__":
+                    continue
 
             if key == "ENTER":
                 if suggestions:
@@ -1558,13 +1793,10 @@ def interactive_carousel_table(
     if total_items == 0:
         return ""
 
-    term_height = c.height or 24
+    term_cols, term_height = get_live_terminal_size(c)
     if page_size is not None and page_size > 0:
         effective_page_size = page_size
     else:
-        # Dynamic calculation fitting terminal height:
-        # Reserve ~9 lines for header, table headers/padding, navigation bar, help text, and prompt line
-        # Assume ~2 terminal lines per wrapped row
         available_lines = max(6, term_height - 9)
         effective_page_size = max(3, min(8, available_lines // 2))
 
@@ -1576,8 +1808,9 @@ def interactive_carousel_table(
         start_idx = 0
         end_idx = min(total_items, effective_page_size)
         c.print(f"\n[bold bright_white]{title} ({total_items} {item_label})[/bold bright_white]  [dim]•[/dim]  [bold cyan][ Slide 1/{total_slides} ][/bold cyan] [dim](Showing #{start_idx + 1}–{end_idx})[/dim]")
-        table = Table(box=None, padding=(0, 2), show_header=True, header_style="bold cyan")
-        for col in columns:
+        adapted_cols, pad_tuple = _adapt_table_columns_to_width(columns, term_cols)
+        table = Table(box=None, padding=pad_tuple, show_header=True, header_style="bold cyan")
+        for col in adapted_cols:
             table.add_column(
                 col.get("name", ""),
                 justify=col.get("justify", "left"),
@@ -1601,6 +1834,15 @@ def interactive_carousel_table(
     c.show_cursor(False)
     try:
         while True:
+            term_cols, term_height = get_live_terminal_size(c)
+            if page_size is not None and page_size > 0:
+                effective_page_size = page_size
+            else:
+                available_lines = max(6, term_height - 9)
+                effective_page_size = max(3, min(8, available_lines // 2))
+            total_slides = max(1, math.ceil(total_items / effective_page_size))
+            current_slide = max(0, min(current_slide, total_slides - 1))
+
             start_idx = current_slide * effective_page_size
             end_idx = min(total_items, start_idx + effective_page_size)
             slice_rows = rows[start_idx:end_idx]
@@ -1614,8 +1856,9 @@ def interactive_carousel_table(
             header_text.append(f" (Showing #{start_idx + 1}–{end_idx})", style="dim")
 
             # 2. Table
-            table = Table(box=None, padding=(0, 2), show_header=True, header_style="bold cyan")
-            for col in columns:
+            adapted_cols, pad_tuple = _adapt_table_columns_to_width(columns, term_cols)
+            table = Table(box=None, padding=pad_tuple, show_header=True, header_style="bold cyan")
+            for col in adapted_cols:
                 table.add_column(
                     col.get("name", ""),
                     justify=col.get("justify", "left"),
@@ -1659,6 +1902,8 @@ def interactive_carousel_table(
 
             # Wait for key
             key = _read_key()
+            if key == "__RESIZE__":
+                continue
 
             if key == "LEFT":
                 current_slide = max(0, current_slide - 1)
@@ -1788,7 +2033,9 @@ def interactive_menu(
             )
 
             key = _read_key()
-            if key == "UP":
+            if key == "__RESIZE__":
+                continue
+            elif key == "UP":
                 cursor = (cursor - 1) % len(options)
             elif key == "DOWN":
                 cursor = (cursor + 1) % len(options)
@@ -1848,18 +2095,24 @@ def interactive_item_browser(
     c.show_cursor(False)
     try:
         while True:
+            term_cols, term_rows = get_live_terminal_size(c)
+            effective_page_size = max(2, min(page_size, term_rows - 8))
+
             if items_provider is not None:
                 try:
                     items = items_provider() or []
                     total_items = len(items)
-                    total_slides = max(1, math.ceil(total_items / page_size)) if total_items > 0 else 1
-                    current_slide = max(0, min(current_slide, total_slides - 1))
                 except Exception:
                     pass
 
-            start_idx = current_slide * page_size
-            end_idx = min(total_items, start_idx + page_size)
+            total_slides = max(1, math.ceil(total_items / effective_page_size)) if total_items > 0 else 1
+            current_slide = max(0, min(current_slide, total_slides - 1))
+
+            start_idx = current_slide * effective_page_size
+            end_idx = min(total_items, start_idx + effective_page_size)
             slice_items = items[start_idx:end_idx]
+
+            adapted_cols, pad_tuple = _adapt_table_columns_to_width(columns, term_cols)
 
             if total_items == 0:
                 lines: list[Any] = []
@@ -1867,8 +2120,8 @@ def interactive_item_browser(
                     lines.append(title if not isinstance(title, str) else Text(title))
                     lines.append(Text(""))
 
-                table = Table(box=None, padding=(0, 2), show_header=True, header_style="bold cyan")
-                for col in columns:
+                table = Table(box=None, padding=pad_tuple, show_header=True, header_style="bold cyan")
+                for col in adapted_cols:
                     table.add_column(
                         col.get("name", ""),
                         justify=col.get("justify", "left"),
@@ -1876,7 +2129,7 @@ def interactive_item_browser(
                         width=col.get("width"),
                         overflow=col.get("overflow", "ellipsis"),
                     )
-                empty_row = ["-"] * len(columns)
+                empty_row = ["-"] * len(adapted_cols)
                 target_col = 3 if len(empty_row) > 3 else (1 if len(empty_row) > 1 else 0)
                 empty_row[target_col] = f"[dim]{empty_message}[/dim]"
                 table.add_row(*empty_row)
@@ -1893,16 +2146,13 @@ def interactive_item_browser(
                 )
 
                 if items_provider is not None:
-                    start_poll = time.monotonic()
                     poll_dur = poll_interval if poll_interval is not None else 0.4
-                    key = None
-                    while time.monotonic() - start_poll < poll_dur:
-                        key = _poll_key()
-                        if key is not None:
-                            break
-                        time.sleep(0.04)
+                    key = _read_key(timeout=poll_dur)
                 else:
                     key = _read_key()
+
+                if key == "__RESIZE__":
+                    continue
 
                 if key in ("ESC", "\x03", "q", "Q", "ENTER", "back", "Back"):
                     if prev_lines_drawn > 0:
@@ -1913,13 +2163,13 @@ def interactive_item_browser(
             cursor_idx = max(0, min(cursor_idx, len(slice_items) - 1))
             absolute_cursor = start_idx + cursor_idx
 
-            lines: list[Any] = []
+            lines = []
             if title:
                 lines.append(title if not isinstance(title, str) else Text(title))
                 lines.append(Text(""))
 
-            table = Table(box=None, padding=(0, 2), show_header=True, header_style="bold cyan")
-            for col in columns:
+            table = Table(box=None, padding=pad_tuple, show_header=True, header_style="bold cyan")
+            for col in adapted_cols:
                 table.add_column(
                     col.get("name", ""),
                     justify=col.get("justify", "left"),
@@ -1954,18 +2204,12 @@ def interactive_item_browser(
             )
 
             if items_provider is not None:
-                start_poll = time.monotonic()
                 poll_dur = poll_interval if poll_interval is not None else 0.4
-                key = None
-                while time.monotonic() - start_poll < poll_dur:
-                    key = _poll_key()
-                    if key is not None:
-                        break
-                    time.sleep(0.04)
+                key = _read_key(timeout=poll_dur)
             else:
                 key = _read_key()
 
-            if key is None:
+            if key is None or key == "__RESIZE__":
                 continue
 
             if key == "UP":
@@ -2035,6 +2279,10 @@ def interactive_detail_viewer(
     c.show_cursor(False)
     try:
         while True:
+            term_cols, term_rows = get_live_terminal_size(c)
+            view_height = max(5, term_rows - 8)
+            term_w = max(20, term_cols - 1)
+
             cur_lines = lines_provider() if lines_provider else (content_lines or [])
             cur_title = title_provider() if title_provider else title
             total_lines = len(cur_lines)
@@ -2044,7 +2292,6 @@ def interactive_detail_viewer(
             else:
                 scroll_top = max(0, min(scroll_top, max(0, total_lines - view_height)))
 
-            term_w = max(20, (c.width or shutil.get_terminal_size((80, 24)).columns) - 1)
             lines: list[Any] = []
             header_t = Text(no_wrap=True, overflow="ellipsis")
             header_t.append(cur_title, style="bold bright_white")
@@ -2088,18 +2335,11 @@ def interactive_detail_viewer(
             )
 
             if lines_provider:
-                # Poll keys non-blocking with 0.25s cadence
-                start_poll = time.time()
-                key = None
-                while time.time() - start_poll < 0.25:
-                    key = _poll_key()
-                    if key is not None:
-                        break
-                    time.sleep(0.04)
+                key = _read_key(timeout=0.25)
             else:
                 key = _read_key()
 
-            if key is None:
+            if key is None or key == "__RESIZE__":
                 continue
 
             if key == "UP":

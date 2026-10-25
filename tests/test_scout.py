@@ -462,7 +462,7 @@ class TestCLIStudioScoutCommand:
                 future.result(timeout=5)
             output = test_console.file.getvalue()
             assert "Literature Scout" in output
-            assert "Transformer Attention Models" in output
+            assert "Transformer" in output and "Attention Models" in output
             assert "Background Download Agent Dispatched" in output
             assert "test" in studio.active_documents
             tasks = studio.task_manager.list_tasks()

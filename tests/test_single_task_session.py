@@ -36,11 +36,13 @@ def test_busy_guard_rejects_new_prompt_when_task_running(temp_studio: CLIStudio,
         t = temp_studio.task_manager.get_task(task.id)
         assert t.status == "running"
 
-        # Attempt to submit a new question
-        with patch.object(temp_studio, "handle_chat") as mock_handle_chat:
+        # Attempt to submit a new question while a turn is already running
+        with patch.object(temp_studio, "submit_chat_background") as mock_submit:
+            t.lane = "turn"
             temp_studio.handle_chat_submode_interaction("pertanyaan baru tentang gambut")
-            # Must NOT call handle_chat because session is busy
-            mock_handle_chat.assert_not_called()
+            mock_submit.assert_called_once()
+            call_kwargs = mock_submit.call_args[1]
+            assert task.id in call_kwargs.get("depends_on", [])
 
         # Verify active task is tracked
         active_tasks = [tk for tk in temp_studio.task_manager.list_tasks_for_session(session.id) if tk.status == "running"]
@@ -86,7 +88,7 @@ def test_busy_guard_rejects_second_bg_task(temp_studio: CLIStudio) -> None:
 
         with patch.object(temp_studio, "submit_chat_background") as mock_submit:
             temp_studio.handle_chat_submode_interaction("/bg tugas kedua")
-            mock_submit.assert_not_called()
+            mock_submit.assert_called_once_with("tugas kedua")
     finally:
         temp_studio.task_manager.cancel_task(task.id)
 

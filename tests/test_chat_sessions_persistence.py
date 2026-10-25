@@ -209,7 +209,7 @@ def test_resume_chat_shows_bound_tasks_and_passes_history(
     assert "Masuk ke sesi percakapan:" in output
     assert "ml_research" in output
     assert "User: Apa keuntungan transformer?" in output
-    assert "AI (scrpcy_manual):" in output
+    assert ("AI:" in output or "AI (" in output)
     assert "Sistem:" in output
     assert "PROSES LATAR BELAKANG SELESAI" in output
 

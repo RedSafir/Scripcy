@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import io
 import json
 import logging
@@ -14,6 +15,7 @@ import sys
 import threading
 import time
 from typing import Any, Callable
+from unittest.mock import AsyncMock
 import webbrowser
 
 from rich.console import Console
@@ -21,7 +23,7 @@ from rich.markup import escape
 from rich.table import Table
 from rich.text import Text
 
-from scrpcy.core.chats import ChatManager, ChatSession
+from scrpcy.core.chats import ChatManager, ChatSession, SessionEvent
 from scrpcy.core.config import ConfigManager, ScrpcyConfig, detect_9router_key, fetch_9router_models
 from scrpcy.core.contracts import AdaptiveCriticVerdict, TaskContract, TaskContractExtractor
 from scrpcy.core.critic import CritiqueReport, DevilsAdvocate
@@ -72,75 +74,40 @@ from scrpcy.ui.interactive import (
 
 class StudioProcessingMixin:
     def run_interactive_processing(self) -> None:
-
         """Processing status and task inspection without typing."""
-
         while self.sub_mode == "processing" and self.current_project:
-
             tasks = self.task_manager.list_tasks()
-
-            running_tasks = [t for t in tasks if t.status == "running"]
-
+            running_tasks = [t for t in tasks if getattr(t, "is_active", t.status == "running")]
             completed_tasks = [t for t in tasks if t.status == "completed"]
-
             failed_tasks = [t for t in tasks if t.status == "failed"]
-
             cancelled_tasks = [t for t in tasks if t.status == "cancelled"]
 
-
-
             header_table = Table(box=None, padding=(0, 2), show_header=False)
-
             header_table.add_column("Property", style="dim", width=18)
-
             header_table.add_column("Value", style="white")
-
             header_table.add_row("Status", "[bold cyan]Active Processing[/bold cyan]" if running_tasks else "[dim]Idle[/dim]")
-
             header_table.add_row("Running Tasks", f"[bold cyan]{len(running_tasks)}[/bold cyan] proses" if running_tasks else "0 proses")
-
             header_table.add_row("Completed Tasks", f"{len(completed_tasks)} selesai")
-
             header_table.add_row("Failed / Cancelled", f"{len(failed_tasks)} gagal, {len(cancelled_tasks)} dibatalkan")
-
             header_table.add_row("Total Riwayat", f"{len(tasks)} tasks terdaftar")
 
-
-
             options = [
-
                 ("view", f"View Task List ({len(tasks)} tasks)"),
-
                 ("back", "Back to Project"),
-
             ]
 
-
-
             choice = interactive_menu(
-
                 options=options,
-
                 header=header_table,
-
                 console=self.console,
-
                 footer_hint="↑/↓ Navigate · enter Select · 1-2 Quick jump · esc Back",
-
                 allow_back=True,
-
             )
 
-
-
             if choice in ("back", None):
-
                 return
 
-
-
             if choice == "view":
-
                 self.run_interactive_processing_view()
 
     def get_sanitized_task_logs(self, task: Any) -> list[str]:
@@ -188,6 +155,8 @@ class StudioProcessingMixin:
             def _row_builder(idx: int, t: Any, is_selected: bool) -> list[Any]:
                 if t.status in ("need_action", "waiting", "need user action") or getattr(t, "needs_action", False):
                     st_badge = "[bold yellow][Need User Action][/bold yellow]"
+                elif t.status == "waiting_deps":
+                    st_badge = "[bold yellow][Waiting Deps][/bold yellow]"
                 elif t.status == "running":
                     st_badge = "[bold cyan][Progress][/bold cyan]"
                 elif t.status == "completed":
@@ -231,15 +200,9 @@ class StudioProcessingMixin:
                     f"{t.duration_seconds:.1f}s",
                 ]
 
-
-
             header = Text()
-
             header.append(f"Background Processing Tasks [{self.current_project.name}]", style="bold bright_white")
-
             header.append(f" • {len(tasks)} tasks", style="dim")
-
-
 
             actions = [
                 ("detail", "Detail & Logs", "enter"),
@@ -287,7 +250,7 @@ class StudioProcessingMixin:
 
                 def _is_task_live() -> bool:
                     cur_t = self.task_manager.get_task(selected_task.id) or selected_task
-                    return cur_t.status == "running"
+                    return getattr(cur_t, "is_active", cur_t.status == "running")
 
                 detail_acts = [
                     ("cancel", "Cancel Task", "c/x"),
@@ -309,7 +272,7 @@ class StudioProcessingMixin:
                     self.add_transient_toast(f"[bold yellow][!] Membatalkan proses tugas '{selected_task.name}'.[/bold yellow]")
 
             elif action == "cancel" and selected_task:
-                if selected_task.status == "running":
+                if getattr(selected_task, "is_active", selected_task.status == "running"):
                     self.task_manager.cancel_task(selected_task.id)
                     self.add_transient_toast(f"[bold yellow][!] Membatalkan proses tugas '{selected_task.name}'.[/bold yellow]")
 
@@ -325,7 +288,7 @@ class StudioProcessingMixin:
                     self.add_transient_toast(f"[dim]{cleared_cnt} task selesai dibersihkan dari riwayat.[/dim]")
 
     def _on_background_task_completed(self, task: Any) -> None:
-        """Invoked asynchronously whenever any background task finishes."""
+        """Turn-boundary notification dispatcher invoked when any background task finishes."""
         session_id = getattr(task, "session_id", None)
         if not session_id or not self.chat_manager:
             return
@@ -336,8 +299,10 @@ class StudioProcessingMixin:
         task_type = getattr(task, "task_type", "")
         summary = getattr(task, "result_summary", "")
         error_msg = getattr(task, "error", "")
+        ingested_stems = list(getattr(task, "ingested_stems", []) or [])
 
         if task_status == "completed":
+            event_type = "task_completed"
             note = (
                 f"[PROSES LATAR BELAKANG SELESAI: {task_name}]\n"
                 f"- ID Tugas: {task_id} ({task_type})\n"
@@ -345,6 +310,7 @@ class StudioProcessingMixin:
                 f"- Status Vault: Dokumen dan metadata telah terindeks ke dalam vault dan siap dianalisis dalam sesi riset ini."
             )
         elif task_status == "failed":
+            event_type = "task_failed"
             note = (
                 f"[PROSES LATAR BELAKANG GAGAL: {task_name}]\n"
                 f"- ID Tugas: {task_id}\n"
@@ -352,17 +318,35 @@ class StudioProcessingMixin:
                 f"- Rekomendasi: Anda dapat mencoba mencari sumber alternatif atau memeriksa log dengan perintah /proc."
             )
         elif task_status == "cancelled":
+            event_type = "task_cancelled"
             note = f"[PROSES LATAR BELAKANG DIBATALKAN: {task_name} ({task_id})]"
         else:
             return
 
+        # 1. Push structured event into the session's Turn-Boundary Notification Inbox & trigger reactive wakeup
+        runtime = self.get_session_runtime(session_id)
+        if runtime is not None:
+            runtime.push_event(
+                SessionEvent(
+                    event_type=event_type,
+                    session_id=session_id,
+                    task_id=task_id,
+                    task_name=task_name,
+                    task_type=task_type,
+                    summary=summary,
+                    error=error_msg,
+                    ingested_stems=ingested_stems,
+                )
+            )
+
+        # 2. Record system message in SQLite history for non-chat I/O tasks
         if task_type not in ("chat", "agent"):
             try:
                 self.chat_manager.add_message(session_id, "system", note)
             except Exception:
                 pass
 
-        # If user is currently active inside this exact chat session, display visual notification pill cleanly on main thread
+        # 3. UI Output Arbitrator: render only if session is attached in foreground; otherwise spool to session buffer
         fg_tasks = getattr(self, "_foreground_monitored_tasks", set())
         is_monitored_in_fg = (task_id in fg_tasks)
 
@@ -389,93 +373,33 @@ class StudioProcessingMixin:
                 elif task_status == "failed" and not is_monitored_in_fg:
                     self.console.print(f"\n[bold red][x] Tugas Latar Belakang Gagal:[/bold red] [cyan]{task_name}[/cyan] [dim]({error_msg})[/dim]")
             self._enqueue_ui_event(_notify_task)
-
-        # Multi-Thread Orchestrator Barrier: ensure exactly 1 consolidated response
-        if task_type != "evaluation":
-            if not hasattr(self, "_evaluated_task_ids"):
-                self._evaluated_task_ids = set()
-
-            if task_id in self._evaluated_task_ids:
-                return
-
-            running_siblings = [
-                t for t in self.task_manager.list_tasks_for_session(session_id)
-                if t.id != task_id and t.status == "running" and t.task_type != "evaluation" and t.id not in self._evaluated_task_ids
-            ]
-
-            if running_siblings:
-                session = self.chat_manager.get_session(session_id)
-                decision_info = self._ask_ai_orchestrator_barrier(task, running_siblings, session)
-                decision = decision_info.get("decision", "WAIT")
-                wait_sec = decision_info.get("max_wait_seconds", 20)
-                reason = decision_info.get("reason", "")
-
-                if self.sub_mode == "chat" and self.active_chat_session and self.active_chat_session.id == session_id:
-                    if decision == "WAIT":
-                        sib_names = ", ".join(f"{s.id}" for s in running_siblings)
-                        self._enqueue_ui_event(
-                            lambda: self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Orchestrator Thread:[/bold bright_white] [yellow]Menunggu hasil {sib_names}[/yellow] [dim]({reason})[/dim]")
-                        )
-                    elif decision == "CANCEL_AND_PROCEED":
-                        self._enqueue_ui_event(
-                            lambda: self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Orchestrator Thread:[/bold bright_white] [yellow]Membatalkan proses lain & langsung merumuskan 1 respons terpadu[/yellow] [dim]({reason})[/dim]")
-                        )
-                    else:
-                        self._enqueue_ui_event(
-                            lambda: self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Orchestrator Thread:[/bold bright_white] [cyan]Merumuskan respons final sekarang[/cyan] [dim]({reason})[/dim]")
-                        )
-
-                if decision == "WAIT":
-                    start_w = time.time()
-                    while time.time() - start_w < wait_sec:
-                        still_running = [
-                            t for t in self.task_manager.list_tasks_for_session(session_id)
-                            if t.id != task_id and t.status == "running" and t.task_type != "evaluation" and t.id not in self._evaluated_task_ids
-                        ]
-                        if not still_running:
-                            break
-                        time.sleep(1)
-
-                    still_running = [
-                        t for t in self.task_manager.list_tasks_for_session(session_id)
-                        if t.id != task_id and t.status == "running" and t.task_type != "evaluation" and t.id not in self._evaluated_task_ids
-                    ]
-                    if still_running:
-                        for s in still_running:
-                            self.task_manager.cancel_task(s.id)
-                            self._evaluated_task_ids.add(s.id)
-                        if self.sub_mode == "chat" and self.active_chat_session and self.active_chat_session.id == session_id:
-                            self._enqueue_ui_event(
-                                lambda: self.console.print(f"[bold cyan]●[/bold cyan] [bold yellow]Waktu tunggu tercapai ({wait_sec}s).[/bold yellow] [dim]Membatalkan proses yang terlambat dan merumuskan respons.[/dim]")
-                            )
-
-                elif decision == "CANCEL_AND_PROCEED":
-                    for s in running_siblings:
-                        self.task_manager.cancel_task(s.id)
-                        self._evaluated_task_ids.add(s.id)
-
-                elif decision == "PROCEED":
-                    for s in running_siblings:
-                        self._evaluated_task_ids.add(s.id)
-
-            # Mark all current tasks as evaluated for this batch
-            for t in self.task_manager.list_tasks_for_session(session_id):
-                if t.status in ("completed", "cancelled"):
-                    self._evaluated_task_ids.add(t.id)
-
-            # In MVP single-task architecture, literature acquisition tasks do not trigger
-            # unrequested secondary AI evaluations. The primary session turn performs synthesis.
-            pass
+        elif runtime is not None and not is_monitored_in_fg:
+            if task_status == "completed":
+                runtime.append_output(
+                    f"[bold cyan]●[/bold cyan] [bold bright_white]Tugas Latar Belakang Selesai:[/bold bright_white] [cyan]{task_name}[/cyan] [dim]({summary or 'Selesai'})[/dim]"
+                )
+            elif task_status == "failed":
+                runtime.append_output(
+                    f"[bold red][x] Tugas Latar Belakang Gagal:[/bold red] [cyan]{task_name}[/cyan] [dim]({error_msg})[/dim]"
+                )
 
     def _run_task_ai_evaluation(self, task: Any, session_id: str) -> None:
         """Deprecated: Evaluasi otomatis background dinonaktifkan agar tidak menghasilkan respons ganda."""
         return
 
-    def _background_download_worker(self, task_id: str, papers: list[ScoutResult]) -> str:
+    def _background_download_worker(
+        self,
+        task_id: str,
+        papers: list[ScoutResult],
+        cancel_event: threading.Event | None = None,
+    ) -> str:
         """Background agent worker downloading and ingesting academic papers into vault sequentially."""
         total = len(papers)
         success = 0
         failed = 0
+        ingested_stems: list[str] = []
+        t_obj = self.task_manager.get_task(task_id) if self.task_manager else None
+        sess_id = t_obj.session_id if t_obj else None
 
         self.task_manager.log(task_id, f"Mengunduh {total} naskah secara sekuensial (1 per 1)...")
         self.task_manager.update_progress(task_id, f"Mengunduh {total} naskah sekuensial...")
@@ -484,6 +408,8 @@ class StudioProcessingMixin:
         asyncio.set_event_loop(loop)
         try:
             for idx, p in enumerate(papers, 1):
+                if cancel_event and cancel_event.is_set():
+                    break
                 if not p.has_pdf or not p.pdf_url:
                     if p.doi:
                         email = getattr(self.config, "unpaywall_email", None)
@@ -505,14 +431,16 @@ class StudioProcessingMixin:
                 self.task_manager.update_progress(task_id, f"Mengunduh [{idx}/{total}]: {p.title[:30]}...")
                 try:
                     dl_path = loop.run_until_complete(self.scout.download_scout_paper(p))
-                    self.active_documents.add(dl_path.stem)
+                    ingested_stems.append(dl_path.stem)
+                    self.add_session_active_documents([dl_path.stem], session_id=sess_id)
                     success += 1
                     self.task_manager.log(task_id, f"[✓] Added #{idx} to vault & indexed: {p.title[:50]}")
                 except Exception as exc:
                     self.task_manager.log(task_id, f"[x] Gagal mengunduh #{idx} '{p.title[:40]}': {exc}")
                     failed += 1
 
-            self._sync_vault_cache()
+            self.task_manager.record_ingested_stems(task_id, ingested_stems)
+            self._sync_vault_cache(session_id=sess_id)
         finally:
             loop.close()
 
@@ -548,16 +476,17 @@ class StudioProcessingMixin:
         query: str = "",
         topic_query: str = "",
         max_download: int | None = None,
+        cancel_event: threading.Event | None = None,
         **kwargs: Any,
     ) -> str:
         """Background agent worker that searches multi-source (30-40 candidates), ranks with AI, and downloads/ingests a robust batch (5-10) into vault."""
         clean_query = (query or topic_query).strip().strip("'\"")
         self.task_manager.log(task_id, f"Formulating query strategy for: '{clean_query}'")
+        t_obj = self.task_manager.get_task(task_id) if self.task_manager else None
+        sess_id = t_obj.session_id if t_obj else None
+        ingested_stems: list[str] = []
 
         # Support mocked or custom auto_scout_and_ingest from tests
-        from scrpcy.core.scout import LiteratureScout
-        import inspect
-        from unittest.mock import AsyncMock
         auto_fn = getattr(self.scout, "auto_scout_and_ingest", None)
         is_scout_mocked = (
             auto_fn is not None
@@ -573,7 +502,10 @@ class StudioProcessingMixin:
             try:
                 def _on_st(action: str, label: str) -> None:
                     self.task_manager.log(task_id, f"[{action}] {label}")
-                    self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]{action}[/bold bright_white] [cyan]{label}[/cyan]")
+                    self.emit_session_output(
+                        sess_id,
+                        f"[bold cyan]●[/bold cyan] [bold bright_white]{action}[/bold bright_white] [cyan]{label}[/cyan]",
+                    )
                 scout_kwargs: dict[str, Any] = {
                     "max_papers": max_download or 2,
                     "on_status": _on_st,
@@ -589,9 +521,10 @@ class StudioProcessingMixin:
                         res_stems = res
                 except (asyncio.TimeoutError, TimeoutError) as to_exc:
                     raise TimeoutError("Auto-scout timed out") from to_exc
-                for s in res_stems or []:
-                    self.active_documents.add(s)
-                return f"Ingested {len(res_stems or [])} paper(s): {', '.join(res_stems or [])}"
+                stems_list = list(res_stems or [])
+                self.add_session_active_documents(stems_list, session_id=sess_id)
+                self.task_manager.record_ingested_stems(task_id, stems_list)
+                return f"Ingested {len(stems_list)} paper(s): {', '.join(stems_list)}"
             finally:
                 loop.close()
 
@@ -599,7 +532,6 @@ class StudioProcessingMixin:
             query_spec = self.scout.extract_search_criteria(clean_query, engine=self.engine)
         except Exception as exc:
             self.task_manager.log(task_id, f"[!] Criteria formulation fallback: {exc}")
-            from scrpcy.core.scout import ScoutQuery
             query_spec = ScoutQuery(keywords=clean_query, summary=clean_query)
 
         # Dynamic target quota between 5 and 10 papers
@@ -632,7 +564,6 @@ class StudioProcessingMixin:
 
         self.last_scout_results = curated
 
-        # Concurrent Ingestion (like uv / parallel pip package download)
         ingested_count = 0
         tried_titles: set[str] = set()
         papers_to_ingest = []
@@ -650,8 +581,9 @@ class StudioProcessingMixin:
         asyncio.set_event_loop(loop)
         try:
             for p_idx, p_obj in enumerate(papers_to_ingest, 1):
+                if cancel_event and cancel_event.is_set():
+                    break
                 stem = sanitize_filename(p_obj.title)
-                # Check Unpaywall if no PDF but has DOI
                 if not (p_obj.has_pdf and p_obj.pdf_url) and p_obj.doi:
                     email = getattr(self.config, "unpaywall_email", None)
                     try:
@@ -669,7 +601,8 @@ class StudioProcessingMixin:
                     self.task_manager.update_progress(task_id, f"Mengunduh [{p_idx}/{len(papers_to_ingest)}]: {p_obj.title[:30]}...")
                     try:
                         dl_p = loop.run_until_complete(self.scout.download_scout_paper(p_obj))
-                        self.active_documents.add(dl_p.stem)
+                        ingested_stems.append(dl_p.stem)
+                        self.add_session_active_documents([dl_p.stem], session_id=sess_id)
                         ingested_count += 1
                         self.task_manager.log(task_id, f"[✓] Ingested PDF [{ingested_count}/{len(papers_to_ingest)}]: {p_obj.title[:50]}")
                     except Exception as err:
@@ -677,7 +610,8 @@ class StudioProcessingMixin:
                         if p_obj.abstract:
                             try:
                                 self.scout.ingest_abstract_paper(p_obj)
-                                self.active_documents.add(stem)
+                                ingested_stems.append(stem)
+                                self.add_session_active_documents([stem], session_id=sess_id)
                                 ingested_count += 1
                                 self.task_manager.log(task_id, f"[✓] Fallback abstrak diindeks: {p_obj.title[:45]}")
                             except Exception:
@@ -687,26 +621,29 @@ class StudioProcessingMixin:
                     self.task_manager.update_progress(task_id, f"Indeks abstrak [{p_idx}/{len(papers_to_ingest)}]: {p_obj.title[:30]}...")
                     try:
                         self.scout.ingest_abstract_paper(p_obj)
-                        self.active_documents.add(stem)
+                        ingested_stems.append(stem)
+                        self.add_session_active_documents([stem], session_id=sess_id)
                         ingested_count += 1
                         self.task_manager.log(task_id, f"[✓] Ingested abstrak [{ingested_count}/{len(papers_to_ingest)}]: {p_obj.title[:50]}")
                     except Exception:
                         pass
 
-            self._sync_vault_cache()
+            self.task_manager.record_ingested_stems(task_id, ingested_stems)
+            self._sync_vault_cache(session_id=sess_id)
         finally:
             loop.close()
 
         # If still below target_quota and we have active documents, expand via Reference Mapping
-        if ingested_count < target_quota and self.active_documents:
-            stems = list(self.active_documents)
+        session_docs = self.get_session_active_documents(sess_id)
+        if ingested_count < target_quota and session_docs and not (cancel_event and cancel_event.is_set()):
+            stems = list(session_docs)
             self.task_manager.log(task_id, f"Menelusuri jejaring sitasi (Reference Mapping) untuk mencapai target {target_quota} dokumen...")
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             try:
                 cit_papers = loop.run_until_complete(self.scout.map_vault_citation_network(stems, limit=target_quota - ingested_count + 3))
                 for cp in cit_papers:
-                    if ingested_count >= target_quota:
+                    if ingested_count >= target_quota or (cancel_event and cancel_event.is_set()):
                         break
                     if cp.title.lower() in tried_titles:
                         continue
@@ -715,22 +652,26 @@ class StudioProcessingMixin:
                     if cp.has_pdf and cp.pdf_url:
                         try:
                             dl_path = loop.run_until_complete(self.scout.download_scout_paper(cp))
-                            self.active_documents.add(dl_path.stem)
-                            self._sync_vault_cache()
+                            ingested_stems.append(dl_path.stem)
+                            self.add_session_active_documents([dl_path.stem], session_id=sess_id)
+                            self._sync_vault_cache(session_id=sess_id)
                             ingested_count += 1
                             self.task_manager.log(task_id, f"[✓] Ingested sitasi PDF #{ingested_count}: {cp.title[:45]}")
                         except Exception:
                             if cp.abstract:
                                 self.scout.ingest_abstract_paper(cp)
-                                self.active_documents.add(safe_stem)
-                                self._sync_vault_cache()
+                                ingested_stems.append(safe_stem)
+                                self.add_session_active_documents([safe_stem], session_id=sess_id)
+                                self._sync_vault_cache(session_id=sess_id)
                                 ingested_count += 1
                     elif cp.abstract:
                         self.scout.ingest_abstract_paper(cp)
-                        self.active_documents.add(safe_stem)
-                        self._sync_vault_cache()
+                        ingested_stems.append(safe_stem)
+                        self.add_session_active_documents([safe_stem], session_id=sess_id)
+                        self._sync_vault_cache(session_id=sess_id)
                         ingested_count += 1
                         self.task_manager.log(task_id, f"[✓] Ingested sitasi abstrak #{ingested_count}: {cp.title[:45]}")
+                self.task_manager.record_ingested_stems(task_id, ingested_stems)
             except Exception as ref_exc:
                 self.task_manager.log(task_id, f"[!] Kendala reference mapping: {ref_exc}")
             finally:
@@ -743,7 +684,7 @@ class StudioProcessingMixin:
     def render_processing_summary(self) -> None:
         """Render concise status overview of background processing tasks."""
         tasks = self.task_manager.list_tasks()
-        running_tasks = [t for t in tasks if t.status == "running"]
+        running_tasks = [t for t in tasks if getattr(t, "is_active", t.status == "running")]
         completed_tasks = [t for t in tasks if t.status == "completed"]
         failed_tasks = [t for t in tasks if t.status == "failed"]
         cancelled_tasks = [t for t in tasks if t.status == "cancelled"]
@@ -779,12 +720,14 @@ class StudioProcessingMixin:
         table.add_column("Type", justify="center", style="dim", width=7)
         table.add_column("Description", style="white", no_wrap=True)
         table.add_column("Origin Session", style="dim cyan", width=14)
-        table.add_column("Status", justify="center", width=13)
+        table.add_column("Status", justify="center", width=15)
         table.add_column("Tokens", justify="right", style="dim yellow", width=11, no_wrap=True)
         table.add_column("Duration", justify="right", style="dim", width=8)
 
         for idx, t in enumerate(tasks, 1):
-            if t.status == "running":
+            if t.status == "waiting_deps":
+                status_badge = "[bold yellow][Waiting Deps][/bold yellow]"
+            elif t.status == "running":
                 status_badge = "[bold cyan][Running][/bold cyan]"
             elif t.status == "completed":
                 status_badge = "[bold white][Completed][/bold white]"
@@ -889,7 +832,10 @@ class StudioProcessingMixin:
         t_table.add_row("ID", f"[bold cyan]{task.id}[/bold cyan]")
         t_table.add_row("Name", task.name)
         t_table.add_row("Type", task.task_type.upper())
+        t_table.add_row("Lane", getattr(task, "lane", "io").upper())
         t_table.add_row("Status", task.status.upper())
+        if getattr(task, "depends_on", None):
+            t_table.add_row("Depends On", ", ".join(task.depends_on))
         t_table.add_row("Started At", str(task.started_at))
         t_table.add_row("Finished At", str(task.finished_at or 'Running...'))
         t_table.add_row("Duration", f"{task.duration_seconds:.2f} seconds")
@@ -973,13 +919,18 @@ class StudioProcessingMixin:
     def _background_docx_worker(self, task_id: str, filename: str) -> str:
         """Background worker compiling conversation synthesis into Word (.docx) manuscript."""
         self.task_manager.log(task_id, f"Initializing manuscript compilation: {filename}")
+        t_obj = self.task_manager.get_task(task_id) if self.task_manager else None
+        sess_id = t_obj.session_id if t_obj else None
+        runtime = self.get_session_runtime(sess_id)
+
         drafts_dir = self.workspace.root_dir / "drafts"
         drafts_dir.mkdir(parents=True, exist_ok=True)
         dest_path = drafts_dir / filename
 
+        history_items = runtime.get_history() if (runtime and runtime.get_history()) else list(self.conversation_history)
         sections = []
-        if self.conversation_history:
-            for idx, item in enumerate(self.conversation_history, 1):
+        if history_items:
+            for idx, item in enumerate(history_items, 1):
                 heading = f"{idx}. {item['query'][:60]}"
                 sections.append({
                     "heading": heading,
@@ -994,10 +945,14 @@ class StudioProcessingMixin:
             })
 
         references = []
-        for stem in self.active_documents:
-            content = self.workspace.read_from_cache(f"{stem}.md")
-            meta, _ = DocumentMetadata.from_frontmatter(content)
-            references.append(meta.model_dump())
+        doc_stems = self.get_session_active_documents(sess_id)
+        for stem in doc_stems:
+            try:
+                content = self.workspace.read_from_cache(f"{stem}.md")
+                meta, _ = DocumentMetadata.from_frontmatter(content)
+                references.append(meta.model_dump())
+            except Exception:
+                pass
 
         self.task_manager.log(task_id, f"Formatting {len(sections)} sections and {len(references)} citations via WordCraft...")
         self.wordcraft.create_document(
@@ -1015,4 +970,3 @@ class StudioProcessingMixin:
         summary = f"Generated manuscript: {dest_path.name}"
         self.task_manager.log(task_id, f"[✓] {summary}")
         return summary
-

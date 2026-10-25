@@ -21,7 +21,7 @@ from rich.markup import escape
 from rich.table import Table
 from rich.text import Text
 
-from scrpcy.core.chats import ChatManager, ChatSession
+from scrpcy.core.chats import ChatManager, ChatSession, SessionEvent, SessionRuntime
 from scrpcy.core.config import ConfigManager, ScrpcyConfig, detect_9router_key, fetch_9router_models
 from scrpcy.core.contracts import AdaptiveCriticVerdict, TaskContract, TaskContractExtractor
 from scrpcy.core.critic import CritiqueReport, DevilsAdvocate
@@ -113,6 +113,7 @@ class StudioBase:
         self.active_chat_session: ChatSession | None = None
         self._has_printed_banner: bool = False
         self._ui_events_lock = threading.Lock()
+        self._vault_sync_lock = threading.RLock()
         self._pending_ui_events: list[Callable[[], None]] = []
         self._pending_user_input: str = ""
         self._transient_toasts: list[dict[str, Any]] = []
@@ -231,14 +232,83 @@ class StudioBase:
         """Return list of document stems in the active workspace cache."""
         if not self.workspace:
             return []
-        return [p.stem for p in self.workspace.list_cached_documents()]
+        with self._vault_sync_lock:
+            return [p.stem for p in self.workspace.list_cached_documents()]
 
-    def _sync_vault_cache(self) -> list[str]:
-        """Index available markdown caches in the active workspace."""
-        cached_files = self._get_cached_stems()
-        for stem in cached_files:
-            self.active_documents.add(stem)
-        return cached_files
+    def _sync_vault_cache(self, session_id: str | None = None) -> list[str]:
+        """Thread-safely index available markdown caches into project and session runtimes."""
+        with self._vault_sync_lock:
+            cached_files = self._get_cached_stems()
+            for stem in cached_files:
+                self.active_documents.add(stem)
+            if self.chat_manager:
+                self.chat_manager.sync_all_runtimes_documents(cached_files)
+                if session_id:
+                    self.chat_manager.get_runtime(session_id, initial_documents=cached_files)
+            return cached_files
+
+    def get_session_runtime(self, session_id: str | None = None) -> SessionRuntime | None:
+        """Return isolated SessionRuntime for the target or active session."""
+        if not self.chat_manager:
+            return None
+        target_id = session_id or (self.active_chat_session.id if self.active_chat_session else None)
+        if not target_id:
+            return None
+        return self.chat_manager.get_runtime(target_id, initial_documents=self.active_documents)
+
+    def get_session_active_documents(self, session_id: str | None = None) -> set[str]:
+        """Return isolated set of active document stems for a session (falling back to workspace set)."""
+        rt = self.get_session_runtime(session_id)
+        if rt is not None:
+            docs = rt.get_documents()
+            if docs or not self.active_documents:
+                return docs
+            rt.add_documents(self.active_documents)
+            return rt.get_documents()
+        with self._vault_sync_lock:
+            return set(self.active_documents)
+
+    def add_session_active_documents(self, stems: list[str] | set[str], session_id: str | None = None) -> None:
+        """Thread-safely register newly ingested document stems into session and studio state."""
+        if not stems:
+            return
+        with self._vault_sync_lock:
+            for s in stems:
+                if s:
+                    self.active_documents.add(s)
+            rt = self.get_session_runtime(session_id)
+            if rt is not None:
+                rt.add_documents(stems)
+
+    def is_session_foreground(self, session_id: str | None, session_obj: ChatSession | None = None) -> bool:
+        """Return True ONLY if `session_id` is currently attached and rendered in the foreground chat view."""
+        if session_obj is not None and getattr(session_obj, "status", "running") == "detached":
+            return False
+        if not session_id:
+            return self.sub_mode in (None, "chat")
+        if self.chat_manager:
+            persisted = self.chat_manager.get_session(session_id)
+            if persisted and persisted.status == "detached":
+                return False
+        if self.active_chat_session and self.active_chat_session.id == session_id:
+            if getattr(self.active_chat_session, "status", "running") == "detached":
+                return False
+            return self.sub_mode in (None, "chat")
+        return False
+
+    def emit_session_output(
+        self,
+        session_id: str | None,
+        message: str,
+        session_obj: ChatSession | None = None,
+    ) -> None:
+        """UI Arbitrator: print to console if session is attached in foreground; otherwise spool to session buffer."""
+        if self.is_session_foreground(session_id, session_obj=session_obj):
+            self.console.print(message)
+        else:
+            rt = self.get_session_runtime(session_id)
+            if rt is not None:
+                rt.append_output(message)
 
     def print_banner(self) -> None:
         """Render the large ASCII art logo at most once."""
@@ -314,14 +384,20 @@ class StudioBase:
         if self._transient_toasts:
             toast_line = self._transient_toasts[-1]["message"]
 
-        # 3. Active running tasks indicator
+        # 3. Active running / queued tasks indicator
         task_line = None
         if hasattr(self, "task_manager") and self.task_manager:
             try:
                 if session_id:
-                    active_tasks = [t for t in self.task_manager.list_tasks_for_session(session_id) if t.status == "running"]
+                    active_tasks = [
+                        t for t in self.task_manager.list_tasks_for_session(session_id)
+                        if getattr(t, "is_active", t.status == "running")
+                    ]
                 else:
-                    active_tasks = [t for t in self.task_manager.list_tasks() if t.status == "running"]
+                    active_tasks = [
+                        t for t in self.task_manager.list_tasks()
+                        if getattr(t, "is_active", t.status == "running")
+                    ]
 
                 if active_tasks:
                     SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
@@ -331,7 +407,12 @@ class StudioBase:
                         desc = t.progress or "Memproses di background..."
                         task_line = f"[bold cyan]{frame}[/bold cyan] [bold bright_white]{t.name}[/bold bright_white] [dim]({desc})[/dim]"
                     else:
-                        task_line = f"[bold cyan]{frame}[/bold cyan] [bold bright_white]{len(active_tasks)} proses latar belakang aktif...[/bold bright_white]"
+                        running_cnt = sum(1 for t in active_tasks if t.status == "running")
+                        waiting_cnt = len(active_tasks) - running_cnt
+                        if waiting_cnt > 0:
+                            task_line = f"[bold cyan]{frame}[/bold cyan] [bold bright_white]{running_cnt} proses berjalan, {waiting_cnt} menunggu antrean dependensi...[/bold bright_white]"
+                        else:
+                            task_line = f"[bold cyan]{frame}[/bold cyan] [bold bright_white]{len(active_tasks)} proses latar belakang aktif...[/bold bright_white]"
             except Exception:
                 pass
 
@@ -339,7 +420,10 @@ class StudioBase:
         other_session_notice = None
         if session_id and hasattr(self, "task_manager") and self.task_manager and not task_line:
             try:
-                other_tasks = [t for t in self.task_manager.list_tasks() if t.status == "running" and t.session_id != session_id]
+                other_tasks = [
+                    t for t in self.task_manager.list_tasks()
+                    if getattr(t, "is_active", t.status == "running") and t.session_id != session_id
+                ]
                 if other_tasks:
                     SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
                     frame = SPINNER_FRAMES[int(now * 8) % len(SPINNER_FRAMES)]
@@ -674,5 +758,6 @@ class StudioBase:
     def clear_screen(self) -> None:
         """Clear the terminal screen and reprint logo."""
         os.system("cls" if os.name == "nt" else "clear")
+        init_windows_terminal()
         self.print_banner()
 

@@ -1,28 +1,52 @@
-"""Background Task Manager for non-blocking asynchronous operations in Scrpcy."""
+"""Background Task Manager with DAG dependency barriers, two-phase execution, and SQLite WAL persistence."""
 
 from __future__ import annotations
 
 from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime, timezone
 import asyncio
-import threading
+import inspect
 import json
 from pathlib import Path
 import sqlite3
+import threading
+import time
 from typing import Any, Callable
-from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
 
+TERMINAL_TASK_STATUSES = ("completed", "failed", "cancelled", "interrupted")
+ACTIVE_TASK_STATUSES = ("waiting_deps", "queued", "running")
+
+
 class TaskInfo(BaseModel):
-    """Metadata and runtime status for a background job."""
+    """Metadata, dependency graph links, and runtime status for a background job."""
 
     id: str = Field(..., description="Unique task identifier, e.g. task-1.")
     name: str = Field(..., description="Human-readable description of the operation.")
-    task_type: str = Field(..., description="Category: scout, download, convert, gdrive, agent.")
+    task_type: str = Field(..., description="Category: scout, download, convert, gdrive, web, docx, chat, agent.")
     session_id: str | None = Field(default=None, description="Optional chat session ID bound to this task.")
-    status: str = Field(default="running", description="Status: running, completed, failed, cancelled.")
+    lane: str = Field(
+        default="io",
+        description="Execution lane: 'turn' (serialized per session) or 'io' (parallel background I/O).",
+    )
+    depends_on: list[str] = Field(
+        default_factory=list,
+        description="List of upstream task IDs that must reach terminal state before this task starts.",
+    )
+    dedup_key: str | None = Field(
+        default=None,
+        description="Optional key for promise coalescing to avoid duplicate concurrent I/O tasks.",
+    )
+    ingested_stems: list[str] = Field(
+        default_factory=list,
+        description="Vault document stems produced or ingested by this task.",
+    )
+    status: str = Field(
+        default="running",
+        description="Status: waiting_deps, queued, running, completed, failed, cancelled, interrupted.",
+    )
     progress: str = Field(default="In progress...", description="Latest progress message.")
     started_at: str = Field(
         default_factory=lambda: datetime.now(timezone.utc).isoformat(),
@@ -33,6 +57,16 @@ class TaskInfo(BaseModel):
     error: str | None = Field(default=None, description="Error message if failed.")
     result_summary: str | None = Field(default=None, description="Short summary of task result.")
     tokens_burned: int = Field(default=0, description="Total tokens consumed by the task.")
+
+    @property
+    def is_active(self) -> bool:
+        """Return True if task is waiting on dependencies, queued, or actively running."""
+        return self.status in ACTIVE_TASK_STATUSES
+
+    @property
+    def is_terminal(self) -> bool:
+        """Return True if task has finished execution."""
+        return self.status in TERMINAL_TASK_STATUSES
 
     @property
     def result(self) -> str | None:
@@ -86,16 +120,19 @@ class CheckpointRequest:
 
 
 class TaskManager:
-    """Manages background threads, logging, cancellation, and task status with SQLite persistence."""
+    """Manages DAG-coordinated background tasks, promise barriers, and SQLite WAL persistence."""
 
-    def __init__(self, db_path: Path | str | None = None, max_workers: int = 4) -> None:
+    def __init__(self, db_path: Path | str | None = None, max_workers: int = 8) -> None:
         self.db_path = Path(db_path).expanduser().resolve() if db_path else None
         self._executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="scrpcy-worker")
         self._tasks: dict[str, TaskInfo] = {}
         self._futures: dict[str, Future[Any]] = {}
         self._cancel_events: dict[str, threading.Event] = {}
+        self._done_events: dict[str, threading.Event] = {}
+        self._pending_specs: dict[str, Callable[[], None]] = {}
         self._completion_callbacks: list[Callable[[TaskInfo], None]] = []
         self._lock = threading.RLock()
+        self._db_write_lock = threading.Lock()
         self._counter = 1
         self._checkpoints: dict[str, CheckpointRequest] = {}
         if self.db_path:
@@ -109,35 +146,51 @@ class TaskManager:
         self._load_from_db()
 
     def _get_connection(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(str(self.db_path), timeout=10.0)
+        conn = sqlite3.connect(str(self.db_path), timeout=15.0)
         conn.row_factory = sqlite3.Row
+        try:
+            conn.execute("PRAGMA journal_mode = WAL")
+            conn.execute("PRAGMA synchronous = NORMAL")
+            conn.execute("PRAGMA busy_timeout = 5000")
+        except Exception:
+            pass
         return conn
 
     def _init_db(self) -> None:
         if not self.db_path:
             return
-        with self._get_connection() as conn:
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS tasks (
-                    id TEXT PRIMARY KEY,
-                    name TEXT NOT NULL,
-                    task_type TEXT NOT NULL,
-                    session_id TEXT,
-                    status TEXT NOT NULL,
-                    progress TEXT,
-                    started_at TEXT NOT NULL,
-                    finished_at TEXT,
-                    logs TEXT,
-                    error TEXT,
-                    result_summary TEXT,
-                    tokens_burned INTEGER DEFAULT 0
-                )
-            """)
-            try:
-                conn.execute("ALTER TABLE tasks ADD COLUMN tokens_burned INTEGER DEFAULT 0")
-            except Exception:
-                pass
-            conn.commit()
+        with self._db_write_lock:
+            with self._get_connection() as conn:
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS tasks (
+                        id TEXT PRIMARY KEY,
+                        name TEXT NOT NULL,
+                        task_type TEXT NOT NULL,
+                        session_id TEXT,
+                        lane TEXT DEFAULT 'io',
+                        depends_on TEXT DEFAULT '[]',
+                        ingested_stems TEXT DEFAULT '[]',
+                        status TEXT NOT NULL,
+                        progress TEXT,
+                        started_at TEXT NOT NULL,
+                        finished_at TEXT,
+                        logs TEXT,
+                        error TEXT,
+                        result_summary TEXT,
+                        tokens_burned INTEGER DEFAULT 0
+                    )
+                """)
+                cur = conn.execute("PRAGMA table_info(tasks)")
+                cols = {row["name"] for row in cur.fetchall()}
+                if "tokens_burned" not in cols:
+                    conn.execute("ALTER TABLE tasks ADD COLUMN tokens_burned INTEGER DEFAULT 0")
+                if "lane" not in cols:
+                    conn.execute("ALTER TABLE tasks ADD COLUMN lane TEXT DEFAULT 'io'")
+                if "depends_on" not in cols:
+                    conn.execute("ALTER TABLE tasks ADD COLUMN depends_on TEXT DEFAULT '[]'")
+                if "ingested_stems" not in cols:
+                    conn.execute("ALTER TABLE tasks ADD COLUMN ingested_stems TEXT DEFAULT '[]'")
+                conn.commit()
 
     def _load_from_db(self) -> None:
         if not self.db_path:
@@ -159,7 +212,7 @@ class TaskManager:
 
                     status = r["status"]
                     err = r["error"]
-                    if status == "running":
+                    if status in ACTIVE_TASK_STATUSES:
                         status = "failed"
                         err = "Studio exited while task was running."
 
@@ -169,6 +222,22 @@ class TaskManager:
                             logs = json.loads(r["logs"])
                         except Exception:
                             logs = [r["logs"]]
+
+                    depends_on = []
+                    if "depends_on" in r.keys() and r["depends_on"]:
+                        try:
+                            depends_on = json.loads(r["depends_on"])
+                        except Exception:
+                            depends_on = []
+
+                    ingested_stems = []
+                    if "ingested_stems" in r.keys() and r["ingested_stems"]:
+                        try:
+                            ingested_stems = json.loads(r["ingested_stems"])
+                        except Exception:
+                            ingested_stems = []
+
+                    lane = r["lane"] if ("lane" in r.keys() and r["lane"]) else ("turn" if r["task_type"] in ("chat", "agent") else "io")
 
                     tokens_burned = 0
                     if "tokens_burned" in r.keys() and r["tokens_burned"] is not None:
@@ -182,6 +251,9 @@ class TaskManager:
                         name=r["name"],
                         task_type=r["task_type"],
                         session_id=r["session_id"],
+                        lane=lane,
+                        depends_on=depends_on,
+                        ingested_stems=ingested_stems,
                         status=status,
                         progress=r["progress"] or "",
                         started_at=r["started_at"],
@@ -192,6 +264,10 @@ class TaskManager:
                         tokens_burned=tokens_burned,
                     )
                     self._tasks[t_id] = info
+                    done_ev = threading.Event()
+                    if info.is_terminal:
+                        done_ev.set()
+                    self._done_events[t_id] = done_ev
 
                 self._counter = max_num + 1
 
@@ -199,37 +275,78 @@ class TaskManager:
         if not self.db_path:
             return
         try:
-            with self._get_connection() as conn:
-                conn.execute("""
-                    INSERT INTO tasks (
-                        id, name, task_type, session_id, status, progress,
-                        started_at, finished_at, logs, error, result_summary, tokens_burned
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(id) DO UPDATE SET
-                        status=excluded.status,
-                        progress=excluded.progress,
-                        finished_at=excluded.finished_at,
-                        logs=excluded.logs,
-                        error=excluded.error,
-                        result_summary=excluded.result_summary,
-                        tokens_burned=excluded.tokens_burned
-                """, (
-                    info.id,
-                    info.name,
-                    info.task_type,
-                    info.session_id,
-                    info.status,
-                    info.progress,
-                    info.started_at,
-                    info.finished_at,
-                    json.dumps(info.logs),
-                    info.error,
-                    info.result_summary,
-                    getattr(info, "tokens_burned", 0),
-                ))
-                conn.commit()
+            with self._db_write_lock:
+                with self._get_connection() as conn:
+                    conn.execute("""
+                        INSERT INTO tasks (
+                            id, name, task_type, session_id, lane, depends_on, ingested_stems,
+                            status, progress, started_at, finished_at, logs, error, result_summary, tokens_burned
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(id) DO UPDATE SET
+                            status=excluded.status,
+                            progress=excluded.progress,
+                            finished_at=excluded.finished_at,
+                            logs=excluded.logs,
+                            error=excluded.error,
+                            result_summary=excluded.result_summary,
+                            tokens_burned=excluded.tokens_burned,
+                            depends_on=excluded.depends_on,
+                            ingested_stems=excluded.ingested_stems
+                    """, (
+                        info.id,
+                        info.name,
+                        info.task_type,
+                        info.session_id,
+                        info.lane,
+                        json.dumps(info.depends_on),
+                        json.dumps(info.ingested_stems),
+                        info.status,
+                        info.progress,
+                        info.started_at,
+                        info.finished_at,
+                        json.dumps(info.logs),
+                        info.error,
+                        info.result_summary,
+                        getattr(info, "tokens_burned", 0),
+                    ))
+                    conn.commit()
         except Exception:
             pass
+
+    def _get_unmet_dependencies(self, dep_ids: list[str]) -> list[str]:
+        """Return list of task IDs from dep_ids that have not yet reached a terminal state."""
+        unmet: list[str] = []
+        with self._lock:
+            for d_id in dep_ids:
+                dep_task = self._tasks.get(d_id)
+                if dep_task and not dep_task.is_terminal:
+                    unmet.append(d_id)
+        return unmet
+
+    def _promote_ready_dependents(self) -> None:
+        """Check all waiting_deps tasks and dispatch those whose dependencies have all completed."""
+        to_launch: list[tuple[str, Callable[[], None]]] = []
+        with self._lock:
+            for tid, launch_fn in list(self._pending_specs.items()):
+                task = self._tasks.get(tid)
+                if not task or task.status != "waiting_deps":
+                    self._pending_specs.pop(tid, None)
+                    continue
+                unmet = self._get_unmet_dependencies(task.depends_on)
+                if not unmet:
+                    self._pending_specs.pop(tid, None)
+                    task.status = "running"
+                    task.progress = "Starting task..."
+                    task.started_at = datetime.now(timezone.utc).isoformat()
+                    self._persist_task(task)
+                    to_launch.append((tid, launch_fn))
+                else:
+                    task.progress = f"Menunggu selesai: {', '.join(unmet)}"
+
+        for tid, launch_fn in to_launch:
+            fut = self._executor.submit(launch_fn)
+            with self._lock:
+                self._futures[tid] = fut
 
     def submit(
         self,
@@ -239,39 +356,95 @@ class TaskManager:
         *args: Any,
         task_id: str | None = None,
         session_id: str | None = None,
+        depends_on: list[str] | None = None,
+        lane: str | None = None,
+        dedup_key: str | None = None,
+        auto_depend_session_io: bool = False,
+        auto_serialize_turn: bool = False,
         **kwargs: Any,
     ) -> TaskInfo:
-        """Submit a background job to run asynchronously without freezing Scrpcy."""
+        """Submit a background job with optional DAG dependencies and promise coalescing.
+
+        Tasks with unmet `depends_on` enter `waiting_deps` state without consuming a worker thread
+        slot until all upstream dependencies finish.
+        """
+        resolved_lane = lane or ("turn" if task_type in ("chat", "agent") else "io")
+
         with self._lock:
+            # 1. Promise Coalescing: if an identical active task with the same dedup_key exists, reuse it
+            if dedup_key:
+                for existing in self._tasks.values():
+                    if (
+                        existing.dedup_key == dedup_key
+                        and existing.session_id == session_id
+                        and existing.is_active
+                    ):
+                        return existing
+
             if not task_id:
                 task_id = f"task-{self._counter}"
                 self._counter += 1
 
+            # 2. Compute DAG dependencies
+            dep_list: list[str] = list(depends_on or [])
+            if session_id and (auto_depend_session_io or auto_serialize_turn):
+                for existing in self._tasks.values():
+                    if existing.id == task_id or existing.session_id != session_id or not existing.is_active:
+                        continue
+                    if auto_depend_session_io and existing.lane == "io" and existing.id not in dep_list:
+                        dep_list.append(existing.id)
+                    if auto_serialize_turn and existing.lane == "turn" and existing.id not in dep_list:
+                        dep_list.append(existing.id)
+
+            unmet_deps = self._get_unmet_dependencies(dep_list)
+
             cancel_event = threading.Event()
+            done_event = threading.Event()
             self._cancel_events[task_id] = cancel_event
+            self._done_events[task_id] = done_event
+
+            initial_status = "waiting_deps" if unmet_deps else "running"
+            initial_progress = (
+                f"Menunggu selesai: {', '.join(unmet_deps)}"
+                if unmet_deps
+                else "Starting task..."
+            )
 
             info = TaskInfo(
                 id=task_id,
                 name=name,
                 task_type=task_type,
                 session_id=session_id,
-                status="running",
-                progress="Starting task...",
+                lane=resolved_lane,
+                depends_on=dep_list,
+                dedup_key=dedup_key,
+                status=initial_status,
+                progress=initial_progress,
             )
             self._tasks[task_id] = info
             self._persist_task(info)
 
         def _worker_wrapper() -> None:
+            if cancel_event.is_set():
+                with self._lock:
+                    info.status = "cancelled"
+                    info.progress = "Cancelled by user."
+                    info.finished_at = datetime.now(timezone.utc).isoformat()
+                    self._persist_task(info)
+                done_event.set()
+                self._promote_ready_dependents()
+                return
+
             self.log(task_id, f"Started task: '{name}'")
             try:
-                # Pass cancel_event and task_id to target_fn if it accepts them
-                sig_params = __import__("inspect").signature(target_fn).parameters.values()
-                if "cancel_event" in kwargs or any(param.name == "cancel_event" for param in sig_params):
-                    kwargs["cancel_event"] = cancel_event
-                if "task_id" not in kwargs and any(param.name == "task_id" for param in sig_params):
-                    kwargs["task_id"] = task_id
+                sig_params = inspect.signature(target_fn).parameters.values()
+                call_kwargs = dict(kwargs)
+                if "cancel_event" in call_kwargs or any(param.name == "cancel_event" for param in sig_params):
+                    call_kwargs["cancel_event"] = cancel_event
+                if "task_id" not in call_kwargs and any(param.name == "task_id" for param in sig_params):
+                    call_kwargs["task_id"] = task_id
 
-                result = target_fn(*args, **kwargs)
+                result = target_fn(*args, **call_kwargs)
 
                 with self._lock:
                     if cancel_event.is_set():
@@ -301,6 +474,8 @@ class TaskManager:
                     self._persist_task(info)
                 self.log(task_id, f"Task encountered error: {exc}")
             finally:
+                done_event.set()
+                self._promote_ready_dependents()
                 with self._lock:
                     callbacks = list(self._completion_callbacks)
                 for cb in callbacks:
@@ -309,12 +484,95 @@ class TaskManager:
                     except Exception:
                         pass
 
+        with self._lock:
+            # Re-verify unmet_deps under lock in case a dependency finished while creating wrapper
+            still_unmet = self._get_unmet_dependencies(info.depends_on)
+            if still_unmet:
+                self._pending_specs[task_id] = _worker_wrapper
+                return info
+            else:
+                info.status = "running"
+                info.progress = "Starting task..."
+                self._persist_task(info)
+
         future = self._executor.submit(_worker_wrapper)
         with self._lock:
             self._futures[task_id] = future
 
         return info
 
+    def wait_or_promote(self, task_id: str, wait_ms: int = 2000) -> tuple[bool, TaskInfo | None]:
+        """Two-phase execution (`WaitMsBeforeAsync`): wait briefly for fast completion, else promote to background.
+
+        Returns `(completed_synchronously, task_info)`.
+        """
+        with self._lock:
+            done_ev = self._done_events.get(task_id)
+        if not done_ev:
+            return True, self.get_task(task_id)
+
+        finished = done_ev.wait(timeout=max(0.0, wait_ms / 1000.0))
+        return finished, self.get_task(task_id)
+
+    def wait_for_tasks(
+        self,
+        task_ids: list[str],
+        timeout: float | None = None,
+        cancel_event: threading.Event | None = None,
+    ) -> bool:
+        """Deterministically wait for all specified `task_ids` to reach a terminal state without busy-spinning."""
+        if not task_ids:
+            return True
+
+        deadline = (time.monotonic() + timeout) if timeout is not None else None
+        for tid in task_ids:
+            with self._lock:
+                done_ev = self._done_events.get(tid)
+                t_info = self._tasks.get(tid)
+            if not done_ev or (t_info and t_info.is_terminal):
+                continue
+
+            while not done_ev.is_set():
+                if cancel_event and cancel_event.is_set():
+                    return False
+                rem = (deadline - time.monotonic()) if deadline is not None else 0.1
+                if deadline is not None and rem <= 0:
+                    return False
+                done_ev.wait(timeout=min(0.1, max(0.01, rem)))
+        return True
+
+    def wait_for_session_io(
+        self,
+        session_id: str,
+        exclude_task_id: str | None = None,
+        timeout: float | None = None,
+        cancel_event: threading.Event | None = None,
+    ) -> list[TaskInfo]:
+        """Wait for all active I/O tasks (`scout`, `download`, `web`, `gdrive`) in `session_id` to finish."""
+        with self._lock:
+            io_ids = [
+                t.id for t in self._tasks.values()
+                if t.session_id == session_id
+                and t.id != exclude_task_id
+                and t.lane == "io"
+                and t.is_active
+            ]
+        if io_ids:
+            self.wait_for_tasks(io_ids, timeout=timeout, cancel_event=cancel_event)
+        with self._lock:
+            return [self._tasks[tid] for tid in io_ids if tid in self._tasks]
+
+    def record_ingested_stems(self, task_id: str, stems: list[str]) -> None:
+        """Record document stems ingested by a task for downstream consumers."""
+        if not stems:
+            return
+        with self._lock:
+            task = self._tasks.get(task_id)
+            if task:
+                for s in stems:
+                    if s and s not in task.ingested_stems:
+                        task.ingested_stems.append(s)
+                self._persist_task(task)
 
     def add_completion_callback(self, callback: Callable[[TaskInfo], None]) -> None:
         """Register a callback invoked whenever any background task completes, fails, or is cancelled."""
@@ -326,6 +584,18 @@ class TaskManager:
         """Return all tasks ordered newest first that belong to a specific chat session."""
         with self._lock:
             tasks = [t for t in self._tasks.values() if t.session_id == session_id]
+        tasks.sort(key=lambda t: t.started_at, reverse=True)
+        return tasks
+
+    def list_active_tasks_for_session(self, session_id: str, lane: str | None = None) -> list[TaskInfo]:
+        """Return active (`waiting_deps`, `queued`, `running`) tasks for a session, optionally filtered by lane."""
+        with self._lock:
+            tasks = [
+                t for t in self._tasks.values()
+                if t.session_id == session_id
+                and t.is_active
+                and (lane is None or t.lane == lane)
+            ]
         tasks.sort(key=lambda t: t.started_at, reverse=True)
         return tasks
 
@@ -379,12 +649,14 @@ class TaskManager:
         return None
 
     def cancel_task(self, identifier: str | int) -> bool:
-        """Signal cancellation for a running task."""
+        """Signal cancellation for a running or waiting task."""
         target = self.get_task(identifier)
         if not target:
             return False
 
+        cancelled_now = False
         with self._lock:
+            self._pending_specs.pop(target.id, None)
             req = self._checkpoints.get(target.id)
             if req:
                 req.response = "cancelled"
@@ -397,26 +669,33 @@ class TaskManager:
             if future and not future.done():
                 future.cancel()
 
-            if target.status == "running":
+            if target.is_active:
                 target.status = "cancelled"
                 target.progress = "Cancelled by user."
                 target.finished_at = datetime.now(timezone.utc).isoformat()
                 self.log(target.id, "Cancellation requested by user.")
                 self._persist_task(target)
-                return True
-        return False
+                cancelled_now = True
+
+            done_ev = self._done_events.get(target.id)
+            if done_ev:
+                done_ev.set()
+
+        if cancelled_now:
+            self._promote_ready_dependents()
+        return cancelled_now
 
     cancel = cancel_task
 
     def cancel_session_tasks(self, session_id: str) -> list[str]:
-        """Cancel all running tasks associated with a specific session."""
+        """Cancel all active tasks associated with a specific session."""
         with self._lock:
-            running_ids = [
+            active_ids = [
                 t.id for t in self._tasks.values()
-                if t.session_id == session_id and t.status == "running"
+                if t.session_id == session_id and t.is_active
             ]
         cancelled = []
-        for tid in running_ids:
+        for tid in active_ids:
             if self.cancel_task(tid):
                 cancelled.append(tid)
         return cancelled
@@ -426,18 +705,21 @@ class TaskManager:
         with self._lock:
             to_remove = [
                 tid for tid, t in self._tasks.items()
-                if t.status in ("completed", "failed", "cancelled", "interrupted")
+                if t.is_terminal
             ]
             for tid in to_remove:
                 del self._tasks[tid]
                 self._futures.pop(tid, None)
                 self._cancel_events.pop(tid, None)
+                self._done_events.pop(tid, None)
+                self._pending_specs.pop(tid, None)
             if self.db_path and to_remove:
                 try:
-                    with self._get_connection() as conn:
-                        q = f"DELETE FROM tasks WHERE id IN ({','.join(['?']*len(to_remove))})"
-                        conn.execute(q, to_remove)
-                        conn.commit()
+                    with self._db_write_lock:
+                        with self._get_connection() as conn:
+                            q = f"DELETE FROM tasks WHERE id IN ({','.join(['?']*len(to_remove))})"
+                            conn.execute(q, to_remove)
+                            conn.commit()
                 except Exception:
                     pass
             return len(to_remove)
@@ -445,7 +727,6 @@ class TaskManager:
     def shutdown(self, wait: bool = False) -> None:
         """Shut down background executor."""
         self._executor.shutdown(wait=wait, cancel_futures=True)
-
 
     def request_checkpoint(self, task_id: str, prompt_data: dict[str, Any], timeout: float = 300.0) -> Any:
         """Called by background worker thread to pause and ask user for decision."""

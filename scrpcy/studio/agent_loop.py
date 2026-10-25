@@ -201,27 +201,39 @@ class StudioAgentLoopMixin:
         except Exception:
             return {"decision": "ABSTRACT_ENOUGH", "reason": "Menggunakan abstrak resmi publikasi"}
 
-    def submit_chat_background(self, query: str) -> None:
-        """Submit a research query to run completely in background task manager."""
+    def submit_chat_background(self, query: str, depends_on: list[str] | None = None) -> TaskInfo | None:
+        """Submit a research query to run in the session's serialized turn lane with automatic I/O dependency barriers."""
         if not self.workspace or not self.engine:
             self.console.print("[red][x] No active project workspace loaded.[/red]\n")
-            return
+            return None
 
         session = self._ensure_active_chat_session() if self.chat_manager else None
         if not session:
             self.console.print("[red][x] No active chat session.[/red]\n")
-            return
+            return None
 
-        def _chat_worker(task_id: str) -> str:
+        def _chat_worker(task_id: str, cancel_event: threading.Event | None = None) -> str:
             start_t = time.time()
             self.task_manager.log(task_id, f"Pertanyaan: {query}")
             model_name = self.get_active_project_model()
             self.task_manager.log(task_id, f"Model: {model_name}")
-            self.task_manager.log(task_id, f"Memulai sintesis latar belakang...")
+            self.task_manager.log(task_id, "Memulai sintesis latar belakang...")
+
+            runtime = self.get_session_runtime(session.id)
+            inbox_events = runtime.drain_inbox() if runtime is not None else []
+            if inbox_events:
+                if self.vault_manager:
+                    try:
+                        self.vault_manager.reload_vault(force=False)
+                    except Exception:
+                        pass
+                self._sync_vault_cache(session_id=session.id)
+
             if self.chat_manager:
                 self.chat_manager.add_message(session.id, "user", query)
 
-            active_paths = [self.workspace.get_cache_path(f"{s}.md") for s in self.active_documents]
+            sess_docs = self.get_session_active_documents(session.id)
+            active_paths = [self.workspace.get_cache_path(f"{s}.md") for s in sess_docs]
             existing_paths = [p for p in active_paths if p.exists()]
 
             history_msgs = []
@@ -240,7 +252,10 @@ class StudioAgentLoopMixin:
                     model=model_name,
                     max_evidence_chunks=self.config.citation.max_evidence_chunks,
                     history=history_msgs,
+                    vector_vault=getattr(self.vault_manager, "vector_vault", None),
                 ):
+                    if cancel_event and cancel_event.is_set():
+                        return
                     tokens.append(tok)
 
             loop = asyncio.new_event_loop()
@@ -249,6 +264,9 @@ class StudioAgentLoopMixin:
                 loop.run_until_complete(_stream())
             finally:
                 loop.close()
+
+            if cancel_event and cancel_event.is_set():
+                return "Cancelled"
 
             resp = "".join(tokens).strip()
             if resp:
@@ -265,6 +283,7 @@ class StudioAgentLoopMixin:
                         text=resp,
                         vault_manager=self.vault_manager,
                         style=self.config.citation.style,
+                        active_documents=sess_docs,
                     )
 
             elapsed_c = time.time() - start_t
@@ -274,6 +293,8 @@ class StudioAgentLoopMixin:
 
             if self.chat_manager and resp:
                 self.chat_manager.add_message(session.id, "assistant", resp)
+            if runtime is not None and resp:
+                runtime.record_exchange(query, resp)
 
             self.task_manager.update_tokens(task_id, tot_tok)
             self.task_manager.log(task_id, f"Token: {in_tok:,} in · {out_tok:,} out · {tot_tok:,} total ({model_name}) • {elapsed_c:.1f}s")
@@ -285,10 +306,23 @@ class StudioAgentLoopMixin:
             task_type="chat",
             target_fn=_chat_worker,
             session_id=session.id,
+            depends_on=depends_on,
+            lane="turn",
+            auto_depend_session_io=True,
+            auto_serialize_turn=True,
         )
-        self.console.print(f"[bold green][✓] Pertanyaan dikirim ke proses latar belakang:[/bold green] [bold cyan]{task.id}[/bold cyan]")
-        self.console.print(" [dim]• Anda dapat tetap mengetik, keluar (/back), atau memantau status dengan /proc.[/dim]")
-        self.console.print(" [dim]• Saat selesai, AI akan otomatis mengevaluasi hasil dan menyimpan jawaban di sesi ini.[/dim]\n")
+        if task.status == "waiting_deps" and task.depends_on:
+            deps_str = ", ".join(task.depends_on)
+            self.console.print(
+                f"[bold green][✓] Pertanyaan dijadwalkan di antrean sesi:[/bold green] [bold cyan]{task.id}[/bold cyan] "
+                f"[bold yellow][Waiting Deps: {deps_str}][/bold yellow]"
+            )
+            self.console.print(" [dim]• Tugas ini otomatis menunggu proses I/O atau turn sebelumnya selesai sebelum mulai menyintesis.[/dim]\n")
+        else:
+            self.console.print(f"[bold green][✓] Pertanyaan dikirim ke proses latar belakang:[/bold green] [bold cyan]{task.id}[/bold cyan]")
+            self.console.print(" [dim]• Anda dapat tetap mengetik, keluar (/back), atau memantau status dengan /proc.[/dim]")
+            self.console.print(" [dim]• Saat selesai, AI akan otomatis mengevaluasi hasil dan menyimpan jawaban di sesi ini.[/dim]\n")
+        return task
 
     def _ask_ai_task_continuation(self, task_name: str, progress: str, elapsed: float) -> str:
         """Ultra-frugal AI check (~50 tokens) to decide whether to extend or abort a prolonged task."""
@@ -420,21 +454,31 @@ class StudioAgentLoopMixin:
 
             if cmd in ("/detach", "detach"):
                 self.render_mode_divider()
-                running_tasks = [t for t in self.task_manager.list_tasks_for_session(self.active_chat_session.id) if t.status == "running"] if (self.active_chat_session and self.task_manager) else []
+                running_tasks = (
+                    self.task_manager.list_active_tasks_for_session(self.active_chat_session.id)
+                    if (self.active_chat_session and self.task_manager)
+                    else []
+                )
                 if running_tasks:
                     self.console.print(f"[bold yellow]●[/bold yellow] [dim]{len(running_tasks)} proses latar belakang tetap berjalan di background. Anda dapat kembali ke sesi ini kapan saja dengan '/switch' atau 'resume {self.active_chat_session.name}'.[/dim]")
                 if self.active_chat_session and self.chat_manager:
                     self.chat_manager.update_session_status(self.active_chat_session.id, "detached")
+                    self.active_chat_session.status = "detached"
                 self.sub_mode = None
                 self.console.print(f"[dim]Kembali ke project root: {self.current_project.name if self.current_project else 'project'}>[/dim]\n")
                 return
             elif cmd in ("/back", "back"):
                 self.render_mode_divider()
-                running_tasks = [t for t in self.task_manager.list_tasks_for_session(self.active_chat_session.id) if t.status == "running"] if (self.active_chat_session and self.task_manager) else []
+                running_tasks = (
+                    self.task_manager.list_active_tasks_for_session(self.active_chat_session.id)
+                    if (self.active_chat_session and self.task_manager)
+                    else []
+                )
                 if running_tasks:
                     self.console.print(f"[bold yellow]●[/bold yellow] [dim]{len(running_tasks)} proses latar belakang tetap berjalan di background. Anda dapat kembali ke sesi ini kapan saja dengan '/switch' atau 'resume {self.active_chat_session.name}'.[/dim]")
                 if self.active_chat_session and self.chat_manager:
                     self.chat_manager.update_session_status(self.active_chat_session.id, "detached")
+                    self.active_chat_session.status = "detached"
                 self.sub_mode = "chat_hub"
                 self.console.print(f"[dim]Kembali ke menu chat: {self.current_project.name if self.current_project else 'project'}/chat>[/dim]\n")
                 return
@@ -442,6 +486,7 @@ class StudioAgentLoopMixin:
                 self.render_mode_divider()
                 if self.active_chat_session and self.chat_manager:
                     self.chat_manager.update_session_status(self.active_chat_session.id, "closed")
+                    self.active_chat_session.status = "closed"
                 self.sub_mode = "chat_hub"
                 self.console.print(f"[dim]Sesi '{self.active_chat_session.name if self.active_chat_session else ''}' ditutup (terminated).[/dim]\n")
                 return
@@ -449,23 +494,11 @@ class StudioAgentLoopMixin:
                 if not arg:
                     self.console.print("[yellow]Gunakan: /bg <pertanyaan atau perintah>[/yellow]\n")
                     return
-                # MVP single active process per session check
-                if self.active_chat_session and self.task_manager:
-                    running_tasks = [t for t in self.task_manager.list_tasks_for_session(self.active_chat_session.id) if t.status == "running"]
-                    if running_tasks:
-                        t = running_tasks[0]
-                        self.console.print(
-                            f"\n[bold yellow][!] Sesi '{self.active_chat_session.name}' sudah memiliki 1 proses aktif:[/bold yellow] "
-                            f"[bold cyan]{t.name}[/bold cyan] [dim]({t.id})[/dim]\n"
-                            f"  [dim]• Sesuai arsitektur MVP, setiap sesi dibatasi tepat 1 proses aktif.\n"
-                            f"  • Tunggu proses selesai atau ketik /cancel untuk membatalkan.[/dim]\n"
-                        )
-                        return
                 self.submit_chat_background(arg)
                 return
             elif cmd in ("/cancel", "/stop"):
                 if self.active_chat_session:
-                    session_tasks = [t for t in self.task_manager.list_tasks_for_session(self.active_chat_session.id) if t.status == "running"]
+                    session_tasks = self.task_manager.list_active_tasks_for_session(self.active_chat_session.id)
                     if session_tasks:
                         for t in session_tasks:
                             self.task_manager.cancel_task(t.id)
@@ -548,19 +581,16 @@ class StudioAgentLoopMixin:
                 self.handle_project_command(clean)
             return
 
-        # MVP Single Process Busy Guard:
-        # If this session already has an active running task, guard against new prompt submission
+        # Serialized Turn Lane Coordination:
+        # If another synthesis turn (lane == "turn") is already running in this session,
+        # queue this prompt onto the session's serialized turn lane (depends_on) instead of dropping it.
         if self.active_chat_session and self.task_manager:
-            running_tasks = [t for t in self.task_manager.list_tasks_for_session(self.active_chat_session.id) if t.status == "running"]
-            if running_tasks:
-                active_t = running_tasks[0]
-                self.console.print(
-                    f"\n[bold yellow][!] Sesi '{self.active_chat_session.name}' sedang menjalankan 1 proses aktif:[/bold yellow] "
-                    f"[bold cyan]{active_t.name}[/bold cyan] [dim]({active_t.id})[/dim]\n"
-                    f"  [dim]• Status: {active_t.progress or 'Sedang memproses...'} (Tunggu hingga selesai)\n"
-                    f"  • Ketik /cancel untuk membatalkan proses.\n"
-                    f"  • Ketik /detach atau /back untuk beralih ke sesi/menu lain.[/dim]\n"
-                )
+            active_turns = self.task_manager.list_active_tasks_for_session(
+                self.active_chat_session.id,
+                lane="turn",
+            )
+            if active_turns:
+                self.submit_chat_background(clean, depends_on=[t.id for t in active_turns])
                 return
 
         # Any input without leading "/" in chat mode is strictly treated as an AI conversation prompt
@@ -973,7 +1003,9 @@ class StudioAgentLoopMixin:
                             # User input is disabled during processing per user UX preference
 
                     cur_desc_val = step_desc() if callable(step_desc) else str(step_desc)
-                    max_w = max(20, (self.console.width or shutil.get_terminal_size((80, 24)).columns) - 1)
+                    from scrpcy.ui.interactive import get_live_terminal_size
+                    term_cols, _ = get_live_terminal_size(self.console)
+                    max_w = max(20, term_cols - 1)
                     avail_desc = max(5, max_w - len(hint_str) - 8)
                     if len(cur_desc_val) > avail_desc:
                         disp_desc = cur_desc_val[:avail_desc - 1] + "…"
@@ -1026,6 +1058,8 @@ class StudioAgentLoopMixin:
                 name=f"Google Drive Ingest: {gdrive_id[:12]}...",
                 task_type="gdrive",
                 target_fn=self._background_gdrive_worker,
+                session_id=session.id if session else None,
+                lane="io",
                 file_id=gdrive_id,
             )
             self.console.print(
@@ -1040,9 +1074,10 @@ class StudioAgentLoopMixin:
                 self.vault_manager.reload_vault()
             except Exception:
                 pass
-        self._sync_vault_cache()
+        self._sync_vault_cache(session_id=session.id if session else None)
 
-        active_paths = [self.workspace.get_cache_path(f"{s}.md") for s in self.active_documents]
+        sess_docs = self.get_session_active_documents(session.id if session else None)
+        active_paths = [self.workspace.get_cache_path(f"{s}.md") for s in sess_docs]
         existing_paths = [p for p in active_paths if p.exists()]
 
         # Dynamic Task Contract Extraction (Goal, Scope, Format, & Definition of Done)
@@ -1111,7 +1146,7 @@ class StudioAgentLoopMixin:
                 target_topic = custom_keyword if (choice == "custom" and custom_keyword) else suggested_topic
                 self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Mencari[/bold bright_white] [dim]Menelusuri repositori ilmiah (OpenAlex & Semantic Scholar)...[/dim]")
 
-                initial_active = set(self.active_documents)
+                initial_active = set(self.get_session_active_documents(session.id if session else None))
                 task = self.task_manager.submit(
                     name=f"Deep Research Scout: {target_topic}",
                     task_type="scout",
@@ -1120,6 +1155,7 @@ class StudioAgentLoopMixin:
                     topic_query=target_topic,
                     max_download=target_quota,
                     session_id=session.id if session else None,
+                    lane="io",
                 )
 
                 scout_timeout = getattr(self.config, "scout_timeout", 180.0)
@@ -1173,6 +1209,7 @@ class StudioAgentLoopMixin:
                     self.console.print(f"  [dim]Tugas '{task.name}' ({task.id}) tetap berjalan di background (Ketik /proc untuk pantau).[/dim]\n")
                     if session and self.chat_manager:
                         self.chat_manager.update_session_status(session.id, "detached")
+                        session.status = "detached"
                     self.sub_mode = "chat_hub"
                     return
                 except (asyncio.CancelledError, KeyboardInterrupt):
@@ -1217,12 +1254,13 @@ class StudioAgentLoopMixin:
                 elif completed_task and completed_task.status == "completed":
                     if self.vault_manager:
                         self.vault_manager.reload_vault(force=False)
-                    self._sync_vault_cache()
-                    new_stems = [s for s in self.active_documents if s not in initial_active]
-                    if not new_stems and self.active_documents:
-                        new_stems = list(self.active_documents)
+                    self._sync_vault_cache(session_id=session.id if session else None)
+                    updated_docs = self.get_session_active_documents(session.id if session else None)
+                    new_stems = [s for s in updated_docs if s not in initial_active]
+                    if not new_stems and updated_docs:
+                        new_stems = list(updated_docs)
 
-                    active_paths = [self.workspace.get_cache_path(f"{s}.md") for s in self.active_documents]
+                    active_paths = [self.workspace.get_cache_path(f"{s}.md") for s in updated_docs]
                     existing_paths = [p for p in active_paths if p.exists()]
                     evidence = self.engine.evidence_synthesizer.retrieve_evidence(
                         query=query,
@@ -1366,6 +1404,8 @@ class StudioAgentLoopMixin:
             last_v_report: VerificationReport | None = None
             last_c_report: CritiqueReport | None = None
 
+            session_runtime = self.get_session_runtime(session.id if session else None)
+
             # Gather previous session dialogue history
             history_msgs: list[dict[str, str]] = []
             if self.chat_manager and session:
@@ -1383,6 +1423,42 @@ class StudioAgentLoopMixin:
                 while turn < max_agent_turns:
                     if cancel_event and cancel_event.is_set():
                         return
+
+                    # Turn-Boundary Inbox Drain: consume completed background I/O events
+                    if session_runtime is not None:
+                        inbox_events = session_runtime.drain_inbox()
+                        completed_io_events = [
+                            ev for ev in inbox_events
+                            if ev.status == "completed" and ev.task_type in ("scout", "download", "web", "gdrive")
+                        ]
+                        if completed_io_events:
+                            if self.vault_manager:
+                                try:
+                                    self.vault_manager.reload_vault(force=False)
+                                except Exception:
+                                    pass
+                            self._sync_vault_cache(session_id=session.id if session else None)
+                            for ev in completed_io_events:
+                                if ev.ingested_stems:
+                                    self.add_session_active_documents(ev.ingested_stems, session_id=session.id if session else None)
+                            sess_docs_now = self.get_session_active_documents(session.id if session else None)
+                            active_paths_now = [self.workspace.get_cache_path(f"{s}.md") for s in sess_docs_now]
+                            current_docs = [p for p in active_paths_now if p.exists()]
+                            curr_evidence = self.engine.evidence_synthesizer.retrieve_evidence(
+                                query=query,
+                                documents=current_docs,
+                                max_chunks=self.config.citation.max_evidence_chunks,
+                                vector_vault=getattr(self.vault_manager, "vector_vault", None),
+                            )
+                            citation_guide = self._format_vault_citation_guide()
+                            if turn > 0:
+                                ev_summaries = "; ".join(f"{ev.task_name} ({ev.summary})" for ev in completed_io_events)
+                                current_query = (
+                                    f"{citation_guide}\n\n"
+                                    f"[NOTIFIKASI TURN-BOUNDARY: Tugas latar belakang selesai: {ev_summaries}. "
+                                    f"Dokumen baru telah diindeks ke vault sesi ini.]\n\n"
+                                    f"{current_query}"
+                                )
 
                     turn_tokens: list[str] = []
                     step_msg = f"Menyintesis argumen ilmiah (Turn {turn + 1})..." if turn == 0 else f"Menyintesis perbaikan draf (Turn {turn + 1})..."
@@ -1433,9 +1509,12 @@ class StudioAgentLoopMixin:
                             sub_label = "(Membaca teks dari vault...)"
 
                         self.task_manager.log(task_id, f"Eksekusi alat internal: {action_label} {target_label}")
-                        if not (session and session.status == "detached"):
-                            self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]{action_label}[/bold bright_white] [cyan]{target_label}[/cyan] [dim]{sub_label}[/dim]")
-                            self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Menganalisis[/bold bright_white] [dim]Menyintesis temuan dokumen ke dalam jawaban akhir...[/dim]\n")
+                        self.emit_session_output(
+                            session.id if session else None,
+                            f"[bold cyan]●[/bold cyan] [bold bright_white]{action_label}[/bold bright_white] [cyan]{target_label}[/cyan] [dim]{sub_label}[/dim]\n"
+                            f"[bold cyan]●[/bold cyan] [bold bright_white]Menganalisis[/bold bright_white] [dim]Menyintesis temuan dokumen ke dalam jawaban akhir...[/dim]\n",
+                            session_obj=session,
+                        )
 
                         current_query = (
                             f"### HASIL EKSEKUSI ALAT ({cmd_line}):\n"
@@ -1445,7 +1524,8 @@ class StudioAgentLoopMixin:
                             f"Pertanyaan riset asli pengguna: \"{query}\"\n"
                             f"Berdasarkan informasi di atas, silakan lanjutkan sintesis akademis mendalam 100% yakin dan berikan jawaban akhir tanpa menyuruh pengguna menjalankan perintah slash."
                         )
-                        current_docs = [self.workspace.get_cache_path(f"{s}.md") for s in self.active_documents if self.workspace.get_cache_path(f"{s}.md").exists()]
+                        sess_docs_now = self.get_session_active_documents(session.id if session else None)
+                        current_docs = [self.workspace.get_cache_path(f"{s}.md") for s in sess_docs_now if self.workspace.get_cache_path(f"{s}.md").exists()]
                         turn += 1
                         if self._check_agent_turn_checkpoint(
                             turn=turn,
@@ -1466,7 +1546,7 @@ class StudioAgentLoopMixin:
                                     evidence=curr_evidence,
                                     vault_manager=self.vault_manager,
                                     style=self.config.citation.style,
-                                    active_documents=self.active_documents,
+                                    active_documents=self.get_session_active_documents(session.id if session else None),
                                 )
                             break
                         continue
@@ -1570,8 +1650,11 @@ class StudioAgentLoopMixin:
                         if getattr(task_contract, 'max_words', 1000) <= 750 and c_rep.passed and v_rep.grounding_score >= 0.7:
                             max_refine_limit = 1
                         if refinement_turns >= max_refine_limit:
-                            if not (session and session.status == "detached"):
-                                self.console.print("[bold yellow]●[/bold yellow] [bold bright_white]Epistemic Convergence[/bold bright_white] [dim]Batas 3 iterasi perbaikan tercapai. Memfinalisasi draf terbaik dengan catatan dialektis...[/dim]\n")
+                            self.emit_session_output(
+                                session.id if session else None,
+                                "[bold yellow]●[/bold yellow] [bold bright_white]Epistemic Convergence[/bold bright_white] [dim]Batas 3 iterasi perbaikan tercapai. Memfinalisasi draf terbaik dengan catatan dialektis...[/dim]\n",
+                                session_obj=session,
+                            )
                             raw_final = best_draft or p_resp
                             dialectic_caveat = (
                                 "\n\n> [!NOTE]\n"
@@ -1585,7 +1668,7 @@ class StudioAgentLoopMixin:
                                     evidence=curr_evidence,
                                     vault_manager=self.vault_manager,
                                     style=self.config.citation.style,
-                                    active_documents=self.active_documents,
+                                    active_documents=self.get_session_active_documents(session.id if session else None),
                                 )
                             last_v_report = v_rep
                             last_c_report = c_rep
@@ -1596,11 +1679,18 @@ class StudioAgentLoopMixin:
                                 return
                             refinement_turns += 1
                             self.task_manager.log(task_id, f"Devil's Advocate: Skor {c_rep.score}/10: {c_rep.critique_summary}")
-                            if not (session and session.status == "detached"):
-                                self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Devil's Advocate[/bold bright_white] [yellow]Skor {c_rep.score}/10: {c_rep.critique_summary}[/yellow]")
+                            self.emit_session_output(
+                                session.id if session else None,
+                                f"[bold cyan]●[/bold cyan] [bold bright_white]Devil's Advocate[/bold bright_white] [yellow]Skor {c_rep.score}/10: {c_rep.critique_summary}[/yellow]",
+                                session_obj=session,
+                            )
                             stems = self._get_cached_stems()
-                            if stems and self.scout and not (session and session.status == "detached"):
-                                self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Reference Mapping[/bold bright_white] [cyan]Menelusuri jaringan sitasi dokumen vault...[/cyan]")
+                            if stems and self.scout:
+                                self.emit_session_output(
+                                    session.id if session else None,
+                                    "[bold cyan]●[/bold cyan] [bold bright_white]Reference Mapping[/bold bright_white] [cyan]Menelusuri jaringan sitasi dokumen vault...[/cyan]",
+                                    session_obj=session,
+                                )
                             mapped_papers: list[Any] = []
                             newly_ingested_stems: list[str] = []
                             directed_queries = list(getattr(c_rep, "directed_search_queries", []))
@@ -1699,8 +1789,11 @@ class StudioAgentLoopMixin:
                                         except Exception:
                                             downloaded = False
                                     if not downloaded:
-                                        if not (session and session.status == "detached"):
-                                            self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Paywall Terdeteksi[/bold bright_white] [yellow][{idx}/{len(mapped_papers)}] {p.title[:50]}...[/yellow] [dim](Naskah berbayar)[/dim]")
+                                        self.emit_session_output(
+                                            session.id if session else None,
+                                            f"[bold cyan]●[/bold cyan] [bold bright_white]Paywall Terdeteksi[/bold bright_white] [yellow][{idx}/{len(mapped_papers)}] {p.title[:50]}...[/yellow] [dim](Naskah berbayar)[/dim]",
+                                            session_obj=session,
+                                        )
                                         decision = await asyncio.to_thread(self._ask_ai_paywall_action, p, query)
                                         if decision.get("decision") == "FIND_ALTERNATIVE":
                                             try:
@@ -1711,11 +1804,11 @@ class StudioAgentLoopMixin:
                                                     or getattr(self.config, "default_model", "").startswith("mock")
                                                 )
                                                 is_scout_mocked = (
-                                    hasattr(self.scout, "_is_mock")
-                                    or "search_multi_source" in getattr(self.scout, "__dict__", {})
-                                    or "Mock" in type(getattr(self.scout, "search_multi_source", None)).__name__
-                                    or "Mock" in type(self.scout).__name__
-                                )
+                                                    hasattr(self.scout, "_is_mock")
+                                                    or "search_multi_source" in getattr(self.scout, "__dict__", {})
+                                                    or "Mock" in type(getattr(self.scout, "search_multi_source", None)).__name__
+                                                    or "Mock" in type(self.scout).__name__
+                                                )
                                                 if not (is_mock_env and not is_scout_mocked):
                                                     sq = ScoutQuery(keywords=f"{p.title} open access", is_oa_only=True)
                                                     alt_candidates = await self.scout.search_multi_source(sq, limit=5)
@@ -1724,8 +1817,11 @@ class StudioAgentLoopMixin:
                                                         await self.scout.download_scout_paper(alt_oa[0])
                                                         newly_ingested_stems.append(sanitize_filename(alt_oa[0].title))
                                                     else:
-                                                        if not (session and session.status == "detached"):
-                                                            self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Abstrak Memadai[/bold bright_white] [green]Mengindeks abstrak resmi paper ke vault[/green]")
+                                                        self.emit_session_output(
+                                                            session.id if session else None,
+                                                            "[bold cyan]●[/bold cyan] [bold bright_white]Abstrak Memadai[/bold bright_white] [green]Mengindeks abstrak resmi paper ke vault[/green]",
+                                                            session_obj=session,
+                                                        )
                                                         await asyncio.to_thread(self.scout.ingest_abstract_paper, p)
                                                         newly_ingested_stems.append(safe_stem)
                                                 else:
@@ -1735,29 +1831,43 @@ class StudioAgentLoopMixin:
                                                 await asyncio.to_thread(self.scout.ingest_abstract_paper, p)
                                                 newly_ingested_stems.append(safe_stem)
                                         else:
-                                            if not (session and session.status == "detached"):
-                                                self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Abstrak Memadai[/bold bright_white] [green]Mengindeks abstrak resmi paper ke vault[/green] [dim]({decision.get('reason', '')})[/dim]")
+                                            self.emit_session_output(
+                                                session.id if session else None,
+                                                f"[bold cyan]●[/bold cyan] [bold bright_white]Abstrak Memadai[/bold bright_white] [green]Mengindeks abstrak resmi paper ke vault[/green] [dim]({decision.get('reason', '')})[/dim]",
+                                                session_obj=session,
+                                            )
                                             await asyncio.to_thread(self.scout.ingest_abstract_paper, p)
                                             newly_ingested_stems.append(safe_stem)
 
                             t_info = self.task_manager.get_task(task_id) if self.task_manager else None
                             is_task_alive = bool(t_info and t_info.status == "running" and not (cancel_event and cancel_event.is_set()))
-                            if is_task_alive and not (session and session.status == "detached"):
+                            if is_task_alive:
                                 if mapped_papers:
-                                    self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Directed Gap Search[/bold bright_white] [cyan]Menemukan {len(mapped_papers)} literatur penambal celah empiris.[/cyan]")
+                                    self.emit_session_output(
+                                        session.id if session else None,
+                                        f"[bold cyan]●[/bold cyan] [bold bright_white]Directed Gap Search[/bold bright_white] [cyan]Menemukan {len(mapped_papers)} literatur penambal celah empiris.[/cyan]",
+                                        session_obj=session,
+                                    )
                                 if newly_ingested_stems:
-                                    self.console.print(f"[bold green][✓] Berhasil mengindeks {len(newly_ingested_stems)} dokumen sitasi baru ke vault.[/bold green]")
+                                    lines_msg = [
+                                        f"[bold green][✓] Berhasil mengindeks {len(newly_ingested_stems)} dokumen sitasi baru ke vault.[/bold green]"
+                                    ]
                                     for s in newly_ingested_stems:
-                                        self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Membaca[/bold bright_white] [cyan]cache/{s}.md[/cyan] [dim](Siap untuk sintesis)[/dim]")
-                                    self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Menganalisis[/bold bright_white] [dim]Menyintesis argumen ilmiah terpadu dengan literatur baru...[/dim]\n")
+                                        lines_msg.append(f"[bold cyan]●[/bold cyan] [bold bright_white]Membaca[/bold bright_white] [cyan]cache/{s}.md[/cyan] [dim](Siap untuk sintesis)[/dim]")
+                                    lines_msg.append("[bold cyan]●[/bold cyan] [bold bright_white]Menganalisis[/bold bright_white] [dim]Menyintesis argumen ilmiah terpadu dengan literatur baru...[/dim]\n")
+                                    self.emit_session_output(
+                                        session.id if session else None,
+                                        "\n".join(lines_msg),
+                                        session_obj=session,
+                                    )
 
                             if newly_ingested_stems:
                                 if self.vault_manager:
                                     self.vault_manager.reload_vault(False)
-                                self._sync_vault_cache()
-                                for s in newly_ingested_stems:
-                                    self.active_documents.add(s)
-                                active_paths = [self.workspace.get_cache_path(f"{s}.md") for s in self.active_documents]
+                                self._sync_vault_cache(session_id=session.id if session else None)
+                                self.add_session_active_documents(newly_ingested_stems, session_id=session.id if session else None)
+                                sess_docs_now = self.get_session_active_documents(session.id if session else None)
+                                active_paths = [self.workspace.get_cache_path(f"{s}.md") for s in sess_docs_now]
                                 current_docs = [p for p in active_paths if p.exists()]
                                 curr_evidence = self.engine.evidence_synthesizer.retrieve_evidence(
                                     query=query,
@@ -1807,7 +1917,7 @@ class StudioAgentLoopMixin:
                                         evidence=curr_evidence,
                                         vault_manager=self.vault_manager,
                                         style=self.config.citation.style,
-                                        active_documents=self.active_documents,
+                                        active_documents=self.get_session_active_documents(session.id if session else None),
                                     )
                                 last_v_report = v_rep
                                 last_c_report = c_rep
@@ -1817,8 +1927,11 @@ class StudioAgentLoopMixin:
                         elif v_rep.hallucination_warning:
                             refinement_turns += 1
                             self.task_manager.log(task_id, f"FactChecker: {v_rep.hallucination_warning}")
-                            if not (session and session.status == "detached"):
-                                self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Memverifikasi Fakta[/bold bright_white] [yellow]{v_rep.hallucination_warning}[/yellow]")
+                            self.emit_session_output(
+                                session.id if session else None,
+                                f"[bold cyan]●[/bold cyan] [bold bright_white]Memverifikasi Fakta[/bold bright_white] [yellow]{v_rep.hallucination_warning}[/yellow]",
+                                session_obj=session,
+                            )
                             unsupported_claims = [c.claim for c in v_rep.claims if c.status == "unsupported"]
                             if unsupported_claims:
                                 locked_sec = ("### KLAIM TERVERIFIKASI SEBELUMNYA (WAJIB DIPERTAHANKAN VERBATIM):\n" + "\n".join(f"- {c}" for c in locked_supported_claims[:6]) + "\n\n") if locked_supported_claims else ""
@@ -1850,7 +1963,7 @@ class StudioAgentLoopMixin:
                                         evidence=curr_evidence,
                                         vault_manager=self.vault_manager,
                                         style=self.config.citation.style,
-                                        active_documents=self.active_documents,
+                                        active_documents=self.get_session_active_documents(session.id if session else None),
                                     )
                                 last_v_report = v_rep
                                 last_c_report = c_rep
@@ -1868,7 +1981,7 @@ class StudioAgentLoopMixin:
                             evidence=curr_evidence,
                             vault_manager=self.vault_manager,
                             style=self.config.citation.style,
-                            active_documents=self.active_documents,
+                            active_documents=self.get_session_active_documents(session.id if session else None),
                         )
                         if hasattr(self, "logger") and self.logger:
                             self.logger.log_bibliography_appended(
@@ -1921,6 +2034,8 @@ class StudioAgentLoopMixin:
 
             if self.chat_manager and session:
                 self.chat_manager.add_message(session.id, "assistant", final_response_persisted)
+            if session_runtime is not None:
+                session_runtime.record_exchange(query, final_response_persisted)
             self.conversation_history.append({
                 "query": query,
                 "response": final_response_persisted,
@@ -1954,6 +2069,7 @@ class StudioAgentLoopMixin:
             task_type="agent",
             target_fn=_bg_chat_synthesis_worker,
             session_id=session.id if session else None,
+            lane="turn",
         )
 
         async def _wait_for_chat_task() -> TaskInfo:
@@ -2024,12 +2140,14 @@ class StudioAgentLoopMixin:
         except SessionDetachSignal:
             if session and self.chat_manager:
                 self.chat_manager.update_session_status(session.id, "detached")
+                session.status = "detached"
             self.console.print(f"\n[bold cyan]● Sesi '{session.name if session else ''}' di-detach ke latar belakang.[/bold cyan]")
             self.console.print(f"[dim]● Proses sintesis AI ({task.id}) tetap berjalan di background. Pantau di menu Processing atau buka kembali sesi kapan saja.[/dim]\n")
             raise
         except SessionCloseSignal:
             if session and self.chat_manager:
                 self.chat_manager.update_session_status(session.id, "closed")
+                session.status = "closed"
             if hasattr(self, "task_manager") and self.task_manager:
                 if session:
                     self.task_manager.cancel_session_tasks(session.id)

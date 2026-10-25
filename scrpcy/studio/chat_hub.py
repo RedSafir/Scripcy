@@ -72,71 +72,38 @@ from scrpcy.ui.interactive import (
 
 class StudioChatHubMixin:
     def run_interactive_sessions(self) -> None:
-
         """TMUX-style sessions manager without typing."""
-
         while self.sub_mode == "sessions" and self.current_project:
-
             active_cnt, closed_cnt = self.chat_manager.get_active_sessions_count() if self.chat_manager else (0, 0)
-
             total_cnt = active_cnt + closed_cnt
 
-
-
             header_table = Table(box=None, padding=(0, 2), show_header=False)
-
             header_table.add_column("Property", style="dim", width=20)
-
             header_table.add_column("Value", style="white")
-
             header_table.add_row("Active / Running", f"[bold cyan]{active_cnt}[/bold cyan] sessions")
-
             header_table.add_row("Closed / Terminated", f"[dim]{closed_cnt} sessions[/dim]")
-
             header_table.add_row("Total Sessions", f"{total_cnt} sessions")
 
-
-
             options = [
-
                 ("list", f"List Sessions ({total_cnt} total)"),
-
                 ("new", "New Session"),
-
                 ("back", "Back to Project"),
-
             ]
 
-
-
             choice = interactive_menu(
-
                 options=options,
-
                 header=header_table,
-
                 console=self.console,
-
                 footer_hint="↑/↓ Navigate · enter Select · 1-3 Quick jump · esc Back",
-
                 allow_back=True,
-
             )
 
-
-
             if choice in ("back", None):
-
                 return
 
-
-
             if choice == "list":
-
                 self.run_interactive_sessions_list()
-
             elif choice == "new":
-
                 self.interactive_create_chat_session()
 
     def run_interactive_sessions_list(self) -> None:
@@ -146,65 +113,43 @@ class StudioChatHubMixin:
             return
 
         while True:
-
             sessions = self.chat_manager.list_sessions() if self.chat_manager else []
-
             if not sessions:
-
                 self.console.print("\n[dim]Belum ada sesi percakapan. Buat sesi baru untuk memulai.\n[/dim]")
-
                 time.sleep(1.2)
-
                 return
-
-
 
             columns = [
                 {"name": "#", "justify": "right", "width": 3, "style": "dim"},
                 {"name": "Session Name", "style": "bold white", "width": 30},
-                {"name": "Status", "justify": "center", "width": 14},
+                {"name": "Status", "justify": "center", "width": 16},
                 {"name": "Exchanges", "justify": "center", "width": 12, "style": "dim"},
                 {"name": "Last Updated", "style": "dim", "width": 18},
             ]
 
-
-
             def _row_builder(idx: int, s: Any, is_selected: bool) -> list[Any]:
-
                 st = getattr(s, "status", "running")
-
+                active_tasks = (
+                    self.task_manager.list_active_tasks_for_session(s.id)
+                    if hasattr(self, "task_manager") and self.task_manager
+                    else []
+                )
                 if st == "running":
-
-                    st_badge = "[bold cyan][Running][/bold cyan]"
-
+                    st_badge = f"[bold cyan][Running • {len(active_tasks)}][/bold cyan]" if active_tasks else "[bold cyan][Running][/bold cyan]"
                 elif st == "detached":
-
-                    st_badge = "[dim cyan][Detached][/dim cyan]"
-
+                    st_badge = f"[bold yellow][Detached • {len(active_tasks)}][/bold yellow]" if active_tasks else "[dim cyan][Detached][/dim cyan]"
                 else:
-
                     st_badge = "[dim][Closed][/dim]"
 
-
-
                 is_curr = self.active_chat_session and s.id == self.active_chat_session.id
-
                 arrow = "> " if is_selected else "  "
-
                 name_text = Text()
-
                 name_text.append(arrow, style="bold cyan" if is_selected else "dim")
-
                 name_text.append(s.name[:20], style="bold bright_white" if is_selected else "white")
-
                 if is_curr:
-
                     name_text.append(" (current)", style="dim cyan")
 
-
-
                 last_str = s.updated_at[:16].replace("T", " ") if s.updated_at else ""
-
                 return [
                     str(idx + 1),
                     name_text,
@@ -213,15 +158,9 @@ class StudioChatHubMixin:
                     last_str,
                 ]
 
-
-
             header = Text()
-
             header.append(f"Saved Chat Sessions [{self.current_project.name}]", style="bold bright_white")
-
             header.append(f" • {len(sessions)} sessions", style="dim")
-
-
 
             actions = [
                 ("attach", "Attach / Open", "enter"),
@@ -249,7 +188,7 @@ class StudioChatHubMixin:
                 self.interactive_create_chat_session()
             elif action == "attach" and selected_sess:
                 st = getattr(selected_sess, "status", "running")
-                if st == "closed":
+                if st in ("closed", "detached"):
                     self.chat_manager.update_session_status(selected_sess.id, "running")
                     selected_sess.status = "running"
                 self.active_chat_session = selected_sess
@@ -259,19 +198,12 @@ class StudioChatHubMixin:
                 self.sub_mode = None
 
             elif action == "start" and selected_sess:
-
                 self.chat_manager.update_session_status(selected_sess.id, "running")
-
                 selected_sess.status = "running"
-
                 self.active_chat_session = selected_sess
-
                 self.active_skill_name = selected_sess.active_skill
-
                 self.sub_mode = "chat"
-
                 self.run_interactive_chat_session(selected_sess)
-
                 self.sub_mode = "sessions"
 
             elif action == "terminate" and selected_sess:
@@ -296,51 +228,39 @@ class StudioChatHubMixin:
                     self.console.print(f"[bold green][✓] Riwayat chat '{selected_sess.name}' berhasil dihapus.[/bold green]\n")
 
     def interactive_create_chat_session(self) -> None:
-
         """Create new session and immediately attach."""
-
         try:
-
             self.console.print()
-
             s_name = self.console.input("[bold cyan]Nama sesi baru (tekan Enter untuk default): [/bold cyan]").strip()
-
             session = self.chat_manager.create_session(
-
                 name=s_name if s_name else None,
-
                 active_skill=self.active_skill_name,
-
                 status="running",
-
             )
-
             self.active_chat_session = session
-
             self.sub_mode = "chat"
-
             self.run_interactive_chat_session(session)
-
             self.sub_mode = "sessions"
-
         except (KeyboardInterrupt, EOFError):
-
             self.console.print()
-
             return
 
-    def run_interactive_chat_session(self, session: ChatSession) -> None:
+    def _drain_and_render_session_buffer(self, session_id: str) -> None:
+        """Flush any spooled background notifications recorded while the session was detached."""
+        runtime = self.get_session_runtime(session_id)
+        if runtime is not None:
+            buffered_lines = runtime.drain_output_buffer()
+            for line in buffered_lines:
+                self.console.print(line)
 
+    def run_interactive_chat_session(self, session: ChatSession) -> None:
         """Active Chat Session: Prompt user for messages, supports /detach and /close."""
+        if self.chat_manager and getattr(session, "status", "running") != "running":
+            self.chat_manager.update_session_status(session.id, "running")
+            session.status = "running"
 
         model_name = self.get_active_project_model()
-
         model_label = _format_model_display_name(model_name)
-
-        eff = self.get_active_project_effort()
-
-
-
         eff = self.get_active_project_effort()
         skill_lbl = f" • {session.active_skill}" if session.active_skill and session.active_skill != "scrpcy_manual" else ""
         self.console.print(f"\n[bold cyan]● Sesi Aktif: {session.name}[/bold cyan] [dim]({model_label} • {eff} effort{skill_lbl})[/dim]")
@@ -357,18 +277,23 @@ class StudioChatHubMixin:
                 self.console.print()
                 render_academic_markdown(msg.content, console=self.console)
 
+        # Flush any spooled output that occurred while session was detached
+        self._drain_and_render_session_buffer(session.id)
+
         # Show active background tasks bound to this session upon entering/re-entering
         session_tasks = self.task_manager.list_tasks_for_session(session.id) if self.task_manager else []
-        running = [t for t in session_tasks if t.status == "running"]
+        running = [t for t in session_tasks if getattr(t, "is_active", t.status == "running")]
         if running:
-            self.console.print(f"\n[bold yellow]●[/bold yellow] [bold bright_white]{len(running)} proses latar belakang sedang berjalan di sesi ini:[/bold bright_white]")
+            self.console.print(f"\n[bold yellow]●[/bold yellow] [bold bright_white]{len(running)} proses latar belakang sedang aktif di sesi ini:[/bold bright_white]")
             for t in running:
-                self.console.print(f"  [bold cyan]●[/bold cyan] [cyan]{t.name}[/cyan] [dim]({t.progress or 'Sedang memproses...'} • ID: {t.id})[/dim]")
+                st_tag = " [Waiting Deps]" if t.status == "waiting_deps" else ""
+                self.console.print(f"  [bold cyan]●[/bold cyan] [cyan]{t.name}{st_tag}[/cyan] [dim]({t.progress or 'Sedang memproses...'} • ID: {t.id})[/dim]")
             self.console.print(" [dim]• Indikator proses aktif di bawah prompt. Ketik /proc untuk pantau atau /detach untuk kembali.[/dim]\n")
 
         while self.sub_mode == "chat" and self.active_chat_session:
-            # Flush any background UI events first
+            # Flush any background UI events and session buffer first
             self._flush_pending_ui_events()
+            self._drain_and_render_session_buffer(session.id)
 
             # Process any pending suggested actions on the main thread
             if hasattr(self, "_pending_session_actions") and self._pending_session_actions.get(session.id):
@@ -376,7 +301,6 @@ class StudioChatHubMixin:
                 self._execute_action_list(pending_acts)
 
             prompt_lbl = f"{self.current_project.name}/chat/{session.name}> "
-
             ctx_lbl = f"{self.current_project.name} • {session.name}"
 
             try:
@@ -399,69 +323,43 @@ class StudioChatHubMixin:
                 ).strip()
 
             except (KeyboardInterrupt, EOFError):
-
                 # Ctrl+C inside chat detaches to sessions menu
-
                 self.chat_manager.update_session_status(session.id, "detached")
-
+                session.status = "detached"
                 self.console.print(f"\n[bold cyan]● Sesi '{session.name}' di-detach ke latar belakang.[/bold cyan]\n")
-
                 break
 
-
-
             if not raw_input:
-
                 continue
-
-
 
             clean_lower = raw_input.lower().strip()
 
             if clean_lower in ("/detach", "detach", "/back", "back"):
-
                 self.chat_manager.update_session_status(session.id, "detached")
-
+                session.status = "detached"
                 self.console.print(f"\n[bold cyan]● Sesi '{session.name}' di-detach ke latar belakang.[/bold cyan]\n")
-
                 break
-
-
 
             if clean_lower in ("/close", "close", "/terminate", "terminate", "/exit", "exit"):
                 self.chat_manager.update_session_status(session.id, "closed")
+                session.status = "closed"
                 if hasattr(self, "task_manager") and self.task_manager:
                     self.task_manager.cancel_session_tasks(session.id)
 
                 self.console.print(f"\n[dim]● Sesi '{session.name}' ditutup (terminated).[/dim]\n")
-
                 break
 
-
-
             if raw_input in ("?", "/help"):
-
                 interactive_help_view(
-
                     console=self.console,
-
                     current_model=model_name,
-
                     current_effort=eff,
-
                     is_project_mode=True,
-
                     is_chat_mode=True,
-
                     mode="chat",
-
                     context_label=ctx_lbl,
-
                 )
-
                 continue
-
-
 
             # Process prompt through chat logic
             try:
@@ -553,6 +451,9 @@ class StudioChatHubMixin:
                 return
             session = self.chat_manager.get_session(target)
             if session:
+                if getattr(session, "status", "running") != "running":
+                    self.chat_manager.update_session_status(session.id, "running")
+                    session.status = "running"
                 self.render_mode_divider()
                 self.active_chat_session = session
                 self.sub_mode = "chat"
@@ -560,7 +461,7 @@ class StudioChatHubMixin:
 
                 # Display any active or recent background tasks bound to this session
                 session_tasks = self.task_manager.list_tasks_for_session(session.id)
-                running = [t for t in session_tasks if t.status == "running"]
+                running = [t for t in session_tasks if getattr(t, "is_active", t.status == "running")]
                 completed = [t for t in session_tasks if t.status == "completed"]
                 if running:
                     self.console.print(f"[bold yellow]●[/bold yellow] [bold bright_white]{len(running)} proses latar belakang masih berjalan di sesi ini:[/bold bright_white]")
@@ -571,6 +472,7 @@ class StudioChatHubMixin:
                     for t in completed[:2]:
                         self.console.print(f"  [dim]•[/dim] [cyan]{t.name}[/cyan] [dim]({t.result_summary or 'Selesai'})[/dim]")
 
+                self._drain_and_render_session_buffer(session.id)
                 self.cmd_chat_history()
                 self.console.print("[dim]Ketik pertanyaan riset Anda langsung di bawah ini. Gunakan '/' untuk perintah (contoh: /back).[/dim]\n")
             else:
@@ -645,10 +547,14 @@ class StudioChatHubMixin:
         if self.chat_manager and sub not in ("chat", "c", "hub"):
             session = self.chat_manager.get_session(sub)
             if session:
+                if getattr(session, "status", "running") != "running":
+                    self.chat_manager.update_session_status(session.id, "running")
+                    session.status = "running"
                 self.render_mode_divider()
                 self.active_chat_session = session
                 self.sub_mode = "chat"
                 self.console.print(f"[bold green][✓] Masuk ke sesi percakapan:[/bold green] [bold cyan]{session.name}[/bold cyan] ({session.message_count} pesan)")
+                self._drain_and_render_session_buffer(session.id)
                 self.cmd_chat_history()
                 self.console.print("[dim]Ketik pertanyaan riset Anda langsung di bawah ini. Gunakan '/' untuk perintah (contoh: /back).[/dim]\n")
                 return
@@ -726,4 +632,3 @@ class StudioChatHubMixin:
         dest_file = drafts_dir / f"{self.active_chat_session.name}.md"
         out_path = self.chat_manager.export_to_markdown(self.active_chat_session.id, dest_file)
         self.console.print(f"[bold green][✓] Chat dialogue exported to Markdown:[/bold green] [bold cyan]{out_path}[/bold cyan]\n")
-

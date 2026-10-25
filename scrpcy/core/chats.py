@@ -1,12 +1,14 @@
-"""SQLite-backed multi-session chat manager for Scrpcy academic research studio."""
+"""SQLite-backed multi-session chat manager and isolated per-session actor runtime for Scrpcy."""
 
 from __future__ import annotations
 
+from collections import deque
 from datetime import datetime, timezone
 import json
 from pathlib import Path
 import sqlite3
-from typing import Any
+import threading
+from typing import Any, Iterable
 
 from pydantic import BaseModel, Field
 
@@ -40,51 +42,191 @@ class ChatSession(BaseModel):
     message_count: int = Field(default=0)
 
 
+class SessionEvent(BaseModel):
+    """Structured event delivered to a session's turn-boundary notification inbox."""
+
+    event_type: str = Field(default="task_completed", description="task_completed, task_failed, task_cancelled, system_note")
+    session_id: str = Field(default="default")
+    task_id: str | None = None
+    task_name: str | None = None
+    task_type: str | None = None
+    status: str | None = None
+    summary: str | None = None
+    error: str | None = None
+    ingested_stems: list[str] = Field(default_factory=list)
+    created_at: str = Field(
+        default_factory=lambda: datetime.now(timezone.utc).isoformat(),
+    )
+
+    def model_post_init(self, __context: Any) -> None:
+        if self.status is None:
+            if self.event_type == "task_completed":
+                self.status = "completed"
+            elif self.event_type == "task_failed":
+                self.status = "failed"
+            elif self.event_type == "task_cancelled":
+                self.status = "cancelled"
+            else:
+                self.status = self.event_type
+
+
+class SessionRuntime:
+    """Isolated per-session state lane preventing cross-session race conditions on detach/attach."""
+
+    def __init__(self, session_id: str, initial_documents: Iterable[str] | None = None) -> None:
+        self.session_id = session_id
+        self._lock = threading.RLock()
+        self.active_documents: set[str] = set(initial_documents or ())
+        self.conversation_history: list[dict[str, str]] = []
+        self.inbox: deque[SessionEvent] = deque(maxlen=250)
+        self.output_buffer: deque[str] = deque(maxlen=200)
+        self.wake_event = threading.Event()
+
+    def add_documents(self, stems: Iterable[str]) -> None:
+        """Thread-safely register newly ingested document stems into this session's context."""
+        with self._lock:
+            for s in stems:
+                if s:
+                    self.active_documents.add(s)
+
+    def remove_documents(self, stems: Iterable[str]) -> None:
+        """Thread-safely remove archived document stems from this session's context."""
+        with self._lock:
+            for s in stems:
+                self.active_documents.discard(s)
+
+    def get_documents(self) -> set[str]:
+        """Return a snapshot copy of active document stems for this session."""
+        with self._lock:
+            return set(self.active_documents)
+
+    def snapshot_documents(self) -> set[str]:
+        """Alias for get_documents returning an isolated snapshot copy."""
+        return self.get_documents()
+
+    def record_exchange(self, query: str, response: str) -> None:
+        """Append a completed user/assistant exchange to this session's in-memory history."""
+        with self._lock:
+            self.conversation_history.append({"query": query, "response": response})
+
+    def get_history(self) -> list[dict[str, str]]:
+        """Return a snapshot copy of this session's conversation history."""
+        with self._lock:
+            return list(self.conversation_history)
+
+    def push_event(self, event: SessionEvent) -> None:
+        """Enqueue a background task completion or system event and trigger reactive wakeup."""
+        with self._lock:
+            self.inbox.append(event)
+            for s in event.ingested_stems:
+                if s:
+                    self.active_documents.add(s)
+            self.wake_event.set()
+
+    def drain_inbox(self) -> list[SessionEvent]:
+        """Consume all pending events at a turn boundary and clear the wakeup signal."""
+        with self._lock:
+            events = list(self.inbox)
+            self.inbox.clear()
+            self.wake_event.clear()
+            return events
+
+    def append_output(self, line: str) -> None:
+        """Spool background log or notification line while session is detached from terminal view."""
+        if not line:
+            return
+        with self._lock:
+            self.output_buffer.append(line)
+
+    def drain_output_buffer(self) -> list[str]:
+        """Drain spooled output lines when user re-attaches to this session."""
+        with self._lock:
+            lines = list(self.output_buffer)
+            self.output_buffer.clear()
+            return lines
+
+    def drain_output(self) -> list[str]:
+        """Alias for drain_output_buffer."""
+        return self.drain_output_buffer()
+
+
 class ChatManager:
-    """Manages chat sessions and messages stored inside a project's chats.db SQLite database."""
+    """Manages chat sessions, per-session runtimes, and messages stored inside chats.db (WAL mode)."""
 
     def __init__(self, db_path: Path | str) -> None:
         self.db_path = Path(db_path).expanduser().resolve()
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self._db_lock = threading.RLock()
+        self._runtimes: dict[str, SessionRuntime] = {}
         self._init_db()
 
+    def get_runtime(self, session_id: str, initial_documents: Iterable[str] | None = None) -> SessionRuntime:
+        """Return or initialize the isolated SessionRuntime actor state for `session_id`."""
+        with self._db_lock:
+            rt = self._runtimes.get(session_id)
+            if rt is None:
+                rt = SessionRuntime(session_id=session_id, initial_documents=initial_documents)
+                self._runtimes[session_id] = rt
+            elif initial_documents:
+                rt.add_documents(initial_documents)
+            return rt
+
+    def sync_all_runtimes_documents(self, stems: Iterable[str]) -> None:
+        """Propagate workspace vault cache stems to all active session runtimes."""
+        with self._db_lock:
+            for rt in self._runtimes.values():
+                rt.add_documents(stems)
+
+    def remove_documents_from_all_runtimes(self, stems: Iterable[str]) -> None:
+        """Remove archived document stems from all active session runtimes."""
+        with self._db_lock:
+            for rt in self._runtimes.values():
+                rt.remove_documents(stems)
+
     def _get_connection(self) -> sqlite3.Connection:
-        """Create a connection with foreign keys enabled."""
-        conn = sqlite3.connect(str(self.db_path), timeout=10.0)
+        """Create a connection with foreign keys and WAL concurrency mode enabled."""
+        conn = sqlite3.connect(str(self.db_path), timeout=15.0)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON")
+        try:
+            conn.execute("PRAGMA journal_mode = WAL")
+            conn.execute("PRAGMA synchronous = NORMAL")
+            conn.execute("PRAGMA busy_timeout = 5000")
+        except Exception:
+            pass
         return conn
 
     def _init_db(self) -> None:
         """Create sessions and messages tables with indexes."""
-        with self._get_connection() as conn:
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS sessions (
-                    id TEXT PRIMARY KEY,
-                    name TEXT NOT NULL,
-                    active_skill TEXT NOT NULL DEFAULT 'scrpcy_manual',
-                    status TEXT NOT NULL DEFAULT 'running',
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
-                )
-            """)
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS messages (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    session_id TEXT NOT NULL,
-                    role TEXT NOT NULL,
-                    content TEXT NOT NULL,
-                    created_at TEXT NOT NULL,
-                    citations TEXT NOT NULL DEFAULT '[]',
-                    FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE
-                )
-            """)
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id)")
-            # Migration check for existing databases
-            cur = conn.execute("PRAGMA table_info(sessions)")
-            existing_cols = [row["name"] for row in cur.fetchall()]
-            if "status" not in existing_cols:
-                conn.execute("ALTER TABLE sessions ADD COLUMN status TEXT NOT NULL DEFAULT 'running'")
+        with self._db_lock:
+            with self._get_connection() as conn:
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS sessions (
+                        id TEXT PRIMARY KEY,
+                        name TEXT NOT NULL,
+                        active_skill TEXT NOT NULL DEFAULT 'scrpcy_manual',
+                        status TEXT NOT NULL DEFAULT 'running',
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL
+                    )
+                """)
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS messages (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        session_id TEXT NOT NULL,
+                        role TEXT NOT NULL,
+                        content TEXT NOT NULL,
+                        created_at TEXT NOT NULL,
+                        citations TEXT NOT NULL DEFAULT '[]',
+                        FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE
+                    )
+                """)
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id)")
+                cur = conn.execute("PRAGMA table_info(sessions)")
+                existing_cols = [row["name"] for row in cur.fetchall()]
+                if "status" not in existing_cols:
+                    conn.execute("ALTER TABLE sessions ADD COLUMN status TEXT NOT NULL DEFAULT 'running'")
+                conn.commit()
 
     def create_session(
         self,
@@ -93,39 +235,40 @@ class ChatManager:
         status: str = "running",
     ) -> ChatSession:
         """Create a new chat session. Auto-generates 'session1', 'session2', etc. if name is omitted."""
-        with self._get_connection() as conn:
-            if not name or not name.strip():
-                # Find next sequential session number
-                cur = conn.execute("SELECT name FROM sessions WHERE name LIKE 'session%' OR name LIKE 'chat%'")
-                existing_names = [row["name"] for row in cur.fetchall()]
-                idx = 1
-                while f"session{idx}" in existing_names or f"chat{idx}" in existing_names:
-                    idx += 1
-                clean_name = f"session{idx}"
-            else:
-                clean_name = name.strip()
+        with self._db_lock:
+            with self._get_connection() as conn:
+                if not name or not name.strip():
+                    cur = conn.execute("SELECT name FROM sessions WHERE name LIKE 'session%' OR name LIKE 'chat%'")
+                    existing_names = [row["name"] for row in cur.fetchall()]
+                    idx = 1
+                    while f"session{idx}" in existing_names or f"chat{idx}" in existing_names:
+                        idx += 1
+                    clean_name = f"session{idx}"
+                else:
+                    clean_name = name.strip()
 
-            session_id = clean_name.lower().replace(" ", "_")
-            now_str = datetime.now(timezone.utc).isoformat()
+                session_id = clean_name.lower().replace(" ", "_")
+                now_str = datetime.now(timezone.utc).isoformat()
 
-            # Ensure unique session_id if collision occurs
-            orig_id = session_id
-            counter = 1
-            while True:
-                cur = conn.execute("SELECT id FROM sessions WHERE id = ?", (session_id,))
-                if not cur.fetchone():
-                    break
-                session_id = f"{orig_id}_{counter}"
-                counter += 1
+                orig_id = session_id
+                counter = 1
+                while True:
+                    cur = conn.execute("SELECT id FROM sessions WHERE id = ?", (session_id,))
+                    if not cur.fetchone():
+                        break
+                    session_id = f"{orig_id}_{counter}"
+                    counter += 1
 
-            conn.execute(
-                """
-                INSERT INTO sessions (id, name, active_skill, status, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?)
-                """,
-                (session_id, clean_name, active_skill, status, now_str, now_str),
-            )
-            conn.commit()
+                conn.execute(
+                    """
+                    INSERT INTO sessions (id, name, active_skill, status, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (session_id, clean_name, active_skill, status, now_str, now_str),
+                )
+                conn.commit()
+
+            self.get_runtime(session_id)
 
         return ChatSession(
             id=session_id,
@@ -139,16 +282,17 @@ class ChatManager:
 
     def list_sessions(self) -> list[ChatSession]:
         """Return all chat sessions sorted by updated_at descending."""
-        with self._get_connection() as conn:
-            cur = conn.execute("""
-                SELECT s.id, s.name, s.active_skill, s.status, s.created_at, s.updated_at,
-                       COUNT(m.id) AS msg_count
-                FROM sessions s
-                LEFT JOIN messages m ON s.id = m.session_id
-                GROUP BY s.id
-                ORDER BY s.updated_at DESC
-            """)
-            rows = cur.fetchall()
+        with self._db_lock:
+            with self._get_connection() as conn:
+                cur = conn.execute("""
+                    SELECT s.id, s.name, s.active_skill, s.status, s.created_at, s.updated_at,
+                           COUNT(m.id) AS msg_count
+                    FROM sessions s
+                    LEFT JOIN messages m ON s.id = m.session_id
+                    GROUP BY s.id
+                    ORDER BY s.updated_at DESC
+                """)
+                rows = cur.fetchall()
 
         result: list[ChatSession] = []
         for r in rows:
@@ -180,14 +324,16 @@ class ChatManager:
         return None
 
     def delete_session(self, identifier: str | int) -> bool:
-        """Delete a chat session and all associated messages."""
+        """Delete a chat session, its runtime state, and all associated messages."""
         session = self.get_session(identifier)
         if not session:
             return False
 
-        with self._get_connection() as conn:
-            conn.execute("DELETE FROM sessions WHERE id = ?", (session.id,))
-            conn.commit()
+        with self._db_lock:
+            self._runtimes.pop(session.id, None)
+            with self._get_connection() as conn:
+                conn.execute("DELETE FROM sessions WHERE id = ?", (session.id,))
+                conn.commit()
         return True
 
     def add_message(
@@ -201,20 +347,21 @@ class ChatManager:
         now_str = datetime.now(timezone.utc).isoformat()
         citations_json = json.dumps(citations or [])
 
-        with self._get_connection() as conn:
-            cur = conn.execute(
-                """
-                INSERT INTO messages (session_id, role, content, created_at, citations)
-                VALUES (?, ?, ?, ?, ?)
-                """,
-                (session_id, role, content, now_str, citations_json),
-            )
-            msg_id = cur.lastrowid
-            conn.execute(
-                "UPDATE sessions SET updated_at = ? WHERE id = ?",
-                (now_str, session_id),
-            )
-            conn.commit()
+        with self._db_lock:
+            with self._get_connection() as conn:
+                cur = conn.execute(
+                    """
+                    INSERT INTO messages (session_id, role, content, created_at, citations)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (session_id, role, content, now_str, citations_json),
+                )
+                msg_id = cur.lastrowid
+                conn.execute(
+                    "UPDATE sessions SET updated_at = ? WHERE id = ?",
+                    (now_str, session_id),
+                )
+                conn.commit()
 
         return ChatMessage(
             id=msg_id or 0,
@@ -231,7 +378,7 @@ class ChatManager:
         params: list[Any] = [session_id]
 
         if limit is not None and limit > 0:
-            query = f"""
+            query = """
                 SELECT * FROM (
                     SELECT id, session_id, role, content, created_at, citations
                     FROM messages
@@ -242,9 +389,10 @@ class ChatManager:
             """
             params = [session_id, limit]
 
-        with self._get_connection() as conn:
-            cur = conn.execute(query, params)
-            rows = cur.fetchall()
+        with self._db_lock:
+            with self._get_connection() as conn:
+                cur = conn.execute(query, params)
+                rows = cur.fetchall()
 
         result: list[ChatMessage] = []
         for r in rows:
@@ -264,20 +412,23 @@ class ChatManager:
 
     def clear_messages(self, session_id: str) -> None:
         """Delete all messages inside a session without deleting the session itself."""
-        with self._get_connection() as conn:
-            conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
-            conn.commit()
-
+        with self._db_lock:
+            if session_id in self._runtimes:
+                self._runtimes[session_id].conversation_history.clear()
+            with self._get_connection() as conn:
+                conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
+                conn.commit()
 
     def update_session_status(self, session_id: str, status: str) -> None:
         """Update lifecycle status for a session (running, detached, closed)."""
         now_str = datetime.now(timezone.utc).isoformat()
-        with self._get_connection() as conn:
-            conn.execute(
-                "UPDATE sessions SET status = ?, updated_at = ? WHERE id = ?",
-                (status, now_str, session_id),
-            )
-            conn.commit()
+        with self._db_lock:
+            with self._get_connection() as conn:
+                conn.execute(
+                    "UPDATE sessions SET status = ?, updated_at = ? WHERE id = ?",
+                    (status, now_str, session_id),
+                )
+                conn.commit()
 
     def get_active_sessions_count(self) -> tuple[int, int]:
         """Return count of (active_or_detached, closed) sessions."""
@@ -289,12 +440,13 @@ class ChatManager:
     def update_session_skill(self, session_id: str, skill_name: str) -> None:
         """Update active persona skill bound to a session."""
         now_str = datetime.now(timezone.utc).isoformat()
-        with self._get_connection() as conn:
-            conn.execute(
-                "UPDATE sessions SET active_skill = ?, updated_at = ? WHERE id = ?",
-                (skill_name, now_str, session_id),
-            )
-            conn.commit()
+        with self._db_lock:
+            with self._get_connection() as conn:
+                conn.execute(
+                    "UPDATE sessions SET active_skill = ?, updated_at = ? WHERE id = ?",
+                    (skill_name, now_str, session_id),
+                )
+                conn.commit()
 
     def export_to_markdown(self, session_id: str, target_file: Path | str) -> Path:
         """Export session dialogue to clean, readable Markdown."""

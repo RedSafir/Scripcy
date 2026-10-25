@@ -313,10 +313,13 @@ class StudioCommandsMixin:
             return
 
         selected_papers = [curated[i] for i in to_download_indices]
+        sess_id = self.active_chat_session.id if (self.sub_mode == "chat" and self.active_chat_session) else None
         task = self.task_manager.submit(
             name=f"Ingest {len(selected_papers)} paper(s) to vault",
             task_type="download",
             target_fn=self._background_download_worker,
+            session_id=sess_id,
+            lane="io",
             papers=selected_papers,
         )
         self.console.print()

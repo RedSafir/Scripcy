@@ -42,14 +42,14 @@ def init_virtual_terminal() -> None:
         except Exception:
             pass
 
-        # ENABLE_VIRTUAL_TERMINAL_PROCESSING = 0x0004
-        target_mode = 0x0001 | 0x0002 | 0x0004 | 0x0008
+        # ENABLE_VIRTUAL_TERMINAL_PROCESSING = 0x0004 (ensure 0x0008 DISABLE_NEWLINE_AUTO_RETURN is cleared)
+        target_mode = 0x0001 | 0x0002 | 0x0004
         for handle_id in (-11, -12):  # STD_OUTPUT_HANDLE, STD_ERROR_HANDLE
             h = kernel32.GetStdHandle(handle_id)
             if h and h != -1:
                 mode = ctypes.c_ulong()
                 if kernel32.GetConsoleMode(h, ctypes.byref(mode)):
-                    kernel32.SetConsoleMode(h, mode.value | target_mode)
+                    kernel32.SetConsoleMode(h, (mode.value | target_mode) & ~0x0008)
     except Exception:
         pass
 

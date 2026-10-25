@@ -798,8 +798,11 @@ class StudioVaultMixin:
         self.task_manager.log(task_id, f"Ingesting '{src_path.name}' into vault...")
         try:
             item = self.vault_manager.add_resource(src_path)
-            self.active_documents.add(item.path.stem)
-            self._sync_vault_cache()
+            t_info = self.task_manager.get_task(task_id)
+            sess_id = t_info.session_id if t_info else None
+            self.add_session_active_documents([item.path.stem], session_id=sess_id)
+            self.task_manager.record_ingested_stems(task_id, [item.path.stem])
+            self._sync_vault_cache(session_id=sess_id)
             summary = f"Added {item.filename} ({item.readable_size}) to vault"
             self.task_manager.log(task_id, f"[✓] {summary}")
             return summary
@@ -904,8 +907,11 @@ class StudioVaultMixin:
 
         try:
             archived_items = self.vault_manager.archive_multiple(raw_ids)
-            for item in archived_items:
-                self.active_documents.discard(item.path.stem)
+            removed_stems = [item.path.stem for item in archived_items]
+            for stem in removed_stems:
+                self.active_documents.discard(stem)
+            if self.chat_manager and removed_stems:
+                self.chat_manager.remove_documents_from_all_runtimes(removed_stems)
             self._sync_vault_cache()
 
             if archived_items:
@@ -982,8 +988,11 @@ class StudioVaultMixin:
             )
             self.task_manager.log(task_id, f"Downloaded '{downloaded.name}'. Converting to Markdown via MarkItDown...")
             self.vault_manager.convert_file(downloaded, force=True)
-            self.active_documents.add(downloaded.stem)
-            self._sync_vault_cache()
+            t_info = self.task_manager.get_task(task_id)
+            sess_id = t_info.session_id if t_info else None
+            self.add_session_active_documents([downloaded.stem], session_id=sess_id)
+            self.task_manager.record_ingested_stems(task_id, [downloaded.stem])
+            self._sync_vault_cache(session_id=sess_id)
             summary = f"Downloaded & indexed Google Drive file: {downloaded.name}"
             self.task_manager.log(task_id, f"[✓] {summary}")
             return summary
@@ -1044,10 +1053,13 @@ class StudioVaultMixin:
             self.console.print(f"[bold red][x] Format link atau ID Google Drive tidak valid:[/bold red] '{clean_arg}'\n")
             return
 
+        sess_id = self.active_chat_session.id if (self.sub_mode == "chat" and self.active_chat_session) else None
         task = self.task_manager.submit(
             name=f"Google Drive Ingest: {file_id[:12]}...",
             task_type="gdrive",
             target_fn=self._background_gdrive_worker,
+            session_id=sess_id,
+            lane="io",
             file_id=file_id,
         )
         self.console.print()
