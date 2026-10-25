@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator
+import logging
 import math
 from pathlib import Path
 import re
@@ -17,6 +18,8 @@ from scrpcy.core.models import ParsedDocument
 from scrpcy.core.skills import Skill, SkillsLoader
 from scrpcy.core.tracker import TokenTracker
 from scrpcy.exceptions import EngineError
+
+logger = logging.getLogger("scrpcy.core.engine")
 
 STOPWORDS = {
     "a", "about", "above", "after", "again", "against", "all", "am", "an", "and",
@@ -228,17 +231,19 @@ class EvidenceSynthesizer:
                         if h.tables:
                             for tbl in h.tables:
                                 md_p = tbl.get("md_path")
+                                tbl_id = tbl.get("id", "tbl")
                                 if md_p and Path(md_p).exists():
                                     try:
                                         t_content = Path(md_p).read_text(encoding="utf-8")
-                                        chunk_text += f"\n\n[Tabel Terindeks: {tbl.get('caption', 'Tabel')}]:\n{t_content}"
+                                        chunk_text += f"\n\n[[VISUAL:{tbl_id}]] [Tabel Terindeks: {tbl.get('caption', 'Tabel')}]:\n{t_content}"
                                     except Exception:
                                         pass
                         if h.images:
                             for img in h.images:
                                 ai_desc = img.get("ai_analysis")
+                                img_id = img.get("id", "img")
                                 if ai_desc and "JUNK_IMAGE" not in ai_desc:
-                                    chunk_text += f"\n\n[Analisis Visual Gambar Halaman {h.page_num}: {img.get('caption', 'Gambar')}]:\n{ai_desc}"
+                                    chunk_text += f"\n\n[[VISUAL:{img_id}]] [Analisis Visual Gambar Halaman {h.page_num}: {img.get('caption', 'Gambar')}]:\n{ai_desc}"
 
                         matched_chunks.append(EvidenceChunk(
                             chunk_id=h.chunk_id,
@@ -280,8 +285,31 @@ class EvidenceSynthesizer:
             return []
 
         # Score chunks
+        is_factual_q = any(
+            w in clean_q for w in (
+                "data", "angka", "berapa", "statistik", "jumlah", "luas", "tahun",
+                "tabel", "bps", "kementerian", "resmi", "pemerintah", "nasional", "hektar", "ha"
+            )
+        )
         for chunk in all_chunks:
             chunk.score = self.score_chunk(query_terms, query, chunk.text)
+            src_lower = chunk.source.lower()
+            text_lower = chunk.text.lower()
+            has_official_signal = (
+                src_lower.startswith("web_")
+                or "go_id" in src_lower
+                or "gov" in src_lower
+                or "bps" in src_lower
+                or "menlhk" in src_lower
+                or "klhk" in text_lower
+                or "bps" in text_lower
+                or ".go.id" in text_lower
+                or "kementerian" in text_lower
+                or "sipongi" in text_lower
+            )
+            if is_factual_q and has_official_signal:
+                chunk.score = chunk.score * 1.6 + 2.0
+
             if is_corpus_query:
                 # In corpus summary mode, chunk 0 (title/abstract/intro) is crucial for every document
                 if chunk.chunk_id.endswith("_c0"):
@@ -297,10 +325,18 @@ class EvidenceSynthesizer:
         selected_ids: set[str] = set()
         used_tokens = 0
 
+        # Sort document sources by highest chunk score so official/most relevant sources are represented first
+        sorted_sources = sorted(
+            doc_chunks_by_source.keys(),
+            key=lambda s: doc_chunks_by_source[s][0].score if doc_chunks_by_source[s] else 0.0,
+            reverse=True,
+        )
+
         # Phase 1: Stratified round-robin across documents to guarantee fair multi-doc representation
         max_rounds = 2 if is_corpus_query else 1
         for round_idx in range(max_rounds):
-            for src, doc_chunks in doc_chunks_by_source.items():
+            for src in sorted_sources:
+                doc_chunks = doc_chunks_by_source[src]
                 if len(selected) >= limit_chunks:
                     break
                 if round_idx < len(doc_chunks):
@@ -340,6 +376,7 @@ class EvidenceSynthesizer:
             selected_ids.add(candidate.chunk_id)
             used_tokens += candidate.token_estimate
 
+        selected.sort(key=lambda c: c.score, reverse=True)
         return selected
 
     def format_context_prompt(self, chunks: list[EvidenceChunk]) -> str:
@@ -348,13 +385,28 @@ class EvidenceSynthesizer:
             return ""
 
         formatted_blocks = ["### RETRIEVED RESEARCH EVIDENCE CONTEXT:"]
+        total_orig = sum(len(c.text) for c in chunks)
+        total_compact = 0
+
         for idx, chunk in enumerate(chunks, 1):
             compact_text = MarkdownMinifier.minify(chunk.text)
+            total_compact += len(compact_text)
             block = (
                 f"[Evidence {idx}] (Source ID: {chunk.source}, Relevance Score: {chunk.score:.2f}):\n"
                 f"\"\"\"\n{compact_text}\n\"\"\""
             )
             formatted_blocks.append(block)
+
+        has_visuals = any("[[VISUAL:" in c.text for c in chunks)
+        if has_visuals:
+            formatted_blocks.append(
+                "[PETUNJUK VISUAL]: Jika analisis Anda merujuk pada tabel atau gambar di atas yang memuat tag [[VISUAL:id]], "
+                "sertakan tag [[VISUAL:id]] tersebut tepat di tempat visual tersebut dibahas agar rujukan visual otomatis terhubung."
+            )
+
+        if total_orig > 0:
+            saved_pct = ((total_orig - total_compact) / total_orig) * 100.0
+            logger.debug(f"[SMARTCRUSHER] Minified evidence chunks: {total_orig}->{total_compact} chars ({saved_pct:.1f}% saved)")
 
         return "\n\n".join(formatted_blocks)
 

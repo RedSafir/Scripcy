@@ -481,6 +481,7 @@ class StudioProcessingMixin:
     ) -> str:
         """Background agent worker that searches multi-source (30-40 candidates), ranks with AI, and downloads/ingests a robust batch (5-10) into vault."""
         clean_query = (query or topic_query).strip().strip("'\"")
+        scout_t0 = time.time()
         self.task_manager.log(task_id, f"Formulating query strategy for: '{clean_query}'")
         t_obj = self.task_manager.get_task(task_id) if self.task_manager else None
         sess_id = t_obj.session_id if t_obj else None
@@ -678,6 +679,15 @@ class StudioProcessingMixin:
                 loop.close()
 
         summary = f"Scout & Ingest selesai: Mengindeks {ingested_count}/{target_quota} dokumen ke vault."
+        if hasattr(self, "logger") and self.logger:
+            self.logger.log_literature_scout(
+                session_id=sess_id or "global",
+                query=clean_query,
+                candidates_count=len(candidates) if "candidates" in locals() and candidates else len(ingested_stems),
+                ingested_count=ingested_count,
+                ingested_stems=ingested_stems,
+                duration_s=time.time() - scout_t0,
+            )
         self.task_manager.log(task_id, summary)
         return summary
 

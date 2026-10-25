@@ -125,6 +125,10 @@ class ScrpcyConfig(BaseModel):
         le=0.50,
         description="Margin of error percentage for AI TaskContract token budget (default 0.30 = +-30%).",
     )
+    contract_unlimited_tokens: bool = Field(
+        default=False,
+        description="Whether to disable token budget limits (unlimited output tokens for TaskContract and Gatekeeper).",
+    )
     workspace_path: str = Field(
         default="~/.scrpcy/workspace",
         description="Base path for workspace caches and document vaults.",

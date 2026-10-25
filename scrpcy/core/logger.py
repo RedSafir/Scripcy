@@ -327,6 +327,193 @@ class StudioLogger:
             "total_elapsed_seconds": round(elapsed_total_s, 2),
         })
 
+    def log_task_contract(
+        self,
+        session_id: str,
+        archetype: str,
+        primary_goal: str,
+        target_tokens: int,
+        token_margin_pct: float,
+        effective_min_tokens: int,
+        effective_max_tokens: int,
+        in_scope: list[str],
+        out_of_scope: list[str],
+        search_channels: list[str],
+        duration_s: float,
+        unlimited_tokens: bool = False,
+    ) -> None:
+        margin_disp = int(round(token_margin_pct * 100))
+        budget_disp = "UNLIMITED" if unlimited_tokens else f"+-{margin_disp}% -> {effective_min_tokens}-{effective_max_tokens}"
+        msg = (
+            f"[TASK_CONTRACT] Archetype={archetype} Goal='{primary_goal}' "
+            f"TargetTokens={target_tokens} ({budget_disp}) "
+            f"InScope={in_scope[:3]} OutOfScope={out_of_scope[:2]} Elapsed={duration_s:.2f}s"
+        )
+        self._logger.info(msg)
+        self._write_jsonl_event("TASK_CONTRACT", session_id, {
+            "archetype": archetype,
+            "primary_goal": primary_goal,
+            "target_tokens": target_tokens,
+            "token_margin_pct": token_margin_pct,
+            "unlimited_tokens": unlimited_tokens,
+            "effective_min_tokens": effective_min_tokens,
+            "effective_max_tokens": effective_max_tokens,
+            "in_scope": in_scope,
+            "out_of_scope": out_of_scope,
+            "search_channels": search_channels,
+            "duration_seconds": round(duration_s, 2),
+        })
+
+    def log_subagent_orchestration(
+        self,
+        session_id: str,
+        roles_executed: list[str],
+        facts_extracted_count: int,
+        new_stems_count: int,
+        input_tokens: int,
+        output_tokens: int,
+        duration_s: float,
+        channels_attempted: list[str] | None = None,
+    ) -> None:
+        msg = (
+            f"[SUBAGENTS] Roles={roles_executed} Facts={facts_extracted_count} "
+            f"NewDocs={new_stems_count} Tokens={input_tokens}in/{output_tokens}out "
+            f"Channels={channels_attempted or []} Elapsed={duration_s:.2f}s"
+        )
+        self._logger.info(msg)
+        self._write_jsonl_event("SUBAGENTS", session_id, {
+            "roles_executed": roles_executed,
+            "facts_extracted_count": facts_extracted_count,
+            "new_stems_count": new_stems_count,
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "channels_attempted": channels_attempted or [],
+            "duration_seconds": round(duration_s, 2),
+        })
+
+    def log_contractor_adjudication(
+        self,
+        session_id: str,
+        override_passed: bool,
+        override_score: int,
+        accepted_revisions: list[str],
+        rejected_critiques: list[str],
+        search_exhausted: bool,
+        channels_summary: list[str],
+    ) -> None:
+        msg = (
+            f"[CONTRACTOR_GATEKEEPER] OverridePassed={override_passed} Score={override_score} "
+            f"Accepted={len(accepted_revisions)} Vetoed={len(rejected_critiques)} "
+            f"SearchExhausted={search_exhausted} Channels={channels_summary}"
+        )
+        self._logger.info(msg)
+        self._write_jsonl_event("CONTRACTOR_GATEKEEPER", session_id, {
+            "override_passed": override_passed,
+            "override_score": override_score,
+            "accepted_revisions": accepted_revisions,
+            "rejected_critiques": rejected_critiques,
+            "search_exhausted": search_exhausted,
+            "channels_summary": channels_summary,
+        })
+
+    def log_crusher_compression(
+        self,
+        session_id: str,
+        stage: str,
+        original_chars: int,
+        crushed_chars: int,
+        savings_pct: float,
+    ) -> None:
+        msg = (
+            f"[SMARTCRUSHER] Stage='{stage}' Chars={original_chars}->{crushed_chars} "
+            f"Saved={savings_pct:.1f}%"
+        )
+        self._logger.info(msg)
+        self._write_jsonl_event("SMARTCRUSHER", session_id, {
+            "stage": stage,
+            "original_chars": original_chars,
+            "crushed_chars": crushed_chars,
+            "savings_pct": round(savings_pct, 1),
+        })
+
+    def log_internal_tool(
+        self,
+        session_id: str,
+        action: str,
+        target: str,
+        turn: int,
+        output_length: int,
+    ) -> None:
+        msg = f"[INTERNAL_TOOL] Action='{action}' Target='{target}' Turn={turn} OutputChars={output_length}"
+        self._logger.info(msg)
+        self._write_jsonl_event("INTERNAL_TOOL", session_id, {
+            "action": action,
+            "target": target,
+            "turn": turn,
+            "output_length": output_length,
+        })
+
+    def log_literature_scout(
+        self,
+        session_id: str,
+        query: str,
+        candidates_count: int,
+        ingested_count: int,
+        ingested_stems: list[str],
+        duration_s: float,
+    ) -> None:
+        msg = (
+            f"[LITERATURE_SCOUT] Query='{query}' Candidates={candidates_count} "
+            f"Ingested={ingested_count} Stems={ingested_stems} Elapsed={duration_s:.2f}s"
+        )
+        self._logger.info(msg)
+        self._write_jsonl_event("LITERATURE_SCOUT", session_id, {
+            "query": query,
+            "candidates_count": candidates_count,
+            "ingested_count": ingested_count,
+            "ingested_stems": ingested_stems,
+            "duration_seconds": round(duration_s, 2),
+        })
+
+    def log_web_scout(
+        self,
+        session_id: str,
+        query: str,
+        hits_count: int,
+        official_count: int,
+        ingested_stem: str | None,
+        duration_s: float,
+    ) -> None:
+        msg = (
+            f"[WEB_SCOUT] Query='{query}' Hits={hits_count} OfficialHits={official_count} "
+            f"Ingested='{ingested_stem or ''}' Elapsed={duration_s:.2f}s"
+        )
+        self._logger.info(msg)
+        self._write_jsonl_event("WEB_SCOUT", session_id, {
+            "query": query,
+            "hits_count": hits_count,
+            "official_count": official_count,
+            "ingested_stem": ingested_stem,
+            "duration_seconds": round(duration_s, 2),
+        })
+
+    def log_vector_vault_search(
+        self,
+        session_id: str,
+        query: str,
+        hits_count: int,
+        top_score: float,
+        duration_s: float,
+    ) -> None:
+        msg = f"[VECTOR_VAULT] Query='{query}' Hits={hits_count} TopRRF={top_score:.3f} Elapsed={duration_s:.2f}s"
+        self._logger.info(msg)
+        self._write_jsonl_event("VECTOR_VAULT", session_id, {
+            "query": query,
+            "hits_count": hits_count,
+            "top_score": round(top_score, 3),
+            "duration_seconds": round(duration_s, 2),
+        })
+
     def log_session_detach(self, session_id: str, task_id: str) -> None:
         msg = f"[SESSION_DETACH] Session '{session_id}' detached to background Task '{task_id}'"
         self._logger.info(msg)

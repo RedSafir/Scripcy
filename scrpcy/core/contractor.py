@@ -159,6 +159,28 @@ class ContractDecomposer:
         combined_text = " ".join(c.text.lower() for c in evidence)
         coverage = self._synthesizer.compute_coverage_score(query, evidence)
 
+        # Check official primary source gap for factual data / official web channel
+        has_official_source = any(
+            (hasattr(c, "source") and (
+                str(c.source).startswith("web_")
+                or ".go.id" in str(c.source).lower()
+                or "bps" in str(c.source).lower()
+                or "menlhk" in str(c.source).lower()
+                or "kemen" in str(c.source).lower()
+                or "bmkg" in str(c.source).lower()
+                or ".gov" in str(c.source).lower()
+            ))
+            or (hasattr(c, "text") and any(
+                d in c.text.lower() for d in (".go.id", ".gov", "portal resmi", "badan pusat statistik", "kementerian")
+            ))
+            for c in evidence
+        )
+        if (contract.archetype == "DATA_FACTUAL" or "web_resmi" in getattr(contract, "required_search_channels", [])) and not has_official_source:
+            reason = "Kueri data faktual memerlukan rujukan primer dari portal resmi pemerintah/institusi terverifikasi."
+            web_q = [f"{base_topic} data resmi statistik", f"{base_topic} portal resmi"]
+            lit_q = [f"{base_topic} data empiris"] if coverage < 0.50 else []
+            return True, reason, web_q, lit_q
+
         # Check temporal gap when user asks for recent N years or explicit modern years
         asks_recent = any(
             p in lower_q
@@ -390,7 +412,7 @@ class ContractDecomposer:
                 return True, "Menuntut argumen tandingan padahal allow_counter_arguments=False"
 
         # 3. Token budget ceiling check: reject demands to expand/elaborate when draft already hits effective_max_tokens
-        if draft_tokens >= contract.effective_max_tokens:
+        if not getattr(contract, "unlimited_tokens", False) and draft_tokens >= contract.effective_max_tokens:
             expansion_markers = (
                 "perluas", "lebih mendalam", "lebih komprehensif", "tambahkan pembahasan",
                 "uraikan lebih lanjut", "elaborasi", "kurang panjang", "terlalu singkat",
@@ -484,7 +506,7 @@ class ContractDecomposer:
                 )
                 continue
 
-            if draft_tokens >= contract.effective_max_tokens and not has_hallucination:
+            if not getattr(contract, "unlimited_tokens", False) and draft_tokens >= contract.effective_max_tokens and not has_hallucination:
                 rejected.append(
                     f"[Ditolak - Kuota token kontrak ({draft_tokens}/{contract.effective_max_tokens} tok) sudah penuh] {wk}"
                 )

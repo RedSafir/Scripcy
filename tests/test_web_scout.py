@@ -331,3 +331,41 @@ class TestWebScoutPipeline:
         assert "bps.go.id" in results[0].url
         assert results[0].is_official is True
         assert "Statistik Inflasi 2023" in results[0].title
+
+    @pytest.mark.asyncio
+    async def test_search_official_web_bing_with_base64_decoding(self, tmp_path: Path):
+        ws = WorkspaceManager(root_dir=tmp_path / "workspace")
+        mock_client = AsyncMock()
+
+        # Mock Bing HTML with a /ck/a redirect encoding https://ayosehat.kemkes.go.id/penyakit/stunting
+        # aHR0cHM6Ly9heW9zZWhhdC5rZW1rZXMuZ28uaWQvcGVueWFraXQvc3R1bnRpbmc = base64 of that URL
+        bing_html = """
+        <html>
+        <body>
+          <ul>
+            <li class="b_algo">
+              <h2><a href="https://www.bing.com/ck/a?!&&p=123&u=a1aHR0cHM6Ly9heW9zZWhhdC5rZW1rZXMuZ28uaWQvcGVueWFraXQvc3R1bnRpbmc">Stunting Kemkes RI</a></h2>
+              <div class="b_caption"><p>Informasi resmi penanganan stunting Kementerian Kesehatan.</p></div>
+            </li>
+            <li class="b_algo">
+              <h2><a href="https://randomblog.wordpress.com/post">Blog Opini Stunting</a></h2>
+              <div class="b_caption"><p>Opini pribadi.</p></div>
+            </li>
+          </ul>
+        </body>
+        </html>
+        """
+
+        mock_get_resp = MagicMock()
+        mock_get_resp.status_code = 200
+        mock_get_resp.text = bing_html
+        mock_client.get.return_value = mock_get_resp
+        mock_client.is_closed = False
+
+        scout = WebScout(workspace=ws, http_client=mock_client)
+        results = await scout.search_official_web("stunting kemkes", limit=5, require_official=True)
+
+        assert len(results) == 1
+        assert results[0].url == "https://ayosehat.kemkes.go.id/penyakit/stunting"
+        assert results[0].is_official is True
+        assert "Kementerian Kesehatan" in results[0].institution

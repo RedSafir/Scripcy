@@ -553,7 +553,7 @@ class ProjectVectorVault:
                 """, (rowid, blob))
 
             # Insert tables
-            for t_info in raw_tables:
+            for t_idx, t_info in enumerate(raw_tables):
                 cur.execute("""
                     INSERT INTO tables (id, paper_id, page_num, csv_path, md_path, caption, is_vision_fallback)
                     VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -562,9 +562,29 @@ class ProjectVectorVault:
                     t_info["csv_path"], t_info["md_path"], t_info["caption"],
                     t_info["is_vision_fallback"]
                 ))
+                # Register visual table chunk into chunks and vec_chunks for hybrid BM25/dense retrieval
+                tbl_id = t_info["id"]
+                t_snippet = ""
+                if t_info.get("md_path") and Path(t_info["md_path"]).exists():
+                    try:
+                        t_snippet = "\n" + Path(t_info["md_path"]).read_text(encoding="utf-8")[:400]
+                    except Exception:
+                        t_snippet = ""
+                tbl_content = f"[[VISUAL:{tbl_id}]] [Tabel Halaman {t_info['page_num']}: {t_info['caption']}]{t_snippet}"
+                cur.execute("""
+                    INSERT INTO chunks (id, paper_id, page_num, chunk_index, content)
+                    VALUES (?, ?, ?, ?, ?)
+                """, (f"tbl_chunk_{tbl_id}", paper_id, t_info["page_num"], 9000 + t_idx, tbl_content))
+                rowid = cur.lastrowid
+                if embedder is not None:
+                    try:
+                        t_emb = list(embedder.embed([tbl_content]))[0]
+                        cur.execute("INSERT INTO vec_chunks (chunk_rowid, embedding) VALUES (?, ?)", (rowid, serialize_f32(list(t_emb))))
+                    except Exception:
+                        pass
 
             # Insert images
-            for i_info in raw_images:
+            for i_idx, i_info in enumerate(raw_images):
                 cur.execute("""
                     INSERT INTO images (id, paper_id, page_num, file_path, caption, ai_analysis, width, height)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -573,6 +593,20 @@ class ProjectVectorVault:
                     i_info["file_path"], i_info["caption"], i_info["ai_analysis"],
                     i_info["width"], i_info["height"]
                 ))
+                # Register visual image chunk into chunks and vec_chunks for hybrid BM25/dense retrieval
+                img_id = i_info["id"]
+                img_content = f"[[VISUAL:{img_id}]] [Gambar Halaman {i_info['page_num']}: {i_info['caption']}]\nKeterangan/Analisis: {i_info.get('ai_analysis', '')}"
+                cur.execute("""
+                    INSERT INTO chunks (id, paper_id, page_num, chunk_index, content)
+                    VALUES (?, ?, ?, ?, ?)
+                """, (f"img_chunk_{img_id}", paper_id, i_info["page_num"], 9500 + i_idx, img_content))
+                rowid = cur.lastrowid
+                if embedder is not None:
+                    try:
+                        i_emb = list(embedder.embed([img_content]))[0]
+                        cur.execute("INSERT INTO vec_chunks (chunk_rowid, embedding) VALUES (?, ?)", (rowid, serialize_f32(list(i_emb))))
+                    except Exception:
+                        pass
 
             # Ensure FTS5 index is fully synchronized with new chunks
             try:
@@ -651,7 +685,7 @@ class ProjectVectorVault:
                 """, (rowid, blob))
 
             raw_images = images or []
-            for i_info in raw_images:
+            for i_idx, i_info in enumerate(raw_images):
                 cur.execute("""
                     INSERT INTO images (id, paper_id, page_num, file_path, caption, ai_analysis, width, height)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -660,6 +694,22 @@ class ProjectVectorVault:
                     i_info["file_path"], i_info.get("caption", ""), i_info.get("ai_analysis", "Visual resmi web terindeks."),
                     i_info.get("width", 0), i_info.get("height", 0)
                 ))
+                # Register web image chunk into chunks and vec_chunks for hybrid BM25/dense retrieval
+                img_id = i_info["id"]
+                img_cap = i_info.get("caption", "") or "Bagan Resmi"
+                img_desc = i_info.get("ai_analysis", "") or "Visual resmi web terindeks."
+                img_content = f"[[VISUAL:{img_id}]] [Gambar/Infografis Resmi: {img_cap}]\nKeterangan/Analisis: {img_desc}"
+                cur.execute("""
+                    INSERT INTO chunks (id, paper_id, page_num, chunk_index, content)
+                    VALUES (?, ?, ?, ?, ?)
+                """, (f"web_img_chunk_{img_id}", paper_id, i_info.get("page_num", 1), 9500 + i_idx, img_content))
+                rowid = cur.lastrowid
+                if embedder is not None:
+                    try:
+                        i_emb = list(embedder.embed([img_content]))[0]
+                        cur.execute("INSERT INTO vec_chunks (chunk_rowid, embedding) VALUES (?, ?)", (rowid, serialize_f32(list(i_emb))))
+                    except Exception:
+                        pass
 
             try:
                 cur.execute("INSERT INTO fts_chunks(fts_chunks) VALUES('rebuild')")
@@ -835,6 +885,27 @@ class ProjectVectorVault:
             for rank, cid in enumerate(vec_matches):
                 vec_rank_map[cid] = rank + 1
                 rrf_scores[cid] = rrf_scores.get(cid, 0.0) + (1.0 / (k + (rank + 1)))
+
+            # Boost official website / institutional sources on factual & statistical queries
+            lower_q = clean_query.lower()
+            is_factual_q = any(
+                w in lower_q for w in (
+                    "data", "angka", "berapa", "statistik", "jumlah", "luas", "tahun",
+                    "tabel", "bps", "kementerian", "resmi", "pemerintah", "nasional", "ha", "hektar"
+                )
+            )
+            if is_factual_q and rrf_scores:
+                cids_list = list(rrf_scores.keys())
+                placeholders = ",".join("?" for _ in cids_list)
+                try:
+                    cur.execute(f"SELECT id, paper_id FROM chunks WHERE id IN ({placeholders})", cids_list)
+                    for row in cur.fetchall():
+                        cid = row["id"]
+                        pid = str(row["paper_id"]).lower()
+                        if pid.startswith("web_") or "go_id" in pid or "gov" in pid or "bps" in pid or "menlhk" in pid or "kemen" in pid:
+                            rrf_scores[cid] = rrf_scores[cid] * 1.40
+                except Exception:
+                    pass
 
             sorted_ids = sorted(rrf_scores.keys(), key=lambda cid: rrf_scores[cid], reverse=True)[:top_k]
 
@@ -1062,3 +1133,48 @@ class ProjectVectorVault:
             "images": total_figures,
             "tables": total_tables,
         }
+
+    def resolve_visual_placeholders(self, text: str) -> str:
+        """Resolve [[VISUAL:id]] and legacy visual placeholders into clickable markdown file links."""
+        if not text:
+            return text
+
+        pattern = re.compile(r"\[\[VISUAL:([^\]]+)\]\]", re.IGNORECASE)
+
+        def _repl(match: re.Match) -> str:
+            v_id = match.group(1).strip()
+            with self._get_connection() as conn:
+                cur = conn.cursor()
+                # 1. Lookup in images
+                cur.execute("SELECT file_path, caption FROM images WHERE id = ? LIMIT 1", (v_id,))
+                row = cur.fetchone()
+                if row:
+                    raw_fp = row["file_path"].replace("\\", "/")
+                    if not raw_fp.startswith("/"):
+                        raw_fp = f"/{raw_fp}"
+                    cap = row["caption"] or "Gambar"
+                    return f"[📊 {cap}](file://{raw_fp})"
+
+                # 2. Lookup in tables
+                cur.execute("SELECT csv_path, md_path, caption FROM tables WHERE id = ? LIMIT 1", (v_id,))
+                t_row = cur.fetchone()
+                if t_row:
+                    target_p = (t_row["md_path"] or t_row["csv_path"] or "").replace("\\", "/")
+                    if target_p and not target_p.startswith("/"):
+                        target_p = f"/{target_p}"
+                    cap = t_row["caption"] or "Tabel"
+                    return f"[📋 {cap}](file://{target_p})"
+
+                # 3. Fuzzy search by filename or partial id
+                cur.execute("SELECT file_path, caption FROM images WHERE file_path LIKE ? OR id LIKE ? LIMIT 1", (f"%{v_id}%", f"%{v_id}%"))
+                f_row = cur.fetchone()
+                if f_row:
+                    raw_fp = f_row["file_path"].replace("\\", "/")
+                    if not raw_fp.startswith("/"):
+                        raw_fp = f"/{raw_fp}"
+                    cap = f_row["caption"] or "Gambar"
+                    return f"[📊 {cap}](file://{raw_fp})"
+
+            return f"[📊 Visual: {v_id}]"
+
+        return pattern.sub(_repl, text)

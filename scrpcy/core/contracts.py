@@ -215,6 +215,10 @@ class TaskContract(BaseModel):
         le=0.50,
         description="Configurable margin of error percentage for output token budget (default 0.30 = +-30%).",
     )
+    unlimited_tokens: bool = Field(
+        default=False,
+        description="Whether token budget limits are disabled (unlimited output tokens).",
+    )
     required_search_channels: list[str] = Field(
         default_factory=lambda: list(DEFAULT_SEARCH_CHANNELS),
         description="Ordered search channels to exhaust before stopping further searches.",
@@ -245,7 +249,9 @@ class TaskContract(BaseModel):
 
     @property
     def effective_max_tokens(self) -> int:
-        """Upper token limit with configured margin of error (default +30%)."""
+        """Upper token limit with configured margin of error (default +30%), or 999999 if unlimited."""
+        if self.unlimited_tokens:
+            return 999_999
         return int(round(self.target_output_tokens * (1.0 + self.token_margin_pct)))
 
     def is_word_count_acceptable(self, actual_words: int) -> bool:
@@ -254,6 +260,8 @@ class TaskContract(BaseModel):
 
     def is_token_count_acceptable(self, actual_tokens: int) -> bool:
         """Verify whether actual output token count falls within target +- margin of error."""
+        if self.unlimited_tokens:
+            return actual_tokens >= self.effective_min_tokens
         return self.effective_min_tokens <= actual_tokens <= self.effective_max_tokens
 
 
@@ -317,6 +325,11 @@ class TaskContractExtractor:
         except Exception:
             return 0.30
 
+    def _configured_unlimited(self) -> bool:
+        """Return configured unlimited token setting."""
+        cfg = getattr(self.engine, "config", None) if self.engine else None
+        return bool(getattr(cfg, "contract_unlimited_tokens", False))
+
     def is_ambiguous_intent(self, query: str) -> bool:
         """Determine if query contains competing signals across multiple intent categories."""
         lower_q = query.lower()
@@ -329,6 +342,7 @@ class TaskContractExtractor:
     def _extract_via_llm(self, query: str) -> TaskContract | None:
         """Formulate an AI-First Absolute TaskContract with token budget and search-depth rules."""
         margin_pct = self._configured_margin()
+        unlimited = self._configured_unlimited()
         system_prompt = (
             "Anda adalah AI Contract Architect untuk Scrpcy.\n"
             "Rumuskan KONTRAK TUGAS ABSOLUT berdasarkan kebutuhan pengguna. "
@@ -358,13 +372,15 @@ class TaskContractExtractor:
             else:
                 if not self.engine or not getattr(self.engine, "config", None):
                     return None
-                model_name = getattr(self.engine, "default_model", None) or self.engine.config.default_model
+                cfg = getattr(self.engine, "config", None)
+                model_name = getattr(cfg, "default_model", None) if cfg else getattr(self.engine, "default_model", "gemini/gemini-2.5-flash")
+                if not isinstance(model_name, str):
+                    model_name = str(model_name)
                 api_key = self.engine.config.get_api_key_for_model(model_name)
                 if (
                     not api_key
-                    or api_key.startswith("mock")
+                    or str(api_key).startswith("mock")
                     or getattr(self.engine, "_acompletion_fn", None) is not None
-                    or getattr(self.engine, "acompletion_fn", None) is not None
                 ):
                     return None
 
@@ -498,6 +514,7 @@ class TaskContractExtractor:
                 is_absolute=True,
                 target_output_tokens=target_tokens,
                 token_margin_pct=margin_pct,
+                unlimited_tokens=unlimited,
                 required_search_channels=req_channels,
                 search_exhaustion_policy=exhaustion_policy,
                 rubric=_default_rubric_for_archetype(archetype),
@@ -536,6 +553,7 @@ class TaskContractExtractor:
         topics = self._extract_topics(q_clean)
         topic_str = ", ".join(topics[:3]) if topics else q_clean[:40]
         margin_pct = self._configured_margin()
+        unlimited = self._configured_unlimited()
 
         if any(k in lower_q for k in INTENT_CATEGORIES["comparison"]) and any(k in lower_q for k in INTENT_CATEGORIES["literature_review"]):
             return TaskContract(
@@ -553,6 +571,7 @@ class TaskContractExtractor:
                 max_words=1000,
                 target_output_tokens=720,
                 token_margin_pct=margin_pct,
+                unlimited_tokens=unlimited,
                 is_absolute=True,
                 allow_counter_arguments=True,
                 allow_honest_gap=True,
@@ -598,6 +617,7 @@ class TaskContractExtractor:
                 max_words=max_w,
                 target_output_tokens=target_tok,
                 token_margin_pct=margin_pct,
+                unlimited_tokens=unlimited,
                 is_absolute=True,
                 allow_counter_arguments=True,
                 allow_honest_gap=True,
@@ -649,6 +669,7 @@ class TaskContractExtractor:
                 max_words=700,
                 target_output_tokens=560,
                 token_margin_pct=margin_pct,
+                unlimited_tokens=unlimited,
                 is_absolute=True,
                 allow_counter_arguments=True,
                 allow_honest_gap=True,
@@ -690,6 +711,7 @@ class TaskContractExtractor:
                 max_words=1600,
                 target_output_tokens=1200,
                 token_margin_pct=margin_pct,
+                unlimited_tokens=unlimited,
                 is_absolute=True,
                 allow_counter_arguments=True,
                 allow_honest_gap=True,
@@ -732,9 +754,10 @@ class TaskContractExtractor:
                 ],
                 format_requirements="Jawaban langsung, ringkas, dan presisi (poin/tabel data disertai sitasi, maksimal 1-3 paragraf pendukung).",
                 min_words=50,
-                max_words=450,
+                max_words=350,
                 target_output_tokens=280,
                 token_margin_pct=margin_pct,
+                unlimited_tokens=unlimited,
                 is_absolute=True,
                 allow_counter_arguments=False,
                 allow_honest_gap=True,
@@ -776,6 +799,7 @@ class TaskContractExtractor:
             max_words=600,
             target_output_tokens=420,
             token_margin_pct=margin_pct,
+            unlimited_tokens=unlimited,
             is_absolute=True,
             allow_counter_arguments=False,
             allow_honest_gap=True,

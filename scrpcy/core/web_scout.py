@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 from datetime import datetime
 from io import BytesIO
 import json
@@ -554,6 +555,98 @@ class WebScout:
             self._client = httpx.AsyncClient(timeout=20.0, follow_redirects=True, headers=headers)
         return self._client
 
+    @staticmethod
+    def _decode_bing_url(href: str) -> str:
+        """Decode target URL from Bing click tracking redirects."""
+        if not href:
+            return ""
+        if "bing.com/ck/a" in href:
+            parsed = urlparse(href)
+            qs = parse_qs(parsed.query)
+            u_val = qs.get("u", [""])[0]
+            if u_val.startswith("a1"):
+                raw_b64 = u_val[2:]
+                raw_b64 += "=" * ((4 - len(raw_b64) % 4) % 4)
+                try:
+                    decoded = base64.urlsafe_b64decode(raw_b64).decode("utf-8", errors="ignore")
+                    if decoded.startswith("http"):
+                        return decoded
+                except Exception:
+                    pass
+        return href
+
+    @classmethod
+    def _parse_bing_results(cls, html_text: str) -> list[tuple[str, str, str]]:
+        """Parse (title, url, snippet) from Bing search HTML."""
+        soup = BeautifulSoup(html_text, "html.parser")
+        hits: list[tuple[str, str, str]] = []
+        seen: set[str] = set()
+        for node in soup.select("li.b_algo"):
+            h2 = node.find("h2")
+            a = h2.find("a") if h2 else None
+            p = node.select_one(".b_caption p") or node.select_one("p")
+            if not a:
+                continue
+            title = a.get_text(strip=True)
+            raw_href = a.get("href", "")
+            clean_url = cls._decode_bing_url(raw_href)
+            if not clean_url or not clean_url.startswith("http") or clean_url in seen:
+                continue
+            seen.add(clean_url)
+            snippet = p.get_text(strip=True) if p else ""
+            hits.append((title, clean_url, snippet))
+        return hits
+
+    @staticmethod
+    def _parse_yahoo_results(html_text: str) -> list[tuple[str, str, str]]:
+        """Parse (title, url, snippet) from Yahoo search HTML."""
+        soup = BeautifulSoup(html_text, "html.parser")
+        hits: list[tuple[str, str, str]] = []
+        seen: set[str] = set()
+        for node in soup.select(".algo"):
+            h3 = node.find("h3")
+            a = h3.find("a") if h3 else None
+            p = node.select_one(".compText") or node.select_one("p")
+            if not a:
+                continue
+            title = a.get_text(strip=True)
+            clean_url = a.get("href", "")
+            if not clean_url or not clean_url.startswith("http") or clean_url in seen:
+                continue
+            seen.add(clean_url)
+            snippet = p.get_text(strip=True) if p else ""
+            hits.append((title, clean_url, snippet))
+        return hits
+
+    @staticmethod
+    def _parse_ddg_results(html_text: str) -> list[tuple[str, str, str]]:
+        """Parse (title, url, snippet) from DuckDuckGo search HTML."""
+        soup = BeautifulSoup(html_text, "html.parser")
+        hits: list[tuple[str, str, str]] = []
+        seen: set[str] = set()
+        for result_node in soup.select(".result"):
+            title_node = result_node.select_one(".result__title")
+            snippet_node = result_node.select_one(".result__snippet")
+            url_node = result_node.select_one(".result__url")
+            if not title_node or not url_node:
+                continue
+            raw_href = url_node.get("href", "") or (title_node.find("a") or {}).get("href", "")
+            if not raw_href:
+                continue
+            parsed_href = urlparse(raw_href)
+            if "duckduckgo.com" in parsed_href.netloc:
+                qs = parse_qs(parsed_href.query)
+                clean_url = qs.get("uddg", [raw_href])[0]
+            else:
+                clean_url = raw_href
+            if not clean_url or not clean_url.startswith("http") or clean_url in seen:
+                continue
+            seen.add(clean_url)
+            title = title_node.get_text(strip=True)
+            snippet = snippet_node.get_text(strip=True) if snippet_node else ""
+            hits.append((title, clean_url, snippet))
+        return hits
+
     async def search_official_web(
         self,
         query: str,
@@ -562,48 +655,43 @@ class WebScout:
         target_official_domains: set[str] | None = None,
         custom_whitelist: set[str] | None = None,
     ) -> list[WebSearchResult]:
-        """Search DuckDuckGo HTML endpoint and filter candidates using OfficialDomainFilter."""
+        """Search authoritative web resources via Bing with Yahoo and DuckDuckGo fallbacks."""
         client = await self._get_client()
-        search_url = "https://html.duckduckgo.com/html/"
-        data = {"q": query, "b": "", "kl": ""}
+        raw_hits: list[tuple[str, str, str]] = []
 
+        # 1. Primary: Bing HTML search
         try:
-            resp = await client.post(search_url, data=data)
-            resp.raise_for_status()
-        except Exception as exc:
-            raise WebScoutError(f"DuckDuckGo search query failed for '{query}': {exc}") from exc
+            resp = await client.get("https://www.bing.com/search", params={"q": query})
+            text = getattr(resp, "text", "")
+            if isinstance(text, str) and text.strip():
+                raw_hits = self._parse_bing_results(text)
+        except Exception as b_err:
+            logger.debug(f"Bing search failed, falling back: {b_err}")
 
-        soup = BeautifulSoup(resp.text, "html.parser")
+        # 2. Secondary fallback: Yahoo HTML search
+        if not raw_hits:
+            try:
+                resp = await client.get("https://search.yahoo.com/search", params={"q": query})
+                text = getattr(resp, "text", "")
+                if isinstance(text, str) and text.strip():
+                    raw_hits = self._parse_yahoo_results(text)
+            except Exception as y_err:
+                logger.debug(f"Yahoo search failed, falling back: {y_err}")
+
+        # 3. Tertiary fallback: DuckDuckGo HTML endpoint
+        if not raw_hits:
+            try:
+                search_url = "https://html.duckduckgo.com/html/"
+                data = {"q": query, "b": "", "kl": ""}
+                resp = await client.post(search_url, data=data)
+                text = getattr(resp, "text", "")
+                if isinstance(text, str) and text.strip():
+                    raw_hits = self._parse_ddg_results(text)
+            except Exception as ddg_err:
+                logger.debug(f"DuckDuckGo search failed: {ddg_err}")
+
         candidates: list[WebSearchResult] = []
-        seen_urls: set[str] = set()
-
-        for result_node in soup.select(".result"):
-            title_node = result_node.select_one(".result__title")
-            snippet_node = result_node.select_one(".result__snippet")
-            url_node = result_node.select_one(".result__url")
-
-            if not title_node or not url_node:
-                continue
-
-            raw_href = url_node.get("href", "") or (title_node.find("a") or {}).get("href", "")
-            if not raw_href:
-                continue
-
-            # Decode DuckDuckGo redirect wrapper
-            parsed_href = urlparse(raw_href)
-            if "duckduckgo.com" in parsed_href.netloc:
-                qs = parse_qs(parsed_href.query)
-                clean_url = qs.get("uddg", [raw_href])[0]
-            else:
-                clean_url = raw_href
-
-            if clean_url in seen_urls:
-                continue
-            seen_urls.add(clean_url)
-
-            title_text = title_node.get_text(strip=True)
-            snippet_text = snippet_node.get_text(strip=True) if snippet_node else ""
-
+        for title_text, clean_url, snippet_text in raw_hits:
             auth = OfficialDomainFilter.evaluate(
                 clean_url,
                 target_official_domains=target_official_domains,

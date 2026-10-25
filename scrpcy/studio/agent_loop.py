@@ -21,6 +21,8 @@ from rich.markup import escape
 from rich.table import Table
 from rich.text import Text
 
+logger = logging.getLogger("scrpcy.studio.agent_loop")
+
 from scrpcy.core.chats import ChatManager, ChatSession
 from scrpcy.core.config import ConfigManager, ScrpcyConfig, detect_9router_key, fetch_9router_models
 from scrpcy.core.contracts import AdaptiveCriticVerdict, TaskContract, TaskContractExtractor
@@ -688,7 +690,14 @@ class StudioAgentLoopMixin:
                 flags=re.IGNORECASE,
             )
 
-        # 4. Clean up multiple blank lines
+        # 4. Resolve [[VISUAL:id]] placeholders into clickable markdown links
+        if hasattr(self, "vault_manager") and self.vault_manager and getattr(self.vault_manager, "vector_vault", None):
+            try:
+                cleaned = self.vault_manager.vector_vault.resolve_visual_placeholders(cleaned)
+            except Exception:
+                pass
+
+        # 5. Clean up multiple blank lines
         cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
         return cleaned
 
@@ -866,11 +875,21 @@ class StudioAgentLoopMixin:
                 return "Menelusuri Web", "URL/Query Kosong", "Tidak ada URL atau kata kunci web yang diberikan."
             from scrpcy.core.web_scout import WebScout
             web_scout = getattr(self, "web_scout", None) or WebScout(workspace=self.workspace)
+            t_web_s = time.time()
             if target_web.startswith("http://") or target_web.startswith("https://"):
                 try:
                     vec_vault = self.vault_manager.vector_vault if self.vault_manager else None
                     parsed = asyncio.run(web_scout.ingest_url(target_web, vector_vault=vec_vault))
                     self._sync_vault_cache()
+                    if hasattr(self, "logger") and self.logger:
+                        self.logger.log_web_scout(
+                            session_id="global",
+                            query=target_web,
+                            hits_count=1,
+                            official_count=1,
+                            ingested_stem=parsed.metadata.cite_key,
+                            duration_s=time.time() - t_web_s,
+                        )
                     summary_text = (
                         f"Dokumen web resmi berhasil diunduh dan diproses ke vault:\n"
                         f"- Judul: {parsed.metadata.title}\n"
@@ -886,6 +905,15 @@ class StudioAgentLoopMixin:
             else:
                 try:
                     results = asyncio.run(web_scout.search_official_web(target_web, limit=4, require_official=True))
+                    if hasattr(self, "logger") and self.logger:
+                        self.logger.log_web_scout(
+                            session_id="global",
+                            query=target_web,
+                            hits_count=len(results or []),
+                            official_count=sum(1 for r in (results or []) if getattr(r, "is_official", True)),
+                            ingested_stem=None,
+                            duration_s=time.time() - t_web_s,
+                        )
                     if not results:
                         return "Menelusuri Web", f"'{target_web}' (0 hasil resmi)", f"Tidak ditemukan web resmi untuk '{target_web}'."
                     lines = [f"Hasil pencarian web resmi untuk '{target_web}' (diurutkan berdasarkan otoritas institusi):"]
@@ -1144,8 +1172,25 @@ class StudioAgentLoopMixin:
             preflight_status[0] = (
                 f"[AI Contract] Merumuskan Kontrak Tugas Absolut & estimasi token ({model_label})..."
             )
+            t_contract_s = time.time()
             contract_extractor = self.contract_extractor or TaskContractExtractor(engine=self.engine)
             task_contract = contract_extractor.extract(query)
+            t_contract_dur = time.time() - t_contract_s
+            if hasattr(self, "logger") and self.logger:
+                self.logger.log_task_contract(
+                    session_id=session.id if session else "default",
+                    archetype=task_contract.archetype,
+                    primary_goal=task_contract.primary_goal,
+                    target_tokens=task_contract.target_output_tokens,
+                    token_margin_pct=task_contract.token_margin_pct,
+                    effective_min_tokens=task_contract.effective_min_tokens,
+                    effective_max_tokens=task_contract.effective_max_tokens,
+                    in_scope=task_contract.in_scope,
+                    out_of_scope=task_contract.out_of_scope,
+                    search_channels=task_contract.required_search_channels,
+                    duration_s=t_contract_dur,
+                    unlimited_tokens=task_contract.unlimited_tokens,
+                )
 
             preflight_status[0] = "[Vault] Mengambil potongan bukti (evidence chunks) yang relevan..."
             evidence = self.engine.evidence_synthesizer.retrieve_evidence(
@@ -1167,17 +1212,20 @@ class StudioAgentLoopMixin:
 
         margin_pct_disp = int(round(task_contract.token_margin_pct * 100))
         self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Kontrak Tugas (Absolut):[/bold bright_white] [cyan]{task_contract.primary_goal}[/cyan]")
-        self.console.print(
-            f"  [dim]• Format: {task_contract.format_requirements} "
-            f"(Target: ~{task_contract.min_words}-{task_contract.max_words} kata | "
-            f"~{task_contract.target_output_tokens} tok +-{margin_pct_disp}% -> "
-            f"{task_contract.effective_min_tokens}-{task_contract.effective_max_tokens} tok)[/dim]"
-        )
+        if task_contract.unlimited_tokens:
+            budget_desc = f"~{task_contract.min_words}-{task_contract.max_words} kata | [bold green]Tanpa Limitasi Token (Unlimited)[/bold green]"
+        else:
+            budget_desc = (
+                f"~{task_contract.min_words}-{task_contract.max_words} kata | "
+                f"~{task_contract.target_output_tokens} tok +-{margin_pct_disp}% -> "
+                f"{task_contract.effective_min_tokens}-{task_contract.effective_max_tokens} tok"
+            )
+        self.console.print(f"  [dim]• Format: {task_contract.format_requirements} (Target: {budget_desc})[/dim]")
         if task_contract.out_of_scope:
             self.console.print(f"  [dim]• Batasan: Eksklusi {', '.join(task_contract.out_of_scope)}[/dim]")
 
-        # High Token Consumption Warning & Confirmation (if > 5 chunks)
-        if len(evidence) > 5:
+        # High Token Consumption Warning & Confirmation (if > 5 chunks and NOT in unlimited token mode)
+        if len(evidence) > 5 and not task_contract.unlimited_tokens:
             sources = sorted(list({c.source for c in evidence}))
             evidence_tokens = sum(c.token_estimate or estimate_tokens(c.text) for c in evidence)
             est_total_input = estimate_tokens(query) + 250 + evidence_tokens
@@ -1437,51 +1485,19 @@ class StudioAgentLoopMixin:
             if citation_guide:
                 current_query = f"{citation_guide}\n\n{current_query}"
 
-            # Inject dynamic Task Contract directive to guide synthesis
-            dod_str = "\n".join(f"  * {d}" for d in task_contract.definition_of_done)
-            margin_disp = int(round(task_contract.token_margin_pct * 100))
-            contract_directive = (
-                f"\n\n[PANDUAN KONTRAK PENYELESAIAN TUGAS (ABSOLUT)]:\n"
-                f"- Sasaran Utama: {task_contract.primary_goal}\n"
-                f"- Format Output: {task_contract.format_requirements}\n"
-                f"- Alokasi Panjang: {task_contract.min_words} - {task_contract.max_words} kata | "
-                f"Target Token: ~{task_contract.target_output_tokens} token (+-{margin_disp}%: {task_contract.effective_min_tokens}-{task_contract.effective_max_tokens} token).\n"
-                f"- Batasan Negatif (Out-of-Scope): DILARANG menyertakan {', '.join(task_contract.out_of_scope)}.\n"
-                f"- Kebijakan Batas Pencarian: {task_contract.search_exhaustion_policy}\n"
-                f"- Definition of Done (Checklist yang Wajib Dipenuhi):\n{dod_str}\n"
-                f"Patuhi seluruh instruksi di atas secara presisi."
+            # Big Contract (task_contract) is held internally by Scrpcy as system state.
+            # Only a concise Small Contract directive is dispatched to the model prompt.
+            token_target_desc = (
+                "Bebas / Tanpa Batas"
+                if task_contract.unlimited_tokens
+                else f"{task_contract.min_words}-{task_contract.max_words} kata"
             )
-            current_query = f"{current_query}{contract_directive}"
-
-            # Search for relevant visual assets (figures / tables) from the vault
-            recommended_visuals: list[dict[str, Any]] = []
-            if self.vault_manager:
-                try:
-                    recommended_visuals = self.vault_manager.search_visual_assets(query=query, top_k=2)
-                except Exception as e:
-                    logger.debug(f"Failed to retrieve visual assets: {e}")
-
-            if recommended_visuals:
-                for idx, v in enumerate(recommended_visuals, 1):
-                    v["index"] = idx
-
-                task_result_box["recommended_visuals"] = recommended_visuals
-                vis_bullets = []
-                for idx, v in enumerate(recommended_visuals, 1):
-                    v_type = "Tabel" if v.get("asset_type") == "table" else "Gambar/Grafik"
-                    vis_bullets.append(
-                        f"  * [Visual #{idx}] Jenis: {v_type} | Halaman: {v.get('page_num')} | "
-                        f"Paper: {v.get('paper_title')} | Keterangan: \"{v.get('caption')}\""
-                    )
-                vis_directive = (
-                    f"\n\n[REFERENSI VISUAL TERSEDIA DI VAULT]:\n"
-                    f"Sistem mendeteksi figur/tabel relevan berikut di dalam dokumen vault:\n"
-                    + "\n".join(vis_bullets) + "\n"
-                    f"PANDUAN RUJUKAN VISUAL:\n"
-                    f"- Jika relevan dengan analisis Anda, referensikan visual di atas secara eksplisit (contoh: 'Sebagaimana disajikan pada [Visual #1]').\n"
-                    f"- Rujukan visual ini akan otomatis ditampilkan secara berwarna kepada pengguna di antarmuka terminal beserta sitasi lengkapnya."
-                )
-                current_query = f"{current_query}{vis_directive}"
+            small_contract_directive = (
+                f"\n\n[TUGAS KONTRAK: {task_contract.archetype}]\n"
+                f"Sasaran: {task_contract.primary_goal}\n"
+                f"Format & Alokasi: {task_contract.format_requirements} ({token_target_desc})."
+            )
+            current_query = f"{current_query}{small_contract_directive}"
             current_docs = list(existing_paths)
             curr_evidence = list(evidence) if evidence else []
             final_response = ""
@@ -1506,6 +1522,7 @@ class StudioAgentLoopMixin:
 
                 attempted_search_channels: set[str] = {"vault_lokal"}
                 contractor_gatekeeper = ContractDecomposer()
+                active_patch_info: tuple[int, list[str]] | None = None
 
                 while turn < max_agent_turns:
                     if cancel_event and cancel_event.is_set():
@@ -1549,7 +1566,7 @@ class StudioAgentLoopMixin:
                                     f"{current_query}"
                                 )
 
-                    if turn == 0 and curr_evidence:
+                    if turn == 0 and (curr_evidence or task_contract.archetype == "DATA_FACTUAL" or "web_resmi" in getattr(task_contract, "required_search_channels", [])):
                         self.task_manager.update_progress(
                             task_id,
                             "[Contractor] Memecah kontrak ke Subagent (Vault, Web, Literatur)...",
@@ -1571,6 +1588,7 @@ class StudioAgentLoopMixin:
                             vault_manager=self.vault_manager,
                             workspace=self.workspace,
                         )
+                        t_orch_s = time.time()
                         orch_res = await orchestrator.orchestrate(
                             query=query,
                             contract=task_contract,
@@ -1580,6 +1598,18 @@ class StudioAgentLoopMixin:
                             on_tree_update=_on_subagent_tree_update,
                             cancel_event=cancel_event,
                         )
+                        t_orch_dur = time.time() - t_orch_s
+                        if hasattr(self, "logger") and self.logger:
+                            self.logger.log_subagent_orchestration(
+                                session_id=session_id,
+                                roles_executed=[art.role for art in orch_res.artifacts],
+                                facts_extracted_count=len(orch_res.verified_facts),
+                                new_stems_count=len(orch_res.newly_ingested_stems),
+                                input_tokens=orch_res.subagent_input_tokens,
+                                output_tokens=orch_res.subagent_output_tokens,
+                                duration_s=t_orch_dur,
+                                channels_attempted=list(orch_res.attempted_search_channels),
+                            )
                         accumulated_input_tokens += orch_res.subagent_input_tokens
                         accumulated_output_tokens += orch_res.subagent_output_tokens
                         attempted_search_channels.update(orch_res.attempted_search_channels)
@@ -1630,6 +1660,21 @@ class StudioAgentLoopMixin:
 
                     t_stream_dur = time.time() - t_stream_s
                     raw_resp = "".join(turn_tokens)
+
+                    # Reassemble surgical paragraph patch if this was a micro-task revision turn
+                    if active_patch_info is not None:
+                        target_idx, raw_paras = active_patch_info
+                        clean_patch = raw_resp.strip()
+                        if clean_patch.startswith("```"):
+                            clean_patch = re.sub(r"^```[a-zA-Z]*\n?", "", clean_patch)
+                            clean_patch = re.sub(r"\n?```$", "", clean_patch).strip()
+                        if len(clean_patch) > 20 and target_idx < len(raw_paras):
+                            raw_paras[target_idx] = clean_patch
+                            raw_resp = "\n\n".join(raw_paras)
+                        elif len(clean_patch) > 20:
+                            raw_resp = clean_patch
+                        active_patch_info = None
+
                     out_tok = estimate_tokens(raw_resp)
                     if hasattr(self, "logger") and self.logger:
                         self.logger.log_llm_stream_finish(session_id, turn, model_name, out_tok, t_stream_dur, len(raw_resp))
@@ -1655,6 +1700,14 @@ class StudioAgentLoopMixin:
                             sub_label = "(Membaca teks dari vault...)"
 
                         self.task_manager.log(task_id, f"Eksekusi alat internal: {action_label} {target_label}")
+                        if hasattr(self, "logger") and self.logger:
+                            self.logger.log_internal_tool(
+                                session_id=session_id,
+                                action=action_label,
+                                target=target_label,
+                                turn=turn,
+                                output_length=len(tool_output),
+                            )
                         self.emit_session_output(
                             session.id if session else None,
                             f"[bold cyan]●[/bold cyan] [bold bright_white]{action_label}[/bold bright_white] [cyan]{target_label}[/cyan] [dim]{sub_label}[/dim]\n"
@@ -1769,6 +1822,16 @@ class StudioAgentLoopMixin:
                             task_id,
                             f"[Contractor Gatekeeper] {adjudication.adjudication_summary}",
                         )
+                    if hasattr(self, "logger") and self.logger:
+                        self.logger.log_contractor_adjudication(
+                            session_id=session_id,
+                            override_passed=adjudication.override_passed,
+                            override_score=adjudication.override_score,
+                            accepted_revisions=adjudication.accepted_revisions,
+                            rejected_critiques=adjudication.rejected_critiques,
+                            search_exhausted=adjudication.search_exhausted,
+                            channels_summary=adjudication.attempted_channels_summary,
+                        )
                     if not adjudication.should_revise:
                         c_rep.passed = True
                         c_rep.score = adjudication.override_score
@@ -1831,7 +1894,7 @@ class StudioAgentLoopMixin:
                         if refinement_turns >= max_refine_limit:
                             self.emit_session_output(
                                 session.id if session else None,
-                                "[bold yellow]●[/bold yellow] [bold bright_white]Epistemic Convergence[/bold bright_white] [dim]Batas 3 iterasi perbaikan tercapai. Memfinalisasi draf terbaik dengan catatan dialektis...[/dim]\n",
+                                "[bold yellow]●[/bold yellow] [bold bright_white]Epistemic Convergence[/bold bright_white] [dim]Batas iterasi perbaikan tercapai. Memfinalisasi draf terbaik dengan catatan dialektis...[/dim]\n",
                                 session_obj=session,
                             )
                             raw_final = best_draft or p_resp
@@ -1853,10 +1916,11 @@ class StudioAgentLoopMixin:
                             last_c_report = c_rep
                             break
 
+                        refinement_turns += 1
+
                         if c_rep.needs_citation_mapping:
                             if cancel_event and cancel_event.is_set():
                                 return
-                            refinement_turns += 1
                             attempted_search_channels.update({
                                 "vault_lokal",
                                 "web_resmi",
@@ -2119,119 +2183,82 @@ class StudioAgentLoopMixin:
                             accumulated_input_tokens += gap_art.input_tokens
                             accumulated_output_tokens += gap_art.output_tokens
 
-                            verified_ledger_lines = [
+                        # --- Option 1: Surgical Paragraph Patch (Micro-Task Small Contract) ---
+                        issue_list: list[str] = []
+                        if c_rep.weaknesses:
+                            issue_list.extend(c_rep.weaknesses[:2])
+                        if v_rep and getattr(v_rep, "claims", None):
+                            unsupported = [c.claim for c in v_rep.claims if c.status == "unsupported"]
+                            if unsupported:
+                                issue_list.extend(unsupported[:2])
+
+                        base_draft_text = best_draft or p_resp
+                        raw_paras = [p.strip() for p in re.split(r"\n\s*\n", base_draft_text) if p.strip()]
+
+                        target_idx = 0
+                        if len(raw_paras) > 1 and issue_list:
+                            best_overlap = -1
+                            issue_words = set(re.findall(r"\w{4,}", " ".join(issue_list).lower()))
+                            for idx, p_text in enumerate(raw_paras):
+                                p_words = set(re.findall(r"\w{4,}", p_text.lower()))
+                                overlap = len(issue_words & p_words)
+                                if overlap > best_overlap:
+                                    best_overlap = overlap
+                                    target_idx = idx
+
+                        target_paragraph = raw_paras[target_idx] if raw_paras else base_draft_text
+
+                        evidence_lines = []
+                        if "gap_art" in locals() and gap_art and gap_art.extracted_facts:
+                            evidence_lines = [
                                 f"- {f.claim_or_metric} [Sumber: {f.citation_stem}{', ' + f.year if f.year else ''}]"
-                                for f in gap_art.extracted_facts[:6]
+                                for f in gap_art.extracted_facts[:3]
                             ]
-                            if not verified_ledger_lines and locked_supported_claims:
-                                verified_ledger_lines = [f"- {c[:180]}" for c in locked_supported_claims[:4]]
+                        if not evidence_lines and locked_supported_claims:
+                            evidence_lines = [f"- {c[:180]}" for c in locked_supported_claims[:3]]
+                        if not evidence_lines and curr_evidence:
+                            evidence_lines = [f"- {c.text[:220]} [Sumber: {c.source}]" for c in curr_evidence[:2]]
+                        evidence_sec = "\n".join(evidence_lines)
 
-                            ledger_sec = (
-                                "### LEDGER FAKTA & SITASI TERVERIFIKASI (GUNAKAN FAKTA INI SECARA ALAMI, TIDAK PERLU VERBATIM):\n"
-                                + "\n".join(verified_ledger_lines) + "\n\n"
-                            ) if verified_ledger_lines else ""
+                        patch_prompt = (
+                            f"[MICRO-TASK PERBAIKAN PARAGRAF: {task_contract.archetype}]\n"
+                            f"Fokus Masalah: {'; '.join(issue_list[:2]) if issue_list else 'Sempurnakan akurasi data.'}\n\n"
+                            f"Bukti Terverifikasi:\n{evidence_sec}\n\n"
+                            f"Paragraf yang Perlu Diperbaiki:\n\"\"\"\n{target_paragraph}\n\"\"\"\n\n"
+                            f"Instruksi: Tulis ulang HANYA satu paragraf di atas secara presisi mengalir alami agar klaimnya terverifikasi sesuai bukti di atas. "
+                            f"DILARANG menulis ulang paragraf lain. Kembalikan HANYA teks satu paragraf perbaikan tanpa pengantar atau penutup."
+                        )
 
-                            weaknesses_str = "; ".join(c_rep.weaknesses[:2]) if c_rep.weaknesses else "Fokuskan pada bukti empiris yang relevan."
-                            counter_str = (
-                                "\nCatatan dialektika: " + "; ".join(c_rep.counter_arguments[:2])
-                            ) if (c_rep.counter_arguments and getattr(task_contract, "allow_counter_arguments", False)) else ""
-                            recency_str = f"\nCatatan kebaruan: {c_rep.recency_alert}" if c_rep.recency_alert else ""
+                        current_query = patch_prompt
+                        active_patch_info = (target_idx, raw_paras)
+                        current_docs = []
 
-                            unsupported_sec = ""
-                            if v_rep and getattr(v_rep, "claims", None):
-                                unsupported = [c.claim for c in v_rep.claims if c.status == "unsupported"]
-                                if unsupported:
-                                    unsupported_sec = (
-                                        "### KLAIM TANPA BUKTI (HAPUS ATAU GANTI DENGAN FAKTA VAULT):\n"
-                                        + "\n".join(f"- {c}" for c in unsupported[:4]) + "\n\n"
-                                    )
-
-                            current_query = (
-                                f"{citation_guide}\n\n"
-                                f"{ledger_sec}"
-                                f"### PANDUAN PERBAIKAN SUBSTANSI (KONTRAK: {task_contract.archetype}, TARGET {task_contract.min_words}-{task_contract.max_words} KATA):\n"
-                                f"Fokus perbaikan: {weaknesses_str}{counter_str}{recency_str}\n\n"
-                                f"{unsupported_sec}"
-                                f"Pertanyaan riset asli: \"{query}\"\n"
-                                f"Instruksi: Jawab langsung pertanyaan pengguna menggunakan fakta terverifikasi di atas dengan kalimat yang mengalir alami. "
-                                f"DILARANG menjawab kritikus dalam bentuk poin-poin pembelaan diri dan DILARANG memperluas pembahasan ke sub-bab tinjauan pustaka (Bab 2) di luar substansi pertanyaan. "
-                                f"Jika sebagian tahun/cakupan data memang tidak tersedia di dokumen vault, nyatakan cakupan data yang tersedia secara jujur dan singkat."
-                            )
-                            turn += 1
-                            if self._check_agent_turn_checkpoint(
-                                turn=turn,
-                                best_grounding=best_grounding,
-                                best_critic=best_critic,
-                                accumulated_input_tokens=accumulated_input_tokens,
-                                accumulated_output_tokens=accumulated_output_tokens,
-                                task_id=task_id,
-                                session=session,
-                                max_refine_limit=max_refine_limit,
-                                last_c_report=c_rep,
-                            ):
-                                raw_final = best_draft or p_resp
-                                final_response = self._sanitize_final_response(raw_final)
-                                if self.vault_manager and final_response:
-                                    final_response = append_vault_bibliography(
-                                        text=final_response,
-                                        evidence=curr_evidence,
-                                        vault_manager=self.vault_manager,
-                                        style=self.config.citation.style,
-                                        active_documents=self.get_session_active_documents(session.id if session else None),
-                                    )
-                                last_v_report = v_rep
-                                last_c_report = c_rep
-                                break
-                            continue
-
-                        elif v_rep.hallucination_warning:
-                            refinement_turns += 1
-                            self.task_manager.log(task_id, f"FactChecker: {v_rep.hallucination_warning}")
-                            self.emit_session_output(
-                                session.id if session else None,
-                                f"[bold cyan]●[/bold cyan] [bold bright_white]Memverifikasi Fakta[/bold bright_white] [yellow]{v_rep.hallucination_warning}[/yellow]",
-                                session_obj=session,
-                            )
-                            unsupported_claims = [c.claim for c in v_rep.claims if c.status == "unsupported"]
-                            if unsupported_claims:
-                                ledger_sec = (
-                                    "### FAKTA TERVERIFIKASI (PERTAHANKAN SUBSTANSI & SITASI INI SECARA ALAMI):\n"
-                                    + "\n".join(f"- {c[:180]}" for c in locked_supported_claims[:5]) + "\n\n"
-                                ) if locked_supported_claims else ""
-                                current_query = (
-                                    f"{ledger_sec}"
-                                    f"### AUDIT FAKTA (HAPUS KLAIM TANPA RUJUKAN VAULT):\n"
-                                    f"Klaim berikut tidak ditemukan dasarnya pada literatur vault:\n"
-                                    + "\n".join(f"- {c}" for c in unsupported_claims[:4]) +
-                                    f"\n\nPertanyaan riset asli: \"{query}\"\n"
-                                    f"Instruksi: Susun ulang jawaban secara ringkas ({task_contract.min_words}-{task_contract.max_words} kata) hanya menggunakan fakta yang didukung bukti teks dokumen vault."
+                        turn += 1
+                        if self._check_agent_turn_checkpoint(
+                            turn=turn,
+                            best_grounding=best_grounding,
+                            best_critic=best_critic,
+                            accumulated_input_tokens=accumulated_input_tokens,
+                            accumulated_output_tokens=accumulated_output_tokens,
+                            task_id=task_id,
+                            session=session,
+                            max_refine_limit=max_refine_limit,
+                            last_c_report=c_rep,
+                        ):
+                            raw_final = best_draft or p_resp
+                            final_response = self._sanitize_final_response(raw_final)
+                            if self.vault_manager and final_response:
+                                final_response = append_vault_bibliography(
+                                    text=final_response,
+                                    evidence=curr_evidence,
+                                    vault_manager=self.vault_manager,
+                                    style=self.config.citation.style,
+                                    active_documents=self.get_session_active_documents(session.id if session else None),
                                 )
-                                turn += 1
-                            if self._check_agent_turn_checkpoint(
-                                turn=turn,
-                                best_grounding=best_grounding,
-                                best_critic=best_critic,
-                                accumulated_input_tokens=accumulated_input_tokens,
-                                accumulated_output_tokens=accumulated_output_tokens,
-                                task_id=task_id,
-                                session=session,
-                                max_refine_limit=max_refine_limit,
-                                last_c_report=c_rep,
-                            ):
-                                raw_final = best_draft or p_resp
-                                final_response = self._sanitize_final_response(raw_final)
-                                if self.vault_manager and final_response:
-                                    final_response = append_vault_bibliography(
-                                        text=final_response,
-                                        evidence=curr_evidence,
-                                        vault_manager=self.vault_manager,
-                                        style=self.config.citation.style,
-                                        active_documents=self.get_session_active_documents(session.id if session else None),
-                                    )
-                                last_v_report = v_rep
-                                last_c_report = c_rep
-                                break
-                            continue
+                            last_v_report = v_rep
+                            last_c_report = c_rep
+                            break
+                        continue
 
                     # 5. Automatic Bibliography
                     final_text = p_resp
@@ -2322,7 +2349,6 @@ class StudioAgentLoopMixin:
                 "style_name": style_name,
                 "last_v_report": last_v_report,
                 "last_c_report": last_c_report,
-                "recommended_visuals": recommended_visuals,
             })
 
             return f"Sintesis selesai ({len(final_response)} karakter, {total_tokens:,} total token)" if final_response else "Selesai"
@@ -2440,16 +2466,6 @@ class StudioAgentLoopMixin:
             final_resp = task_result_box.get("final_response", "")
             render_academic_markdown(final_resp, console=self.console)
             self.console.print()
-
-            # Render Option A: Visual Assets Panel (Figures / Tables with citation)
-            rec_visuals = task_result_box.get("recommended_visuals", [])
-            if rec_visuals:
-                from scrpcy.ui.terminal_image import render_visual_panel
-                for v_info in rec_visuals:
-                    v_panel = render_visual_panel(v_info, console=self.console)
-                    if v_panel:
-                        self.console.print(v_panel)
-                        self.console.print()
 
             in_tok = task_result_box.get("input_tokens", 0)
             out_tok = task_result_box.get("output_tokens", 0)
