@@ -134,8 +134,10 @@ class TestTaskDAGAndSessionActorRuntime:
         tm = TaskManager(max_workers=4, db_path=tmp_path / "tasks.db")
         events: list[str] = []
 
-        def io_worker(task_id: str, label: str, delay: float) -> str:
-            time.sleep(delay)
+        io_gate = threading.Event()
+
+        def io_worker(task_id: str, label: str) -> str:
+            io_gate.wait(timeout=3.0)
             events.append(label)
             return label
 
@@ -143,8 +145,8 @@ class TestTaskDAGAndSessionActorRuntime:
             events.append(label)
             return label
 
-        io1 = tm.submit("IO 1", "scout", io_worker, session_id="sess1", lane="io", label="io1", delay=0.08)
-        io2 = tm.submit("IO 2", "download", io_worker, session_id="sess1", lane="io", label="io2", delay=0.12)
+        io1 = tm.submit("IO 1", "scout", io_worker, session_id="sess1", lane="io", label="io1")
+        io2 = tm.submit("IO 2", "download", io_worker, session_id="sess1", lane="io", label="io2")
 
         turn1 = tm.submit(
             "Turn 1",
@@ -169,6 +171,9 @@ class TestTaskDAGAndSessionActorRuntime:
 
         assert set(turn1.depends_on) == {io1.id, io2.id}
         assert turn1.id in turn2.depends_on
+
+        # Release IO workers now that dependencies are verified
+        io_gate.set()
 
         tm.wait_for_tasks([io1.id, io2.id, turn1.id, turn2.id], timeout=5.0)
         # Both io1 and io2 must complete before turn1, and turn1 before turn2

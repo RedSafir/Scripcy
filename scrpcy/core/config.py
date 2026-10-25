@@ -119,6 +119,12 @@ class ScrpcyConfig(BaseModel):
         le=65536,
         description="Maximum output token generation limit (prevents truncated responses).",
     )
+    contract_token_margin_pct: float = Field(
+        default=0.30,
+        ge=0.05,
+        le=0.50,
+        description="Margin of error percentage for AI TaskContract token budget (default 0.30 = +-30%).",
+    )
     workspace_path: str = Field(
         default="~/.scrpcy/workspace",
         description="Base path for workspace caches and document vaults.",

@@ -1,4 +1,4 @@
-"""Devil's Advocate module: adversarial peer review, argument critique, and recency verification."""
+"""Devil's Advocate module: adversarial peer review, scope guard, and recency verification."""
 
 from __future__ import annotations
 
@@ -46,13 +46,14 @@ class CritiqueReport(BaseModel):
     needs_citation_mapping: bool = Field(default=False, description="True if new/recent references should be scouted.")
     recommended_topics: list[str] = Field(default_factory=list, description="Key missing topics or questions to explore.")
     directed_search_queries: list[str] = Field(default_factory=list, description="Targeted academic search queries to fill evidence gaps.")
+    directed_web_queries: list[str] = Field(default_factory=list, description="Targeted official web queries to fill data/statistical gaps.")
     critique_summary: str = Field(default="", description="Concise reviewer assessment.")
     input_tokens: int = Field(default=0, description="Estimated input tokens consumed during critique.")
     output_tokens: int = Field(default=0, description="Estimated output tokens consumed during critique.")
 
 
 class DevilsAdvocate:
-    """Adversarial critic testing argument strength, evidence recency, and counter-arguments."""
+    """Adversarial critic and scope guard testing contract conformance, evidence recency, and factual rigor."""
 
     def __init__(self, engine: LLMEngine | None = None, recency_threshold_years: int = 6) -> None:
         self.engine = engine
@@ -61,7 +62,6 @@ class DevilsAdvocate:
 
     def extract_citation_years(self, text: str) -> list[int]:
         """Extract publication years cited in the text."""
-        # Match citations like [Page2002], (Smith, 2019), [2021]
         matches = re.findall(r"(?:19\d{2}|20\d{2})", text)
         return [int(y) for y in matches if 1950 <= int(y) <= self.current_year]
 
@@ -78,6 +78,63 @@ class DevilsAdvocate:
 
         return False, None
 
+    def audit_fact_ledger(
+        self,
+        query: str,
+        contract: Any,
+        artifacts: list[Any],
+        valid_stems: set[str] | None = None,
+    ) -> dict[str, Any]:
+        """Audit extracted subagent artifacts before final assembly, filtering out-of-scope drift and ungrounded stems."""
+        kept_facts: list[Any] = []
+        dropped_count = 0
+        missing_notes: list[str] = []
+        in_tok = 0
+        out_tok = 0
+
+        forbidden_terms = [
+            f.lower()
+            for f in (list(getattr(contract, "out_of_scope", [])) + list(getattr(contract, "forbidden_drift_topics", [])))
+            if len(f) > 4
+        ]
+        seen_text: set[str] = set()
+
+        for art in artifacts:
+            in_tok += getattr(art, "input_tokens", 0)
+            out_tok += getattr(art, "output_tokens", 0)
+            for m in getattr(art, "missing_requirements", []):
+                if m not in missing_notes:
+                    missing_notes.append(m)
+
+            for fact in getattr(art, "extracted_facts", []):
+                claim_txt = getattr(fact, "claim_or_metric", "").strip()
+                stem = getattr(fact, "citation_stem", "").strip()
+                if not claim_txt:
+                    continue
+                if valid_stems and stem and stem not in valid_stems:
+                    dropped_count += 1
+                    continue
+                c_low = claim_txt.lower()
+                if any(ft in c_low for ft in forbidden_terms):
+                    dropped_count += 1
+                    continue
+                norm = c_low[:70]
+                if norm in seen_text:
+                    continue
+                seen_text.add(norm)
+                kept_facts.append(fact)
+
+        if getattr(contract, "archetype", "") == "DATA_FACTUAL":
+            kept_facts.sort(key=lambda f: (1 if getattr(f, "is_quantitative", False) else 0, getattr(f, "year", "") or ""), reverse=True)
+
+        return {
+            "verified_facts": kept_facts,
+            "dropped_count": dropped_count,
+            "missing_notes": missing_notes,
+            "subagent_input_tokens": in_tok,
+            "subagent_output_tokens": out_tok,
+        }
+
     def critique_heuristic(
         self,
         query: str,
@@ -86,7 +143,7 @@ class DevilsAdvocate:
         contract: Any | None = None,
         fact_check_verdict: Any | None = None,
     ) -> CritiqueReport:
-        """Rule-based adversarial critique testing contract conformance and epistemic rigor."""
+        """Rule-based critique testing contract conformance, scope boundaries, and epistemic rigor."""
         years = self.extract_citation_years(answer)
         is_outdated, recency_msg = self.check_recency(years)
 
@@ -99,8 +156,10 @@ class DevilsAdvocate:
         contract_conformance = True
         epistemic_rigor = True
 
-        # --- LAYER 1: CONTRACT CONFORMANCE & TOLERANCE MARGIN (±15%) ---
         words = len(answer.split())
+        archetype = getattr(contract, "archetype", "") if contract else ""
+        allow_counter = getattr(contract, "allow_counter_arguments", True) if contract else True
+
         if contract:
             eff_min = getattr(contract, "effective_min_words", int(getattr(contract, "min_words", 300) * 0.85))
             eff_max = getattr(contract, "effective_max_words", int(getattr(contract, "max_words", 750) * 1.15))
@@ -113,20 +172,19 @@ class DevilsAdvocate:
                 weaknesses.append(msg)
                 score -= 2
             elif words > eff_max:
-                msg = f"Panjang draf ({words} kata) melebihi batas maksimum toleransi ({eff_max} kata dari batas {getattr(contract, 'max_words', 750)})."
+                msg = f"Panjang draf ({words} kata) melebihi batas maksimum toleransi ({eff_max} kata dari batas {getattr(contract, 'max_words', 750)}). Pangkas bagian yang keluar dari substansi pertanyaan."
                 conformance_details.append(msg)
+                weaknesses.append(msg)
                 score -= 1
             else:
                 conformance_details.append(f"Panjang draf ({words} kata) memenuhi rentang toleransi ({eff_min}-{eff_max} kata).")
 
-            # Check DoD items
             dods = getattr(contract, "definition_of_done", [])
             for dod in dods:
                 conformance_details.append(f"DoD Checklist: '{dod}' terpenuhi.")
         else:
             conformance_details.append("Format umum akademis terpenuhi.")
 
-        # --- LAYER 2: EPISTEMIC RIGOR & FACTUAL GROUNDING ---
         if fact_check_verdict:
             grounding_score = getattr(fact_check_verdict, "grounding_score", None)
             if grounding_score is None and isinstance(fact_check_verdict, dict):
@@ -162,42 +220,48 @@ class DevilsAdvocate:
                 epistemic_details.append(msg)
                 score = min(score, 4)
         else:
-            # Fallback to evidence density check
             paragraphs = [p for p in answer.split("\n\n") if len(p.strip().split()) > 15]
             cited_paragraphs = [p for p in paragraphs if "[" in p and "]" in p]
             is_concise_contract = contract and getattr(contract, "max_words", 1000) <= 650
             min_density = 0.25 if is_concise_contract else 0.40
             if paragraphs and (len(cited_paragraphs) / len(paragraphs)) < min_density:
                 weaknesses.append("Sebagian paragraf substantif tidak memiliki rujukan sitasi langsung.")
-                counter_args.append("Klaim tanpa sitasi dapat diperdebatkan validitas empirisnya.")
+                if allow_counter:
+                    counter_args.append("Klaim tanpa sitasi dapat diperdebatkan validitas empirisnya.")
                 epistemic_details.append("Kepadatan sitasi empiris di bawah batas minimum.")
                 score -= 2
             else:
                 epistemic_details.append("Kepadatan sitasi empiris memadai.")
 
-        # Recency check
         if is_outdated and recency_msg:
             weaknesses.append(recency_msg)
             score -= 2
 
-        # Check for balance and nuances (e.g. limitations, challenges)
-        nuance_keywords = ["namun", "tetapi", "meskipun", "kendala", "tantangan", "limitasi", "kontra", "sanggahan", "tegangan", "kritik", "kelemahan", "however", "although", "limitation"]
-        has_nuance = any(k in answer.lower() for k in nuance_keywords)
-        if not has_nuance:
-            weaknesses.append("Argumen cenderung satu arah (belum menyajikan limitasi atau kondisi batas).")
-            counter_args.append("Pertimbangkan faktor pembatas, trade-off, atau skenario di mana argumen ini tidak berlaku.")
-            score -= 1
+        # Require counter-arguments only when contract permits dialectical debate or when no restrictive contract is set.
+        if contract is None or (allow_counter and archetype != "DATA_FACTUAL"):
+            nuance_keywords = [
+                "namun", "tetapi", "meskipun", "kendala", "tantangan", "limitasi",
+                "kontra", "sanggahan", "tegangan", "kritik", "kelemahan", "however", "although", "limitation",
+            ]
+            has_nuance = any(k in answer.lower() for k in nuance_keywords)
+            if not has_nuance:
+                weaknesses.append("Argumen cenderung satu arah (belum menyajikan limitasi atau kondisi batas).")
+                counter_args.append("Pertimbangkan faktor pembatas, trade-off, atau skenario di mana argumen ini tidak berlaku.")
+                score -= 1
 
-        # Derive recommended topics and directed search queries from query and gaps
-        words = [w for w in re.split(r"[^\w-]", query.lower()) if len(w) > 3]
+        words_q = [w for w in re.split(r"[^\w-]", query.lower()) if len(w) > 3]
         directed_queries: list[str] = []
-        if words:
-            base_kw = " ".join(words[:5])
+        directed_web_queries: list[str] = []
+        if words_q:
+            base_kw = " ".join(words_q[:5])
             recommended_topics.append(f"{base_kw} recent advances limitations")
             directed_queries.append(f"{base_kw} policy community management")
             directed_queries.append(f"{base_kw} empirical evaluation challenges")
+            directed_web_queries.append(f"{base_kw} data resmi statistik")
+            directed_web_queries.append(f"{base_kw} laporan tahunan portal pemerintah")
         else:
             directed_queries.append(f"{query} review evidence")
+            directed_web_queries.append(f"{query} data statistik resmi")
 
         score = max(1, min(10, score))
         needs_more_scout = score < 7 or is_outdated or not epistemic_rigor
@@ -220,6 +284,7 @@ class DevilsAdvocate:
             needs_citation_mapping=needs_more_scout,
             recommended_topics=recommended_topics,
             directed_search_queries=directed_queries,
+            directed_web_queries=directed_web_queries,
             critique_summary=summary,
         )
 
@@ -231,7 +296,7 @@ class DevilsAdvocate:
         contract: Any | None = None,
         fact_check_verdict: Any | None = None,
     ) -> CritiqueReport:
-        """Execute adversarial critique using LLM if available, falling back to heuristics."""
+        """Execute adversarial critique and scope guard using LLM if available, falling back to heuristics."""
         heuristic = self.critique_heuristic(
             query,
             answer,
@@ -242,12 +307,15 @@ class DevilsAdvocate:
         if not self.engine:
             return heuristic
 
-        # If engine is configured with an active model, perform AI Devil's Advocate review
         try:
             model_name = self.engine.config.default_model
             api_key = self.engine.config.get_api_key_for_model(model_name)
             if not api_key or api_key.startswith("mock") or getattr(self.engine, "_acompletion_fn", None) is not None:
                 return heuristic
+
+            archetype = getattr(contract, "archetype", "FOCUSED_QA") if contract else "FOCUSED_QA"
+            allow_counter = getattr(contract, "allow_counter_arguments", False) if contract else True
+            allow_honest_gap = getattr(contract, "allow_honest_gap", True) if contract else True
 
             contract_note = ""
             if contract:
@@ -259,40 +327,49 @@ class DevilsAdvocate:
                 max_w = getattr(contract, "max_words", 750)
                 dods = "\n".join(f"  * {d}" for d in getattr(contract, "definition_of_done", []))
 
+                scope_mode_rule = (
+                    "2. LENS 2 (SCOPE GUARD - NO EXPANSION): This is a direct data/factual or focused query. "
+                    "DO NOT demand counter-arguments, bureaucratic/policy debates, or literature-review sub-chapters. "
+                    "Set counter_arguments to [] (empty list). Penalize the answer if it drifts into textbook theory.\n"
+                    if not allow_counter
+                    else "2. LENS 2 (DIALECTICAL RIGOR): Check whether key counter-arguments, trade-offs, or limitations within scope are addressed.\n"
+                )
+                honest_gap_rule = (
+                    "3. HONEST GAP POLICY: If the vault documents only cover specific regions or years and the answer honestly states that limitation while citing available figures, DO NOT penalize it or force speculative padding.\n"
+                    if allow_honest_gap
+                    else ""
+                )
+
                 contract_note = (
-                    f"\nDYNAMIC TASK CONTRACT & DEFINITION OF DONE:\n"
+                    f"\nDYNAMIC TASK CONTRACT & SCOPE GUARD (Archetype: {archetype}):\n"
                     f"- Primary Goal: {p_goal}\n"
                     f"- In-Scope Topics: {in_s}\n"
-                    f"- Out-of-Scope (DO NOT PENALIZE FOR OMISSION): {out_s}\n"
+                    f"- Out-of-Scope (FORBIDDEN DRIFT): {out_s}\n"
                     f"- Target Format & Word Budget: {fmt_r} (~{min_w}-{max_w} words)\n"
                     f"- Definition of Done (DoD) Checklist:\n{dods}\n\n"
-                    "EVALUATION INSTRUCTIONS (DUAL-LENS ADAPTIVE CRITIC):\n"
-                    "1. LENS 1 (CONTRACT COMPLIANCE): Evaluate whether the answer fulfills the DoD checklist and format constraints. "
-                    "DO NOT demand textbook background or out-of-scope topics if the user requested a concise or specific format.\n"
-                    "2. LENS 2 (IN-SCOPE SCIENTIFIC RIGOR): Rigorously audit claims WITHIN the in-scope topics. "
-                    "Check for faulty logic, unsupported assertions, or ungrounded conclusions.\n"
+                    "EVALUATION INSTRUCTIONS:\n"
+                    "1. LENS 1 (CONTRACT & SUBSTANCE): Verify whether the answer directly answers the user question without drifting into unrequested chapters.\n"
+                    + scope_mode_rule
+                    + honest_gap_rule
                 )
             elif intent and ("argument" in str(intent).lower()):
                 contract_note = (
                     "\nNOTE: The user specifically requested an ARGUMENT EXPLORATION / DIALECTICAL MATRIX "
                     "(thesis, pro arguments, contra arguments, and gaps), NOT a monolithic multi-chapter review. "
-                    "Grade on dialetical balance, evidentiary backing, and clarity. DO NOT penalize for conciseness.\n"
+                    "Grade on dialectical balance, evidentiary backing, and clarity. DO NOT penalize for conciseness.\n"
                 )
 
             system_prompt = (
-                "You are an elite academic peer-reviewer and Devil's Advocate. "
-                "Critically evaluate the research answer against the research question.\n"
+                "You are an academic Scope & Rigor Auditor.\n"
+                "Evaluate whether the proposed answer stays strictly on substance and fulfills the Task Contract.\n"
                 + contract_note +
-                "Scrutinize:\n"
-                "1. Logical gaps, ungrounded claims, or confirmation bias.\n"
-                "2. Whether counter-arguments, tradeoffs, or limitations are missing.\n"
-                "3. Reference recency (are key assertions relying on outdated findings?).\n"
                 "Provide structured evaluation in JSON:\n"
                 "- score: integer from 1 to 10\n"
-                "- weaknesses: list of 1-3 specific analytical weaknesses\n"
-                "- counter_arguments: list of 1-2 potent counter-perspectives\n"
+                "- weaknesses: list of 1-2 concise issues (focus on missing core data or scope drift; do NOT ask to expand into tangential topics)\n"
+                "- counter_arguments: list of 0-2 counter-perspectives (MUST be [] if allow_counter_arguments is False)\n"
                 "- recommended_topics: list of 1-2 search queries for complementary literature\n"
-                "- directed_search_queries: list of 1-3 specific academic search queries to find literature addressing these weaknesses directly\n"
+                "- directed_search_queries: list of 1-2 specific academic search queries to fill empirical gaps\n"
+                "- directed_web_queries: list of 1-2 search queries targeting official government or institutional data portals\n"
                 "- critique_summary: 1-sentence verdict"
             )
 
@@ -312,10 +389,11 @@ class DevilsAdvocate:
                 "model": effective_model,
                 "messages": [
                     {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": f"RESEARCH QUESTION: {query}\n\nPROPOSED ANSWER:\n{answer[:8000]}"},
+                    {"role": "user", "content": f"RESEARCH QUESTION: {query}\n\nPROPOSED ANSWER:\n{answer[:6000]}"},
                 ],
                 "api_key": api_key,
                 "temperature": 0.2,
+                "max_tokens": 280,
                 "response_format": {"type": "json_object"},
                 "timeout": 15,
             }
@@ -329,12 +407,12 @@ class DevilsAdvocate:
             score = int(data.get("score", heuristic.score))
             score = max(1, min(10, score))
             ai_weaknesses = data.get("weaknesses", heuristic.weaknesses)
-            ai_counter = data.get("counter_arguments", heuristic.counter_arguments)
+            ai_counter = [] if not allow_counter else data.get("counter_arguments", heuristic.counter_arguments)
             ai_topics = data.get("recommended_topics", heuristic.recommended_topics)
             ai_directed = data.get("directed_search_queries", heuristic.directed_search_queries or ai_topics)
+            ai_directed_web = data.get("directed_web_queries", getattr(heuristic, "directed_web_queries", []))
             ai_summary = data.get("critique_summary", heuristic.critique_summary)
 
-            # Preserve recency alert from heuristic
             if heuristic.recency_alert and heuristic.recency_alert not in ai_weaknesses:
                 ai_weaknesses.append(heuristic.recency_alert)
 
@@ -343,7 +421,6 @@ class DevilsAdvocate:
             epistemic_rigor = heuristic.epistemic_rigor
             epistemic_details = list(heuristic.epistemic_details)
 
-            # Strict verification override if fact_check_verdict failed
             if fact_check_verdict:
                 grounding_score = getattr(fact_check_verdict, "grounding_score", None)
                 hallucination_warning = getattr(fact_check_verdict, "hallucination_warning", None)
@@ -354,18 +431,17 @@ class DevilsAdvocate:
                     epistemic_rigor = False
                     score = min(score, 5)
 
-            # Strict word tolerance override
             if contract:
                 words = len(answer.split())
                 eff_min = getattr(contract, "effective_min_words", int(getattr(contract, "min_words", 300) * 0.85))
-                if words < eff_min:
+                if words < eff_min and getattr(contract, "min_words", 0) >= 300:
                     contract_conformance = False
                     score = min(score, 6)
 
             needs_scout = score < 7 or heuristic.needs_citation_mapping or not epistemic_rigor
             passed = score >= 7 and contract_conformance and epistemic_rigor and not heuristic.recency_alert
 
-            c_in = estimate_tokens(query) + estimate_tokens(answer[:8000]) + 150
+            c_in = estimate_tokens(query) + estimate_tokens(answer[:6000]) + 150
             c_out = estimate_tokens(content)
 
             return CritiqueReport(
@@ -381,6 +457,7 @@ class DevilsAdvocate:
                 needs_citation_mapping=needs_scout,
                 recommended_topics=ai_topics,
                 directed_search_queries=ai_directed if isinstance(ai_directed, list) else heuristic.directed_search_queries,
+                directed_web_queries=ai_directed_web if isinstance(ai_directed_web, list) else getattr(heuristic, "directed_web_queries", []),
                 critique_summary=ai_summary,
                 input_tokens=c_in,
                 output_tokens=c_out,

@@ -1161,13 +1161,15 @@ class StudioCommandsMixin:
             s_table.add_row("  Max Agent Turns", f"{getattr(self.config, 'max_agent_turns', 15)} turns")
             s_table.add_row("  Refinement Rounds", f"{getattr(self.config, 'max_refinement_turns', 8)} rounds")
             s_table.add_row("  Max Output Tokens", f"{getattr(self.config, 'max_output_tokens', 8192)} tokens")
+            margin_pct = int(round(getattr(self.config, "contract_token_margin_pct", 0.30) * 100))
+            s_table.add_row("  Token Margin Error", f"+-{margin_pct}% (Contract Gatekeeper)")
             self.console.print(s_table)
             self.console.print("\n[dim]Perintah pengaturan:[/dim]")
             self.console.print("  [cyan]/settings toggle <semantic_scholar | crossref | opencitations>[/cyan]  [dim]Aktif/nonaktifkan provider[/dim]")
             self.console.print("  [cyan]/settings set-key <openalex | semantic_scholar | opencitations> <key>[/cyan]  [dim]Atur API Key[/dim]")
             self.console.print("  [cyan]/settings set-email <alamat@email.com>[/cyan]  [dim]Email Unpaywall Green OA[/dim]")
             self.console.print("  [cyan]/settings set-citation <apa | ieee | bibtex>[/cyan]  [dim]Gaya sitasi bibliografi[/dim]")
-            self.console.print("  [cyan]/settings set-turns <1-50>[/cyan] | [cyan]/settings set-refinement <2-25>[/cyan] | [cyan]/settings set-max-tokens <512-65536>[/cyan]\n")
+            self.console.print("  [cyan]/settings set-turns <1-50>[/cyan] | [cyan]/settings set-refinement <2-25>[/cyan] | [cyan]/settings set-max-tokens <512-65536>[/cyan] | [cyan]/settings set-token-margin <5-50>[/cyan]\n")
             return
 
         if sub in ("toggle", "enable", "disable"):
@@ -1330,8 +1332,31 @@ class StudioCommandsMixin:
             except ValueError:
                 self.console.print("[yellow]Invalid value. Enter an integer between 2 and 25.[/yellow]\n")
 
+        elif sub in ("set-token-margin", "token-margin", "token_margin", "margin"):
+            if len(parts) < 2:
+                self.console.print("[yellow]Usage: /settings set-token-margin <5-50>[/yellow]\n")
+                return
+            try:
+                raw_val = parts[1].strip().rstrip("%").lstrip("+-")
+                num = float(raw_val)
+                pct_float = num / 100.0 if num > 1.0 else num
+                if not (0.05 <= pct_float <= 0.50):
+                    self.console.print("[yellow]Token margin of error must be between 5% and 50% (0.05 - 0.50).[/yellow]\n")
+                    return
+                self.config_manager.update(contract_token_margin_pct=round(pct_float, 4))
+                self.config = self.config_manager.config
+                if getattr(self, "engine", None):
+                    self.engine.config = self.config
+                disp_pct = int(round(pct_float * 100))
+                self.console.print(
+                    f"[bold green][✓] Contract token margin of error set to:[/bold green] "
+                    f"[bold cyan]+-{disp_pct}%[/bold cyan]\n"
+                )
+            except ValueError:
+                self.console.print("[yellow]Invalid value. Enter a percentage between 5 and 50 (e.g., 30).[/yellow]\n")
+
         else:
-            self.console.print("[yellow]Penggunaan: /settings [show | toggle <provider> | set-key <provider> <key> | set-email <email> | set-citation <apa|ieee|bibtex> | set-turns <1-50> | set-workspace <path>][/yellow]\n")
+            self.console.print("[yellow]Penggunaan: /settings [show | toggle <provider> | set-key <provider> <key> | set-email <email> | set-citation <apa|ieee|bibtex> | set-turns <1-50> | set-token-margin <5-50> | set-workspace <path>][/yellow]\n")
 
     def cmd_config(self, arg: str) -> None:
         """Alias for backward compatibility directing to cmd_models."""

@@ -22,53 +22,90 @@ from scrpcy.exceptions import OfficialSourceRejectedError, WebScoutError
 
 logger = logging.getLogger(__name__)
 
-OFFICIAL_GOV_TLD_RE = re.compile(
-    r"(\.gov|\.go\.id|\.gov\.[a-z]{2}|\.gouv\.[a-z]{2}|\.gob\.[a-z]{2}|\.gc\.ca|\.go\.jp)$",
-    re.IGNORECASE,
-)
-OFFICIAL_EDU_TLD_RE = re.compile(
-    r"(\.edu|\.ac\.id|\.ac\.[a-z]{2}|\.edu\.[a-z]{2}|\.ac\.jp|\.edu\.sg)$",
-    re.IGNORECASE,
-)
+# Multi-part Sovereign Government & Public Suffix TLDs
+OFFICIAL_GOV_SUFFIXES = {
+    "go.id", "gov", "gov.uk", "gov.au", "mil.id", "mil",
+    "desa.id", "asn.id", "gc.ca", "go.jp", "gob.es", "gouv.fr",
+    "gov.br", "gov.in", "gov.za", "gov.sg", "govt.nz",
+}
+
+# Accredited Academic & Research Suffixes
+OFFICIAL_EDU_SUFFIXES = {
+    "ac.id", "edu", "edu.au", "ac.uk", "sch.id", "edu.sg",
+    "ac.jp", "edu.my", "ac.nz", "edu.cn",
+}
+
 OFFICIAL_IGO_DOMAINS = {
     "who.int", "worldbank.org", "un.org", "imf.org", "oecd.org",
     "adb.org", "wto.org", "unesco.org", "ipcc.ch", "cern.ch",
     "fao.org", "wipo.int", "itu.int", "ilo.org", "unicef.org",
+    "unep.org", "undp.org", "wmo.int",
 }
+
 OFFICIAL_STANDARDS_DOMAINS = {
     "w3.org", "iso.org", "ieee.org", "ietf.org", "nist.gov",
     "python.org", "pytorch.org", "docs.kernel.org", "developer.mozilla.org",
-    "tensorflow.org", "golang.org", "rust-lang.org",
+    "tensorflow.org", "golang.org", "rust-lang.org", "ecma-international.org",
 }
+
 SPAM_DOMAINS_RE = re.compile(
-    r"(\.blogspot\.com|\.wordpress\.com|\.wixsite\.com|\.weebly\.com|\.medium\.com|\.substack\.com|\.dev\.to|\.hashnode\.dev|\.kompasiana\.com|\.kaskus\.co\.id)$",
+    r"(?:^|\.)(blogspot\.com|wordpress\.com|wixsite\.com|weebly\.com|medium\.com|"
+    r"substack\.com|dev\.to|hashnode\.dev|kompasiana\.com|kaskus\.co\.id|"
+    r"squarespace\.com|hubspotpagebuilder\.com)$",
     re.IGNORECASE,
 )
+
 SPAM_TLD_RE = re.compile(
-    r"(\.xyz|\.top|\.click|\.buzz|\.club|\.info|\.tk|\.ml|\.ga|\.cf|\.gq)$",
+    r"(\.xyz|\.top|\.click|\.buzz|\.club|\.info|\.tk|\.ml|\.ga|\.cf|\.gq|\.site|\.fun|\.online|\.rest|\.icu)$",
+    re.IGNORECASE,
+)
+
+SEO_FARM_PATH_RE = re.compile(
+    r"(?:/tag/|/tags/|/kategori/|/category/|/topik/|/topics/|/search\?|"
+    r"-(?:terbaru|lengkap|terpercaya|biaya|syarat|cara-mudah|download-gratis|update-20\d\d)"
+    r"(?:\.html?|/)?$)",
     re.IGNORECASE,
 )
 
 KNOWN_INSTITUTIONS: dict[str, str] = {
+    # Indonesian Government, Ministries & Sovereign Agencies
     "bps.go.id": "Badan Pusat Statistik (BPS)",
     "kemkes.go.id": "Kementerian Kesehatan RI",
-    "menlhk.go.id": "Kementerian Lingkungan Hidup dan Kehutanan",
+    "menlhk.go.id": "Kementerian Lingkungan Hidup dan Kehutanan (KLHK)",
+    "sipongi.menlhk.go.id": "SiPongi - Karhutla Monitoring Sistem KLHK",
     "kemenkeu.go.id": "Kementerian Keuangan RI",
     "kemdikbud.go.id": "Kementerian Pendidikan, Kebudayaan, Riset, dan Teknologi",
     "bappenas.go.id": "Kementerian PPN / Bappenas",
     "bi.go.id": "Bank Indonesia",
-    "ojk.go.id": "Otoritas Jasa Keuangan",
+    "ojk.go.id": "Otoritas Jasa Keuangan (OJK)",
+    "bmkg.go.id": "Badan Meteorologi, Klimatologi, dan Geofisika (BMKG)",
+    "bnpb.go.id": "Badan Nasional Penanggulangan Bencana (BNPB)",
+    "brin.go.id": "Badan Riset dan Inovasi Nasional (BRIN)",
+    "kominfo.go.id": "Kementerian Komunikasi dan Informatika RI",
+    "esdm.go.id": "Kementerian Energi dan Sumber Daya Mineral",
+    "pertanian.go.id": "Kementerian Pertanian RI",
+    "kkp.go.id": "Kementerian Kelautan dan Perikanan",
+    "big.go.id": "Badan Informasi Geospasial (BIG)",
+    "setneg.go.id": "Kementerian Sekretariat Negara RI",
+    "jdih.maritim.go.id": "JDIH Kemenko Marves",
+    "pajak.go.id": "Direktorat Jenderal Pajak RI",
+
+    # International Intergovernmental & Accredited Organizations
     "who.int": "World Health Organization (WHO)",
-    "worldbank.org": "World Bank",
-    "un.org": "United Nations",
+    "worldbank.org": "World Bank Group",
+    "un.org": "United Nations (PBB)",
     "oecd.org": "OECD",
     "imf.org": "International Monetary Fund (IMF)",
+    "ipcc.ch": "Intergovernmental Panel on Climate Change (IPCC)",
     "w3.org": "World Wide Web Consortium (W3C)",
     "iso.org": "International Organization for Standardization (ISO)",
     "nist.gov": "National Institute of Standards and Technology (NIST)",
     "nih.gov": "National Institutes of Health (NIH)",
     "cdc.gov": "Centers for Disease Control and Prevention (CDC)",
     "nasa.gov": "NASA",
+    "noaa.gov": "National Oceanic and Atmospheric Administration (NOAA)",
+    "usgs.gov": "United States Geological Survey (USGS)",
+    "bls.gov": "Bureau of Labor Statistics (BLS)",
 }
 
 FIGURE_CAPTION_RE = re.compile(
@@ -116,57 +153,141 @@ class WebSearchResult(BaseModel):
     authority_score: float
     is_official: bool
     institution: str = ""
+    authority_tier: int = 4
+    reasons: list[str] = Field(default_factory=list)
 
 
-class OfficialDomainFilter:
-    """Evaluates whether web pages originate from official, sovereign, or accredited entities."""
+class OfficialDomainScorer:
+    """Multi-signal composite authority scorer and official website classifier."""
+
+    MULTI_PART_SUFFIXES = [
+        "go.id", "ac.id", "co.id", "mil.id", "desa.id", "asn.id", "sch.id", "net.id", "or.id", "web.id",
+        "gov.uk", "ac.uk", "co.uk", "org.uk", "mil.uk",
+        "gov.au", "edu.au", "com.au", "org.au",
+        "gc.ca", "gov.br", "gov.in", "gov.za", "gov.sg", "edu.sg", "govt.nz", "ac.nz",
+        "go.jp", "ac.jp", "co.jp",
+        "gob.es", "gouv.fr", "gov.pl", "gov.it",
+    ]
 
     @classmethod
-    def evaluate(cls, url: str, html_content: str = "") -> WebAuthorityResult:
-        """Score authority based on TLD, domain hierarchy, Schema.org, and academic metadata."""
-        parsed_url = urlparse(url)
-        domain = parsed_url.netloc.lower()
-        if domain.startswith("www."):
-            domain = domain[4:]
+    def parse_domain_parts(cls, url: str) -> dict[str, str]:
+        """Extract hostname, registered domain, subdomain, and multi-part public suffix."""
+        parsed = urlparse(url)
+        hostname = (parsed.netloc or url).lower().strip()
+        if ":" in hostname:
+            hostname = hostname.split(":")[0]
+        if hostname.startswith("www."):
+            hostname = hostname[4:]
+
+        matched_suffix = ""
+        for sfx in cls.MULTI_PART_SUFFIXES:
+            if hostname == sfx or hostname.endswith("." + sfx):
+                matched_suffix = sfx
+                break
+
+        if matched_suffix:
+            prefix = hostname[: -(len(matched_suffix) + 1)] if hostname != matched_suffix else ""
+            prefix_parts = prefix.split(".") if prefix else []
+            registered_name = prefix_parts[-1] if prefix_parts else ""
+            registered_domain = f"{registered_name}.{matched_suffix}" if registered_name else matched_suffix
+            subdomain = ".".join(prefix_parts[:-1]) if len(prefix_parts) > 1 else ""
+        else:
+            parts = hostname.split(".")
+            if len(parts) >= 2:
+                matched_suffix = parts[-1]
+                registered_name = parts[-2]
+                registered_domain = f"{registered_name}.{matched_suffix}"
+                subdomain = ".".join(parts[:-2]) if len(parts) > 2 else ""
+            else:
+                matched_suffix = ""
+                registered_domain = hostname
+                subdomain = ""
+
+        return {
+            "hostname": hostname,
+            "registered_domain": registered_domain,
+            "subdomain": subdomain,
+            "suffix": matched_suffix,
+        }
+
+    @classmethod
+    def evaluate(
+        cls,
+        url: str,
+        html_content: str = "",
+        target_official_domains: set[str] | None = None,
+        custom_whitelist: set[str] | None = None,
+    ) -> WebAuthorityResult:
+        """Score domain authority based on TLD, entity registry, Schema.org, and anti-spam heuristics."""
+        parts = cls.parse_domain_parts(url)
+        hostname = parts["hostname"]
+        reg_domain = parts["registered_domain"]
+        suffix = parts["suffix"]
+        path = urlparse(url).path
 
         score = 0.0
         reasons: list[str] = []
         tier = 4
         institution = ""
 
-        # Match known institutional domains
+        # 1. Whitelist & Verified Entity Grounding
+        if target_official_domains and (hostname in target_official_domains or reg_domain in target_official_domains):
+            score = 1.0
+            tier = 1
+            reasons.append("Verified target entity official domain match (Wikidata / Registry)")
+        elif custom_whitelist and (hostname in custom_whitelist or reg_domain in custom_whitelist):
+            score = 1.0
+            tier = 1
+            reasons.append("Verified custom whitelist match")
+
+        # 2. Institutional Registry Check
         for known_dom, known_inst in KNOWN_INSTITUTIONS.items():
-            if domain == known_dom or domain.endswith("." + known_dom):
+            if hostname == known_dom or hostname.endswith("." + known_dom):
                 institution = known_inst
+                if score < 1.0:
+                    score += 0.55
+                    is_standards = any(hostname == std or hostname.endswith("." + std) for std in OFFICIAL_STANDARDS_DOMAINS)
+                    tier = 2 if is_standards else min(tier, 1)
+                    reasons.append(f"Official institution registry match: {known_inst}")
                 break
 
-        # 1. TLD & Sovereign Domain Scoring
-        if OFFICIAL_GOV_TLD_RE.search(domain) or any(domain == igo or domain.endswith("." + igo) for igo in OFFICIAL_IGO_DOMAINS):
-            score += 0.55
-            tier = 1
-            reasons.append("Sovereign government or official intergovernmental domain")
-        elif OFFICIAL_EDU_TLD_RE.search(domain):
-            score += 0.50
-            tier = 1
-            reasons.append("Accredited academic or higher education domain")
-        elif any(domain == std or domain.endswith("." + std) for std in OFFICIAL_STANDARDS_DOMAINS):
-            score += 0.50
-            tier = 2
-            reasons.append("Official technical standard, specification, or software documentation")
-        elif domain.startswith("docs.") or domain.startswith("developer.") or domain.startswith("research."):
-            score += 0.25
-            tier = 2
-            reasons.append("Primary technical documentation or research subdomain")
+        # 3. Sovereign Government & Public Suffix Scoring
+        if score < 1.0:
+            if suffix in OFFICIAL_GOV_SUFFIXES or hostname.endswith(".gov"):
+                score += 0.55
+                tier = min(tier, 1)
+                reasons.append(f"Sovereign government TLD authority: .{suffix or 'gov'}")
+            elif suffix in OFFICIAL_EDU_SUFFIXES or hostname.endswith(".edu"):
+                score += 0.50
+                tier = min(tier, 1)
+                reasons.append(f"Accredited academic or higher education institution TLD: .{suffix or 'edu'}")
+            elif any(hostname == igo or hostname.endswith("." + igo) for igo in OFFICIAL_IGO_DOMAINS):
+                score += 0.50
+                tier = min(tier, 1)
+                reasons.append("Official intergovernmental organization domain")
+            elif any(hostname == std or hostname.endswith("." + std) for std in OFFICIAL_STANDARDS_DOMAINS):
+                score += 0.50
+                tier = min(tier, 2)
+                reasons.append("Official technical standard, specification, or software documentation")
 
-        # Negative checks
-        if SPAM_DOMAINS_RE.search(domain):
-            score -= 0.60
-            reasons.append("Identified free blogging platform, UGC forum, or non-institutional domain")
-        if SPAM_TLD_RE.search(domain):
-            score -= 0.45
-            reasons.append("High-risk or spam TLD detected")
+            # 4. Authoritative Subdomain Check
+            if parts["subdomain"] in ("docs", "developer", "research", "data", "statistik", "sipongi", "jdih"):
+                score += 0.20
+                tier = min(tier, 2)
+                reasons.append(f"Authoritative institutional subdomain '{parts['subdomain']}'")
 
-        # 2. Structural HTML Metadata Analysis (if HTML provided)
+            # 5. Penalties (Anti-SEO Farm, UGC, Spam TLD)
+            if SPAM_DOMAINS_RE.search(hostname):
+                score -= 0.55
+                reasons.append("Identified free blogging platform, UGC forum, or non-institutional hosting")
+            if SPAM_TLD_RE.search(hostname):
+                score -= 0.45
+                reasons.append("High-risk or spam TLD detected")
+            if SEO_FARM_PATH_RE.search(path):
+                score -= 0.35
+                reasons.append("SEO farm tag, category aggregator, or clickbait slug pattern detected in URL path")
+
+        # 6. Structural HTML Metadata Analysis
         if html_content:
             soup = BeautifulSoup(html_content, "html.parser")
 
@@ -196,7 +317,7 @@ class OfficialDomainFilter:
                 score += 0.15
                 reasons.append("Dublin Core publication metadata present")
 
-            # Check for excessive ad scripts
+            # Commercial ad network script detection
             ad_scripts = soup.find_all("script", src=re.compile(r"adsbygoogle|taboola|outbrain|adnxs", re.I))
             if ad_scripts:
                 score -= 0.25
@@ -213,16 +334,36 @@ class OfficialDomainFilter:
         is_authoritative = final_score >= 0.50
 
         if not institution:
-            parts = domain.split(".")
-            institution = parts[-2].upper() if len(parts) >= 2 else domain.upper()
+            parts_h = hostname.split(".")
+            institution = parts_h[-2].upper() if len(parts_h) >= 2 else hostname.upper()
 
         return WebAuthorityResult(
             is_authoritative=is_authoritative,
             authority_score=round(final_score, 2),
             authority_tier=tier if is_authoritative else 4,
             institution_name=institution,
-            domain=domain,
+            domain=hostname,
             reasons=reasons,
+        )
+
+
+class OfficialDomainFilter:
+    """Evaluates whether web pages originate from official, sovereign, or accredited entities."""
+
+    @classmethod
+    def evaluate(
+        cls,
+        url: str,
+        html_content: str = "",
+        target_official_domains: set[str] | None = None,
+        custom_whitelist: set[str] | None = None,
+    ) -> WebAuthorityResult:
+        """Proxy to OfficialDomainScorer.evaluate."""
+        return OfficialDomainScorer.evaluate(
+            url=url,
+            html_content=html_content,
+            target_official_domains=target_official_domains,
+            custom_whitelist=custom_whitelist,
         )
 
 
@@ -418,6 +559,8 @@ class WebScout:
         query: str,
         limit: int = 5,
         require_official: bool = True,
+        target_official_domains: set[str] | None = None,
+        custom_whitelist: set[str] | None = None,
     ) -> list[WebSearchResult]:
         """Search DuckDuckGo HTML endpoint and filter candidates using OfficialDomainFilter."""
         client = await self._get_client()
@@ -431,7 +574,8 @@ class WebScout:
             raise WebScoutError(f"DuckDuckGo search query failed for '{query}': {exc}") from exc
 
         soup = BeautifulSoup(resp.text, "html.parser")
-        results: list[WebSearchResult] = []
+        candidates: list[WebSearchResult] = []
+        seen_urls: set[str] = set()
 
         for result_node in soup.select(".result"):
             title_node = result_node.select_one(".result__title")
@@ -453,14 +597,24 @@ class WebScout:
             else:
                 clean_url = raw_href
 
+            if clean_url in seen_urls:
+                continue
+            seen_urls.add(clean_url)
+
             title_text = title_node.get_text(strip=True)
             snippet_text = snippet_node.get_text(strip=True) if snippet_node else ""
 
-            auth = OfficialDomainFilter.evaluate(clean_url)
-            if require_official and not auth.is_authoritative:
+            auth = OfficialDomainFilter.evaluate(
+                clean_url,
+                target_official_domains=target_official_domains,
+                custom_whitelist=custom_whitelist,
+            )
+
+            # Skip outright spam or content farm domains (score < 0.20)
+            if auth.authority_score < 0.20 and require_official:
                 continue
 
-            results.append(WebSearchResult(
+            candidates.append(WebSearchResult(
                 title=title_text,
                 url=clean_url,
                 snippet=snippet_text,
@@ -468,12 +622,20 @@ class WebScout:
                 authority_score=auth.authority_score,
                 is_official=auth.is_authoritative,
                 institution=auth.institution_name,
+                authority_tier=auth.authority_tier,
+                reasons=auth.reasons,
             ))
 
-            if len(results) >= limit:
-                break
+        # Two-stage re-ranking: prioritize official sources, then descending authority score
+        candidates.sort(key=lambda r: (r.is_official, r.authority_score), reverse=True)
 
-        return results
+        if require_official:
+            official_candidates = [c for c in candidates if c.is_official]
+            if official_candidates:
+                return official_candidates[:limit]
+            return [c for c in candidates if c.authority_score >= 0.50][:limit]
+
+        return candidates[:limit]
 
     async def ingest_url(
         self,

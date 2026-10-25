@@ -371,7 +371,7 @@ class TaskManager:
         resolved_lane = lane or ("turn" if task_type in ("chat", "agent") else "io")
 
         with self._lock:
-            # 1. Promise Coalescing: if an identical active task with the same dedup_key exists, reuse it
+            # Reuse an active task when an identical dedup_key is already running in this session.
             if dedup_key:
                 for existing in self._tasks.values():
                     if (
@@ -385,7 +385,6 @@ class TaskManager:
                 task_id = f"task-{self._counter}"
                 self._counter += 1
 
-            # 2. Compute DAG dependencies
             dep_list: list[str] = list(depends_on or [])
             if session_id and (auto_depend_session_io or auto_serialize_turn):
                 for existing in self._tasks.values():
@@ -540,6 +539,57 @@ class TaskManager:
                     return False
                 done_ev.wait(timeout=min(0.1, max(0.01, rem)))
         return True
+
+    def submit_coalesced_batch(
+        self,
+        io_specs: list[dict[str, Any]],
+        batch_barrier_name: str,
+        batch_barrier_fn: Callable[..., Any],
+        session_id: str | None = None,
+        downstream_specs: list[dict[str, Any]] | None = None,
+    ) -> tuple[list[TaskInfo], TaskInfo, list[TaskInfo]]:
+        """Coalesce parallel I/O tasks into a single CPU batch barrier, queuing downstream subagents in waiting_deps.
+
+        Returns `(io_tasks, barrier_task, downstream_tasks)`.
+        """
+        io_tasks: list[TaskInfo] = []
+        for spec in io_specs:
+            t_info = self.submit(
+                name=spec.get("name", "Background I/O"),
+                task_type=spec.get("task_type", "scout"),
+                target_fn=spec["target_fn"],
+                session_id=session_id,
+                lane="io",
+                dedup_key=spec.get("dedup_key"),
+            )
+            if t_info.id not in [t.id for t in io_tasks]:
+                io_tasks.append(t_info)
+
+        io_ids = [t.id for t in io_tasks]
+        barrier_task = self.submit(
+            name=batch_barrier_name,
+            task_type="convert",
+            target_fn=batch_barrier_fn,
+            session_id=session_id,
+            lane="cpu",
+            depends_on=io_ids,
+            dedup_key=f"batch_barrier:{session_id}:{','.join(sorted(io_ids))}" if io_ids else None,
+        )
+
+        downstream_tasks: list[TaskInfo] = []
+        for d_spec in downstream_specs or []:
+            d_task = self.submit(
+                name=d_spec.get("name", "Subagent Worker"),
+                task_type=d_spec.get("task_type", "agent"),
+                target_fn=d_spec["target_fn"],
+                session_id=session_id,
+                lane=d_spec.get("lane", "io"),
+                depends_on=[barrier_task.id],
+                dedup_key=d_spec.get("dedup_key"),
+            )
+            downstream_tasks.append(d_task)
+
+        return io_tasks, barrier_task, downstream_tasks
 
     def wait_for_session_io(
         self,
