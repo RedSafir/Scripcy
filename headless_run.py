@@ -33,17 +33,14 @@ def run_headless_flow(
     auto_approve_scout: bool = True,
 ) -> dict:
     console = Console(file=sys.stdout, force_terminal=True, legacy_windows=False)
-    base_dir = Path.cwd() / project_name
-    base_dir.mkdir(parents=True, exist_ok=True)
+    pm = ProjectManager()
+    proj = pm.get_project(project_name)
+    if not proj:
+        proj = pm.create_project(project_name)
+    base_dir = proj.resolved_path
 
     wm = WorkspaceManager(base_dir)
     cm = ConfigManager()
-    pm = ProjectManager()
-
-    # Create or get project
-    proj = pm.get_project(project_name)
-    if not proj:
-        proj = pm.create_project(project_name, base_dir)
 
     studio = CLIStudio(workspace=wm, config=cm.config, console=console, project_manager=pm)
     studio.open_project(proj)
