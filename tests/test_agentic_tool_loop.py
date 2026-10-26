@@ -241,7 +241,7 @@ def test_auto_scout_when_evidence_is_empty(
     output = studio.console.file.getvalue()
     assert "Mengevaluasi kecukupan literatur di vault" in output
     assert "Bukti di vault belum mencukupi" in output
-    assert "Rencana: Mencari & mengunduh literatur" in output
+    assert "Rencana: Menelusuri Web Resmi" in output
     assert "Mencari" in output
     assert "Mengunduh" in output
     assert "Berhasil mengindeks 1 dokumen baru ke vault" in output
