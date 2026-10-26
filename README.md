@@ -92,7 +92,21 @@ Inspired by FlashRAG and MindSearch, WebScout prevents domain authority from ove
 - **Root Landing Page Rejector**: Automatically drops generic homepages (e.g., `https://www.bps.go.id/id`, `https://data.go.id/`) that lack deep topical article paths.
 - **Waterfall Score**: Computes $\text{FinalScore} = \text{Relevance} \times (1 + 0.5 \times \text{Authority})$ for all candidates passing the threshold.
 
-### 4. Structured 3-Line Visual Blocks with Clickable Links
+### 4. Local-First Dense + Sparse Hybrid Search (RRF)
+Unlike typical RAG systems that rely solely on approximate dense vector embeddings or third-party cloud vector databases, Scrpcy runs a **zero-dependency, local-first hybrid retrieval engine** embedded directly into each project's SQLite database (`vault/project_vault.db`):
+- **Lexical Sparse Search (FTS5 BM25)**: Evaluates term frequency and inverse document frequency via SQLite FTS5 with Okapi BM25 scoring for exact acronyms, model names, and domain terminology.
+- **Semantic Dense Search (`sqlite-vec`)**: Computes cosine distance over dense vector embeddings (`text-embedding-004` or custom embedding models) directly inside SQLite.
+- **Reciprocal Rank Fusion (RRF)**: Merges sparse lexical and dense semantic rankings using the Cormack, Clarke, and Büttcher (SIGIR 2009) algorithm with $k=60$:
+  $$\text{RRF Score}(d) = \sum_{m \in M} \frac{1}{k + r_m(d)}$$
+- **Multimodal Visual Boosting**: Automatically injects indexed visual tables and figures into candidate pools, boosting chunks containing empirical evidence by $1.40\times$ for factual archetypes.
+
+### 5. Multi-Thread Citation Snowballing & Graph Traversal
+Adhering to the systematic literature review methodology established by Claes Wohlin (2014), Scrpcy uncovers seminal works through multi-thread citation network traversal:
+- **Backward Snowballing**: Automatically parses reference lists of seed vault papers to identify foundational antecedents.
+- **Forward Snowballing**: Queries the Semantic Scholar Graph API and OpenCitations to discover emerging studies that cite your vault papers.
+- **Cross-Citation Convergence Scoring**: Ranks candidate papers by cross-cutting hub density, prioritizing literature cited across multiple independent threads.
+
+### 6. Structured 3-Line Visual Blocks with Clickable Links
 When raster plots, charts, or maps are indexed from papers or web pages, Scrpcy renders them in a readable 3-line block:
 ```markdown
 [📊 Buka Gambar](file:///C:/path/to/project/vault/images/fig_1.png)  
@@ -103,7 +117,7 @@ Figure 3. Annual Hotspot Distribution Across Peatland Formations
 - Line 2 provides the descriptive caption.
 - Line 3 provides the formal APA citation of the originating source document.
 
-### 5. Clean Master Project Isolation
+### 7. Clean Master Project Isolation
 All projects reside cleanly inside dedicated directories:
 ```
 projects/
@@ -288,17 +302,33 @@ asyncio.run(main())
 
 ## References & Acknowledgements
 
-The architecture of Scrpcy has been deeply informed and inspired by foundational research in autonomous multi-agent systems, information retrieval, and academic synthesis:
+The architecture of Scrpcy has been deeply informed and inspired by foundational research in information retrieval, hybrid search algorithms, autonomous multi-agent systems, and academic synthesis:
 
-| Project / Reference | Origin / Organization | Architectural Influence on Scrpcy |
+### Retrieval & Hybrid Search Algorithms
+| Reference / Algorithm | Origin / Publication | Architectural Contribution to Scrpcy |
 | :--- | :--- | :--- |
-| **[Stanford STORM](https://github.com/stanford-oval/storm)** | Stanford OVAL | **Perspective-Guided Querying & Meta-Word Stripping**: Informed Scrpcy's `QueryDisambiguator`, removing conversational tokens and meta-words (`data`, `overview`) in favor of empirical metric expansion and two-phase portal discovery. |
-| **[GPT-Researcher](https://github.com/assafelovic/gpt-researcher)** | Assaf Elovic | **Sub-Query Decomposition & Negative Filtering**: Informed Scrpcy's query reformulation, decomposing complex user questions into targeted sub-queries with negative exclusion operators (`-pengertian -definisi`). |
+| **[Reciprocal Rank Fusion (RRF)](https://dl.acm.org/doi/10.1145/1571941.1572114)** | Cormack, Clarke, and Büttcher (SIGIR 2009) | **Dense + Sparse Hybrid Aggregation**: Powers Scrpcy's local hybrid retrieval in `VectorVault`, merging sparse FTS5 BM25 lexical rankings with dense cosine similarity vectors via $\sum \frac{1}{k + r_m(d)}$. |
+| **[sqlite-vec](https://github.com/asg017/sqlite-vec)** | Alex Garcia | **In-Process Local Vector Search**: Provides zero-dependency, C-based SIMD vector search running natively inside per-project SQLite databases (`project_vault.db`) without external vector DB infrastructure. |
+| **[Okapi BM25 (SQLite FTS5)](https://www.sqlite.org/fts5.html)** | Robertson & Zaragoza (2009) | **Lexical Relevance Scoring**: Powers Scrpcy's exact lexical indexing for domain jargon, paper titles, author names, and visual captions across project vaults. |
 | **[FlashRAG](https://github.com/RUC-NLPIR/FlashRAG)** | RUC AI Box | **Cascaded Waterfall Relevance Gating**: Provided the mathematical foundation for Scrpcy's gated search scoring, ensuring domain authority cannot override low-relevance results ($\text{FinalScore} = \text{Relevance} \times [1 + 0.5 \times \text{Authority}]$). |
 | **[MindSearch](https://github.com/InternLM/MindSearch)** | InternLM | **Lexical Anchor Pre-Fetch Check & Root Landing Page Rejection**: Inspired Scrpcy's pre-fetch gate verifying core entity occurrences in snippets before scraping, and the automatic rejection of shallow root homepages (`bps.go.id/id`). |
 | **[Perplexica](https://github.com/ItzCrazyK/Perplexica)** | ItzCrazyK | **Boolean Search Restructuring**: Informed Scrpcy's search operator formulation and multi-engine fallback strategies across Bing, Yahoo, and DuckDuckGo. |
-| **[PaperQA / PaperQA2](https://github.com/Future-House/paper-qa)** | FutureHouse | **Evidence Synthesis & Fact-Grounding**: Informed Scrpcy's chunk-level evidence ranking, BM25 retrieval, and citation mapping to prevent LLM hallucinations. |
+
+### Autonomous Multi-Agent Systems & Literature Discovery
+| Project / Reference | Origin / Organization | Architectural Contribution to Scrpcy |
+| :--- | :--- | :--- |
+| **[Stanford STORM](https://github.com/stanford-oval/storm)** | Stanford OVAL | **Perspective-Guided Querying & Meta-Word Stripping**: Informed Scrpcy's `QueryDisambiguator`, removing conversational tokens and meta-words (`data`, `overview`) in favor of empirical metric expansion and two-phase portal discovery. |
+| **[GPT-Researcher](https://github.com/assafelovic/gpt-researcher)** | Assaf Elovic | **Sub-Query Decomposition & Negative Filtering**: Informed Scrpcy's query reformulation, decomposing complex user questions into targeted sub-queries with negative exclusion operators (`-pengertian -definisi`). |
+| **[Citation Snowballing Guidelines](https://dl.acm.org/doi/10.1145/2601248.2601268)** | Claes Wohlin (EASE 2014) | **Systematic Citation Graph Traversal**: Governs Scrpcy's 1-hop backward reference parsing and forward citation harvesting in `CitationSnowballer` to identify seminal cross-cutting hub literature. |
+| **[OpenAlex](https://openalex.org/)** | Priem, Piwowar, & Orr (2022) | **Open Bibliometric Federation**: Primary metadata source for Scrpcy's Literature Scout, indexing 250M+ global scholarly works, authors, institutions, and open-access PDF links. |
+| **[Semantic Scholar Graph API](https://www.semanticscholar.org/product/api)** | Allen Institute for AI (Kinney et al., 2023) | **Citation Graph & TLDR Federation**: Powers citation count mapping, paper influence scoring, and forward citation tracking across literature pipelines. |
+| **[Unpaywall](https://unpaywall.org/)** | OurResearch | **Automated Open-Access Harvesting**: Resolves legitimate open-access PDF endpoints directly from scholarly DOIs. |
+| **[PaperQA / PaperQA2](https://github.com/Future-House/paper-qa)** | FutureHouse | **Evidence Synthesis & Fact-Grounding**: Informed Scrpcy's chunk-level evidence ranking, context compression, and automated citation mapping to prevent LLM hallucinations. |
 | **[Microsoft AutoGen](https://github.com/microsoft/autogen)** | Microsoft Research | **Multi-Agent Conversational Choreography**: Guided the isolated subagent architecture separating `Contractor`, `VaultExtractor`, `GapExtractor`, `FactChecker`, and `DevilsAdvocate`. |
+
+### UI Craft & Ingestion Infrastructure
+| Project / Reference | Origin / Organization | Architectural Contribution to Scrpcy |
+| :--- | :--- | :--- |
 | **[Google Antigravity](https://deepmind.google/)** | Google DeepMind | **Terminal Studio Craft & UX Principles**: Informed Scrpcy's duotone minimalist palette, outlier input framing, background task telemetry, and structured artifact generation. |
 | **[PyMuPDF4LLM](https://github.com/pymupdf/pymupdf4llm)** | Artifex Software | **High-Fidelity Document Ingestion**: Powers Scrpcy's local PDF parsing, converting academic tables and layout columns into clean Markdown. |
 | **[Model Context Protocol (MCP)](https://modelcontextprotocol.io/)** | Anthropic | **Extensible Tool Interoperability**: Utilized in Scrpcy's `WordCraftClient` for dispatching manuscript authoring commands to WordCraft. |
