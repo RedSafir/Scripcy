@@ -16,6 +16,7 @@ from scrpcy.exceptions import WorkspaceError
 
 DEFAULT_REGISTRY_ENV = "SCRPCY_PROJECTS"
 DEFAULT_REGISTRY_PATH = Path.home() / ".scrpcy" / "projects.json"
+DEFAULT_PROJECTS_DIR_NAME = "projects"
 
 
 def get_default_registry_path() -> Path:
@@ -52,11 +53,20 @@ class ProjectInfo(BaseModel):
 class ProjectManager:
     """Manages the registry of master project workspaces."""
 
-    def __init__(self, registry_file: Path | str | None = None) -> None:
+    def __init__(
+        self,
+        registry_file: Path | str | None = None,
+        default_projects_dir: Path | str | None = None,
+    ) -> None:
         self.registry_file = (
             Path(registry_file).expanduser().resolve()
             if registry_file
             else get_default_registry_path()
+        )
+        self.default_projects_dir = (
+            Path(default_projects_dir).expanduser().resolve()
+            if default_projects_dir
+            else (Path.cwd() / DEFAULT_PROJECTS_DIR_NAME).resolve()
         )
         self._ensure_registry_dir()
 
@@ -118,7 +128,7 @@ class ProjectManager:
 
         Args:
             name: Project name slug.
-            path: Target directory path. If None, defaults to current working directory ./<name>.
+            path: Target directory path. If None, defaults to ./projects/<name>.
             description: Optional project notes.
 
         Returns:
@@ -131,7 +141,8 @@ class ProjectManager:
         if path:
             target_path = Path(path).expanduser().resolve()
         else:
-            target_path = (Path.cwd() / clean_name).resolve()
+            self.default_projects_dir.mkdir(parents=True, exist_ok=True)
+            target_path = (self.default_projects_dir / clean_name).resolve()
 
         # Create master project structure
         target_path.mkdir(parents=True, exist_ok=True)
@@ -189,8 +200,13 @@ class ProjectManager:
             if p.name.lower() == str_ident.lower():
                 return self._activate_existing(p)
 
-        # Check if identifier is an existing filesystem path
+        # Check if identifier is an existing filesystem path directly or under default_projects_dir
         target_path = Path(str_ident).expanduser().resolve()
+        if not (target_path.exists() and target_path.is_dir()):
+            candidate_sub = (self.default_projects_dir / str_ident).resolve()
+            if candidate_sub.exists() and candidate_sub.is_dir():
+                target_path = candidate_sub
+
         if target_path.exists() and target_path.is_dir():
             # Check if directory already registered
             for p in projects:
@@ -202,6 +218,8 @@ class ProjectManager:
             return self.create_project(name=project_name, path=target_path)
 
         raise FileNotFoundError(f"Project '{identifier}' not found in registry or directory.")
+
+    open = open_project
 
     def _activate_existing(self, info: ProjectInfo) -> ProjectInfo:
         """Update last_opened timestamp and mark project as active."""

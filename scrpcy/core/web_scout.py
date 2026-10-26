@@ -32,7 +32,7 @@ OFFICIAL_GOV_SUFFIXES = {
 
 # Accredited Academic & Research Suffixes
 OFFICIAL_EDU_SUFFIXES = {
-    "ac.id", "edu", "edu.au", "ac.uk", "sch.id", "edu.sg",
+    "ac.id", "edu", "edu.au", "ac.uk", "edu.sg",
     "ac.jp", "edu.my", "ac.nz", "edu.cn",
 }
 

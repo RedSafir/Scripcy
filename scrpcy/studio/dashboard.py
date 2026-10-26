@@ -774,12 +774,12 @@ class StudioDashboardMixin:
         # Step 2: Interactive location selection if not explicitly provided as 2nd arg
         if custom_path is None:
             clean_name = re.sub(r"[^\w\-_]", "_", name.strip().lower())
-            curr_dir = Path.cwd() / clean_name
+            default_dir = (self.project_manager.default_projects_dir / clean_name).resolve()
 
             self.console.print()
             self.console.print("[bold bright_white]Pilih lokasi penyimpanan master project:[/bold bright_white]")
-            self.console.print(f"  [bold cyan][1][/bold cyan] Folder saat ini      : [dim]{curr_dir}[/dim]")
-            self.console.print(f"  [bold cyan][2][/bold cyan] Folder lain / kustom : [dim]Tentukan path sendiri (misal: D:\\Riset\\{clean_name})[/dim]")
+            self.console.print(f"  [bold cyan][1][/bold cyan] Folder projects/ (default) : [dim]{default_dir}[/dim]")
+            self.console.print(f"  [bold cyan][2][/bold cyan] Folder lain / kustom       : [dim]Tentukan path sendiri (misal: D:\\Riset\\{clean_name})[/dim]")
             self.console.print()
 
             try:
@@ -802,8 +802,8 @@ class StudioDashboardMixin:
                     self.console.print("[yellow]Project creation canceled.[/yellow]\n")
                     return
             else:
-                # Default option: current directory
-                custom_path = str(curr_dir)
+                # Default option: dedicated projects/ directory
+                custom_path = str(default_dir)
 
         with self.console.status(f"[cyan]Initializing master project directory for '{name}'...[/cyan]"):
             try:

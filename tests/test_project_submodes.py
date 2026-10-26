@@ -320,3 +320,21 @@ class TestRefinedUIAndModeFlows:
 
         bare_id = "1AbCdEfGhIjKlMnOpQrStUvWxYz12345"
         assert extract_drive_file_id(bare_id) == "1AbCdEfGhIjKlMnOpQrStUvWxYz12345"
+
+
+def test_create_project_defaults_to_dedicated_projects_folder(tmp_path: Path) -> None:
+    """Verify newly created projects default to dedicated projects/ subfolder instead of root."""
+    reg_file = tmp_path / "test_reg.json"
+    projects_dir = tmp_path / "custom_projects"
+    pm = ProjectManager(registry_file=reg_file, default_projects_dir=projects_dir)
+
+    proj = pm.create_project("climate_study")
+    assert Path(proj.path).parent == projects_dir.resolve()
+    assert (projects_dir / "climate_study").exists()
+    assert (projects_dir / "climate_study" / "vault").exists()
+
+    # Open by identifier finds it in projects folder
+    opened = pm.open_project("climate_study")
+    assert opened.name == "climate_study"
+    assert opened.resolved_path == (projects_dir / "climate_study").resolve()
+
