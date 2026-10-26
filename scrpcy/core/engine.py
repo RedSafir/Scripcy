@@ -400,8 +400,11 @@ class EvidenceSynthesizer:
         has_visuals = any("[[VISUAL:" in c.text for c in chunks)
         if has_visuals:
             formatted_blocks.append(
-                "[PETUNJUK VISUAL]: Jika analisis Anda merujuk pada tabel atau gambar di atas yang memuat tag [[VISUAL:id]], "
-                "sertakan tag [[VISUAL:id]] tersebut tepat di tempat visual tersebut dibahas agar rujukan visual otomatis terhubung."
+                "[PETUNJUK TATA LETAK VISUAL]:\n"
+                "- Jika analisis Anda merujuk pada tabel atau gambar di atas yang memuat tag [[VISUAL:id]], "
+                "letakkan tag [[VISUAL:id]] tersebut pada baris baru tersendiri sebagai blok visual mandiri.\n"
+                "- DILARANG menyisipkan tag [[VISUAL:id]] di tengah kalimat. Tulis kalimat pengantar di atasnya, "
+                "letakkan tag [[VISUAL:id]] di baris baru, lalu berikan penjelasan atau analisis temuan visual tersebut di paragraf persis di bawahnya."
             )
 
         if total_orig > 0:

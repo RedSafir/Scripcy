@@ -1134,8 +1134,50 @@ class ProjectVectorVault:
             "tables": total_tables,
         }
 
+    def _resolve_paper_citation(self, paper_id: str) -> str:
+        """Resolve APA in-text citation like '(Melisa et al., 2022)' from cache frontmatter or paper id."""
+        if not paper_id:
+            return ""
+        try:
+            cache_p = self.vault_dir.parent / "cache" / f"{paper_id}.md"
+            if cache_p.exists():
+                from scrpcy.core.models import FRONTMATTER_REGEX
+                import yaml
+                text = cache_p.read_text(encoding="utf-8", errors="replace")
+                m = FRONTMATTER_REGEX.match(text)
+                if m:
+                    data = yaml.safe_load(m.group(1)) or {}
+                    authors = data.get("authors") or []
+                    year = data.get("year") or ""
+                    if authors:
+                        clean_authors = []
+                        for a in authors:
+                            clean_a = str(a).strip()
+                            if "(" in clean_a and ")" in clean_a:
+                                clean_authors.append(clean_a)
+                            else:
+                                surname = clean_a.split(",")[0].strip()
+                                clean_authors.append(surname)
+                        if len(clean_authors) == 1:
+                            auth_str = clean_authors[0]
+                        elif len(clean_authors) == 2:
+                            auth_str = f"{clean_authors[0]} & {clean_authors[1]}"
+                        else:
+                            auth_str = f"{clean_authors[0]} et al."
+                        return f"({auth_str}, {year})" if year else f"({auth_str})"
+                    elif year:
+                        return f"({paper_id}, {year})"
+        except Exception:
+            pass
+
+        y_match = re.search(r"\b(19\d\d|20\d\d)\b", paper_id)
+        if y_match:
+            first_word = paper_id.split("_")[0].replace("-", " ").title()
+            return f"({first_word} et al., {y_match.group(1)})"
+        return f"({paper_id})"
+
     def resolve_visual_placeholders(self, text: str) -> str:
-        """Resolve [[VISUAL:id]] and legacy visual placeholders into clickable markdown file links."""
+        """Resolve [[VISUAL:id]] placeholders into interactive visual blocks with clickable file links and citations."""
         if not text:
             return text
 
@@ -1146,34 +1188,41 @@ class ProjectVectorVault:
             with self._get_connection() as conn:
                 cur = conn.cursor()
                 # 1. Lookup in images
-                cur.execute("SELECT file_path, caption FROM images WHERE id = ? LIMIT 1", (v_id,))
+                cur.execute("SELECT file_path, caption, paper_id FROM images WHERE id = ? LIMIT 1", (v_id,))
                 row = cur.fetchone()
                 if row:
-                    raw_fp = row["file_path"].replace("\\", "/")
+                    raw_fp = Path(row["file_path"]).resolve().as_posix()
                     if not raw_fp.startswith("/"):
                         raw_fp = f"/{raw_fp}"
-                    cap = row["caption"] or "Gambar"
-                    return f"[📊 {cap}](file://{raw_fp})"
+                    cap = (row["caption"] or "Gambar").strip()
+                    cit = self._resolve_paper_citation(row["paper_id"])
+                    cit_line = f"  \n{cit}" if cit else ""
+                    return f"\n\n[📊 Buka Gambar](file://{raw_fp})  \n{cap}{cit_line}\n\n"
 
                 # 2. Lookup in tables
-                cur.execute("SELECT csv_path, md_path, caption FROM tables WHERE id = ? LIMIT 1", (v_id,))
+                cur.execute("SELECT csv_path, md_path, caption, paper_id FROM tables WHERE id = ? LIMIT 1", (v_id,))
                 t_row = cur.fetchone()
                 if t_row:
-                    target_p = (t_row["md_path"] or t_row["csv_path"] or "").replace("\\", "/")
+                    target_raw = t_row["md_path"] or t_row["csv_path"] or ""
+                    target_p = Path(target_raw).resolve().as_posix()
                     if target_p and not target_p.startswith("/"):
                         target_p = f"/{target_p}"
-                    cap = t_row["caption"] or "Tabel"
-                    return f"[📋 {cap}](file://{target_p})"
+                    cap = (t_row["caption"] or "Tabel").strip()
+                    cit = self._resolve_paper_citation(t_row["paper_id"])
+                    cit_line = f"  \n{cit}" if cit else ""
+                    return f"\n\n[📋 Buka Tabel](file://{target_p})  \n{cap}{cit_line}\n\n"
 
                 # 3. Fuzzy search by filename or partial id
-                cur.execute("SELECT file_path, caption FROM images WHERE file_path LIKE ? OR id LIKE ? LIMIT 1", (f"%{v_id}%", f"%{v_id}%"))
+                cur.execute("SELECT file_path, caption, paper_id FROM images WHERE file_path LIKE ? OR id LIKE ? LIMIT 1", (f"%{v_id}%", f"%{v_id}%"))
                 f_row = cur.fetchone()
                 if f_row:
-                    raw_fp = f_row["file_path"].replace("\\", "/")
+                    raw_fp = Path(f_row["file_path"]).resolve().as_posix()
                     if not raw_fp.startswith("/"):
                         raw_fp = f"/{raw_fp}"
-                    cap = f_row["caption"] or "Gambar"
-                    return f"[📊 {cap}](file://{raw_fp})"
+                    cap = (f_row["caption"] or "Gambar").strip()
+                    cit = self._resolve_paper_citation(f_row["paper_id"])
+                    cit_line = f"  \n{cit}" if cit else ""
+                    return f"\n\n[📊 Buka Gambar](file://{raw_fp})  \n{cap}{cit_line}\n\n"
 
             return f"[📊 Visual: {v_id}]"
 

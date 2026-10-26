@@ -1260,7 +1260,7 @@ class StudioAgentLoopMixin:
                 self.console.print(f"[dim]● Referensi di vault memiliki kecocokan rendah ({int(coverage_score * 100)}%) terhadap fokus pertanyaan.[/dim]")
             suggested_topic = self._extract_scout_query(query)
             target_quota = self._determine_target_scout_quota(query, task_contract)
-            self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Rencana: Mencari & mengunduh literatur[/bold bright_white] [cyan]({target_quota} paper terkait '{suggested_topic}')[/cyan]")
+            self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Rencana: Menelusuri Web Resmi (.go.id/institusi) & Repositori Ilmiah[/bold bright_white] [cyan]({target_quota} naskah terkait '{suggested_topic}')[/cyan]")
 
             choice, custom_keyword = interactive_scout_confirm(
                 suggested_topic=suggested_topic,
@@ -1272,7 +1272,7 @@ class StudioAgentLoopMixin:
                 self.console.print("[dim]● Pencarian otomatis dilewati. Melanjutkan sintesis dengan pengetahuan umum...[/dim]\n")
             else:
                 target_topic = custom_keyword if (choice == "custom" and custom_keyword) else suggested_topic
-                self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Mencari[/bold bright_white] [dim]Menelusuri repositori ilmiah (OpenAlex & Semantic Scholar)...[/dim]")
+                self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Mencari[/bold bright_white] [dim]Menelusuri portal web resmi & repositori ilmiah (WebScout & OpenAlex)...[/dim]")
 
                 initial_active = set(self.get_session_active_documents(session.id if session else None))
                 task = self.task_manager.submit(

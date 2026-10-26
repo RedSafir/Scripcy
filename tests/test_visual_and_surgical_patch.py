@@ -60,9 +60,33 @@ def test_visual_placeholder_resolution_to_clickable_links(tmp_path: Path):
 
     # Must contain clickable file:/// markdown links
     assert "file:///" in resolved or "file://" in resolved
-    assert "[📊 Prevalensi Stunting Nasional 2024]" in resolved
-    assert "[📋 Tabel Prevalensi Stunting per Provinsi]" in resolved
+    assert "[📊 Buka Gambar](file://" in resolved
+    assert "Prevalensi Stunting Nasional 2024" in resolved
+    assert "[📋 Buka Tabel](file://" in resolved
+    assert "Tabel Prevalensi Stunting per Provinsi" in resolved
+    assert "(paper_stunting)" in resolved
     assert "[[VISUAL:" not in resolved
+
+
+def test_render_academic_markdown_renders_file_hyperlinks():
+    """Verify render_academic_markdown produces true OSC 8 clickable terminal hyperlinks for file:// links."""
+    from scrpcy.ui.formatters import render_academic_markdown
+    from rich.markdown import Markdown
+
+    c = Console(force_terminal=True, legacy_windows=False)
+    md_sample = (
+        "Visualisasi:\n\n"
+        "[📊 Buka Gambar](file:///C:/vault/images/fig_1.jpeg)\n"
+        "Gambar 1. Tren Deforestasi\n"
+        "(Nurhayati et al., 2021)\n"
+    )
+    # Ensure MarkdownIt parses file:/// as active link
+    md = Markdown(md_sample)
+    rendered_segs = [(seg.text, str(seg.style)) for seg in c.render(md)]
+    link_segs = [s for s in rendered_segs if "Buka Gambar" in s[0]]
+    assert len(link_segs) == 1
+    text, style = link_segs[0]
+    assert "link file:///C:/vault/images/fig_1.jpeg" in style
 
 
 def test_surgical_paragraph_patch_preserves_verified_paragraphs(

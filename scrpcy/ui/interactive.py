@@ -974,7 +974,7 @@ def interactive_scout_confirm(
     is_mocked = isinstance(getattr(c, "input", None), Mock)
     if is_mocked or not sys.stdin.isatty():
         try:
-            line = c.input("[bold cyan][?] Jalankan pencarian & unduh otomatis? [Y/n/ketik kata kunci baru]: [/bold cyan]").strip()
+            line = c.input("[bold cyan][?] Jalankan penelusuran Web Resmi & Jurnal Ilmiah? [Y/n/ketik kata kunci baru]: [/bold cyan]").strip()
             if line.lower() in ("", "y", "yes", "ya", "ok", "1"):
                 return ("yes", suggested_topic)
             elif line.lower() in ("n", "no", "tidak", "skip", "batal", "cancel", "0", "2"):
@@ -989,7 +989,7 @@ def interactive_scout_confirm(
             return ("no", None)
 
     options = [
-        (f"Ya, jalankan pencarian & unduh otomatis ({quota} paper: '{suggested_topic}')", "yes"),
+        (f"Ya, telusuri Web Resmi (.go.id) & Jurnal Ilmiah ({quota} naskah: '{suggested_topic}')", "yes"),
         ("Tolak, lanjutkan sintesis dengan pengetahuan umum", "no"),
         ("Input kata kunci baru (pencarian kustom)", "custom"),
     ]
@@ -1001,8 +1001,8 @@ def interactive_scout_confirm(
     try:
         while True:
             lines_out: list[Text] = []
-            header = Text("● Rencana: Mencari & mengunduh literatur ", style="bold cyan")
-            header.append(f"({quota} paper terkait '{suggested_topic}')", style="bold bright_white")
+            header = Text("● Rencana: Menelusuri Web Resmi (.go.id/institusi) & Repositori Ilmiah ", style="bold cyan")
+            header.append(f"('{suggested_topic}')", style="bold bright_white")
             lines_out.append(header)
             lines_out.append(Text("  Pilih tindakan untuk melanjutkan:", style="dim"))
 

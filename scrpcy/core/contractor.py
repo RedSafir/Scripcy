@@ -161,18 +161,21 @@ class ContractDecomposer:
 
         # Check official primary source gap for factual data / official web channel
         has_official_source = any(
-            (hasattr(c, "source") and (
-                str(c.source).startswith("web_")
-                or ".go.id" in str(c.source).lower()
-                or "bps" in str(c.source).lower()
-                or "menlhk" in str(c.source).lower()
-                or "kemen" in str(c.source).lower()
-                or "bmkg" in str(c.source).lower()
-                or ".gov" in str(c.source).lower()
-            ))
-            or (hasattr(c, "text") and any(
-                d in c.text.lower() for d in (".go.id", ".gov", "portal resmi", "badan pusat statistik", "kementerian")
-            ))
+            (
+                hasattr(c, "source")
+                and (
+                    str(c.source).startswith("web_")
+                    or ".go.id" in str(c.source).lower()
+                    or ".gov" in str(c.source).lower()
+                )
+            )
+            or (
+                hasattr(c, "text")
+                and any(
+                    domain_marker in c.text.lower()
+                    for domain_marker in (".go.id", ".gov")
+                )
+            )
             for c in evidence
         )
         if (contract.archetype == "DATA_FACTUAL" or "web_resmi" in getattr(contract, "required_search_channels", [])) and not has_official_source:

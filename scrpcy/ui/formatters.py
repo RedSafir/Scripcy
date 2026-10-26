@@ -15,6 +15,14 @@ from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.text import Text
 
+# Enable file:// scheme in markdown-it so Rich renders active OSC 8 hyperlinks for local visuals
+try:
+    from markdown_it.common import normalize_url
+    if hasattr(normalize_url, "BAD_PROTO_RE"):
+        normalize_url.BAD_PROTO_RE = re.compile(r"^(vbscript|javascript|data):", re.IGNORECASE)
+except Exception:
+    pass
+
 GREEK_MAP: dict[str, str] = {
     r"\alpha": "α",
     r"\beta": "β",

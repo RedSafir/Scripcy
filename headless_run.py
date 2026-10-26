@@ -29,7 +29,7 @@ from scrpcy.core.workspace import WorkspaceManager
 def run_headless_flow(
     project_name: str,
     session_name: str,
-    query: str,
+    queries: list[str] | str,
     auto_approve_scout: bool = True,
 ) -> dict:
     console = Console(file=sys.stdout, force_terminal=True, legacy_windows=False)
@@ -54,10 +54,18 @@ def run_headless_flow(
         session = studio.chat_manager.create_session(session_name)
     studio.cmd_chat(session.name)
 
+    query_list = [queries] if isinstance(queries, str) else list(queries)
+
     # Patch interactive confirms so headless run executes completely autonomously
-    with patch("scrpcy.studio.agent_loop.interactive_scout_confirm", return_value=("yes", query)):
+    with patch(
+        "scrpcy.studio.agent_loop.interactive_scout_confirm",
+        side_effect=lambda suggested_topic, **kw: ("yes", suggested_topic),
+    ):
         t0 = time.time()
-        studio.handle_chat(query)
+        for idx, q in enumerate(query_list, 1):
+            console.print(f"\n[bold magenta]══════ MENJALANKAN QUERY #{idx} ══════[/bold magenta]")
+            console.print(f"[bold white]{q}[/bold white]\n")
+            studio.handle_chat(q)
         elapsed = time.time() - t0
 
     # Read output results from chats.db
@@ -80,7 +88,7 @@ def run_headless_flow(
     return {
         "project": project_name,
         "session": session_name,
-        "query": query,
+        "queries": query_list,
         "elapsed_seconds": round(elapsed, 2),
         "total_messages": len(messages),
         "last_response": last_assistant_msg.content if last_assistant_msg else "(Tidak ada respon)",
@@ -91,20 +99,27 @@ def run_headless_flow(
 
 
 if __name__ == "__main__":
-    p_name = sys.argv[1] if len(sys.argv) > 1 else "riset_stunting_indonesia"
-    s_name = sys.argv[2] if len(sys.argv) > 2 else "sesi_data_faktual"
-    test_query = (
+    p_name = sys.argv[1] if len(sys.argv) > 1 else "riset_stunting_followup"
+    s_name = sys.argv[2] if len(sys.argv) > 2 else "sesi_followup"
+    raw_query = (
         sys.argv[3]
         if len(sys.argv) > 3
-        else "Berapa angka prevalensi stunting di Indonesia tahun 2023 berdasarkan data resmi Kemenkes dan BPS?"
+        else "Berapa target prevalensi stunting 2024 menurut BPS dan Kemenkes? ||| Berapa realisasi prevalensi stunting Indonesia tahun 2023 menurut rilis resmi Kemenkes dan BPS?"
     )
+
+    if "|||" in raw_query:
+        test_queries = [q.strip() for q in raw_query.split("|||") if q.strip()]
+    elif len(sys.argv) > 4:
+        test_queries = sys.argv[3:]
+    else:
+        test_queries = [raw_query]
 
     print(f"=== Menjalankan Headless Flow Scrpcy ===")
     print(f"Project : {p_name}")
     print(f"Session : {s_name}")
-    print(f"Query   : {test_query}\n")
+    print(f"Queries ({len(test_queries)}) : {test_queries}\n")
 
-    result = run_headless_flow(p_name, s_name, test_query)
+    result = run_headless_flow(p_name, s_name, test_queries)
 
     print("\n=== HASIL EKSEKUSI HEADLESS ===")
     print(f"Durasi Total : {result['elapsed_seconds']} detik")

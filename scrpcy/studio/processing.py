@@ -529,6 +529,47 @@ class StudioProcessingMixin:
             finally:
                 loop.close()
 
+        # 1. Pre-flight Official Web Scouting (WebScout)
+        is_mock_env = (
+            "PYTEST_CURRENT_TEST" in os.environ
+            or getattr(self.engine, "acompletion_fn", None) is not None
+            or any(str(v).startswith("mock") for v in getattr(self.config, "api_keys", {}).values())
+            or getattr(self.config, "default_model", "").startswith("mock")
+        )
+        if getattr(self, "web_scout", None):
+            is_web_mocked = (
+                hasattr(self.web_scout, "_is_mock")
+                or "search_official_web" in getattr(self.web_scout, "__dict__", {})
+                or "Mock" in type(getattr(self.web_scout, "search_official_web", None)).__name__
+                or "Mock" in type(self.web_scout).__name__
+            )
+            if not (is_mock_env and not is_web_mocked):
+                self.task_manager.log(task_id, "Menelusuri portal web resmi (.go.id/institusi) via WebScout...")
+                self.task_manager.update_progress(task_id, "Menelusuri portal resmi (.go.id)...")
+                w_loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(w_loop)
+                try:
+                    w_hits = w_loop.run_until_complete(
+                        self.web_scout.search_official_web(clean_query, limit=3, require_official=True)
+                    )
+                    if w_hits:
+                        vec_vault = getattr(self.vault_manager, "vector_vault", None) if self.vault_manager else None
+                        for wh in w_hits[:2]:
+                            try:
+                                parsed_w = w_loop.run_until_complete(
+                                    self.web_scout.ingest_url(wh.url, vector_vault=vec_vault)
+                                )
+                                if parsed_w and parsed_w.metadata and parsed_w.metadata.cite_key:
+                                    ingested_stems.append(parsed_w.metadata.cite_key)
+                                    self.add_session_active_documents([parsed_w.metadata.cite_key], session_id=sess_id)
+                                    self.task_manager.log(task_id, f"[✓] Web resmi diindeks: '{wh.title[:45]}...' ({wh.institution})")
+                            except Exception as w_err:
+                                self.task_manager.log(task_id, f"[!] Gagal unduh web resmi: {w_err}")
+                except Exception as w_exc:
+                    self.task_manager.log(task_id, f"[!] Penelusuran web resmi: {w_exc}")
+                finally:
+                    w_loop.close()
+
         try:
             query_spec = self.scout.extract_search_criteria(clean_query, engine=self.engine)
         except Exception as exc:
@@ -678,13 +719,14 @@ class StudioProcessingMixin:
             finally:
                 loop.close()
 
-        summary = f"Scout & Ingest selesai: Mengindeks {ingested_count}/{target_quota} dokumen ke vault."
+        total_ingested = len(ingested_stems)
+        summary = f"Scout & Ingest selesai: Mengindeks {total_ingested} dokumen (Web Resmi & Jurnal) ke vault."
         if hasattr(self, "logger") and self.logger:
             self.logger.log_literature_scout(
                 session_id=sess_id or "global",
                 query=clean_query,
-                candidates_count=len(candidates) if "candidates" in locals() and candidates else len(ingested_stems),
-                ingested_count=ingested_count,
+                candidates_count=len(candidates) if "candidates" in locals() and candidates else total_ingested,
+                ingested_count=total_ingested,
                 ingested_stems=ingested_stems,
                 duration_s=time.time() - scout_t0,
             )
