@@ -274,8 +274,8 @@ def test_orchestrator_autonomous_fan_out_and_fan_in(tmp_path) -> None:
     assert "LEDGER FAKTA TERVERIFIKASI" in res.assembly_directive
     assert "ATURAN KETAT MODE DATA_FACTUAL" in res.assembly_directive
     assert len(tree_snapshots) >= 2
-    assert "Subagent [VaultExtractor]" in tree_snapshots[-1]
-    assert "Subagent [ScopeAuditor]" in tree_snapshots[-1]
+    assert "Worker [VaultExtractor]" in tree_snapshots[-1]
+    assert "Worker [ScopeAuditor]" in tree_snapshots[-1]
     tm.shutdown()
 
 
@@ -628,6 +628,97 @@ def test_subagent_worker_isolation_with_dos_and_donts() -> None:
     assert "Ekstrak capaian luas hektare terverifikasi." in user_p
     assert "DONT (DILARANG):" in user_p
     assert "Dilarang menulis latar belakang filosofis." in user_p
+
+
+def test_devils_advocate_post_scout_evidence_audit_identifies_gaps() -> None:
+    """Devil's Advocate audits worker artifacts and flags temporal or quantitative gaps."""
+    from scripcy.core.subagent import ExtractedFact, SubagentArtifact
+
+    critic = DevilsAdvocate()
+    query = "carikan data karhutla di indonesia 5 tahun terakhir"
+    extractor = TaskContractExtractor()
+    contract = extractor.extract(query)
+
+    # Worker only found old 2018 data
+    old_art = SubagentArtifact(
+        subcontract_id="sub-1",
+        role="VaultExtractor",
+        status="complete",
+        extracted_facts=[
+            ExtractedFact(
+                claim_or_metric="Luas kebakaran hutan tahun 2018 adalah 510.000 ha.",
+                citation_stem="klhk2018",
+                year="2018",
+                is_quantitative=True,
+            )
+        ],
+        worker_notes="Hanya menemukan data arsip 2018.",
+    )
+
+    review = critic.audit_worker_evidence(
+        query=query,
+        contract=contract,
+        subcontracts=[],
+        artifacts=[old_art],
+    )
+
+    assert review.all_satisfied is False
+    assert any("5 tahun terakhir" in g or "terbaru" in g for g in review.detected_gaps)
+    assert len(review.suggested_expansion_queries) >= 1
+
+
+def test_contractor_adjudicates_evidence_audit_expansion_vs_honest_gap() -> None:
+    """Contractor permits 1 follow-up search expansion, then caps at honest gap upon exhaustion."""
+    from scripcy.core.critic import EvidenceAuditReview
+
+    decomposer = ContractDecomposer()
+    query = "carikan data karhutla di indonesia 5 tahun terakhir"
+    extractor = TaskContractExtractor()
+    contract = extractor.extract(query)
+
+    review = EvidenceAuditReview(
+        all_satisfied=False,
+        detected_gaps=["Data statistik 2022-2023 belum ditemukan."],
+        suggested_expansion_queries=["karhutla indonesia 2022 2023 data resmi statistik"],
+    )
+
+    # Pass 0: Within max_expansions=1 -> Decision is expand
+    adj_pass0 = decomposer.adjudicate_evidence_audit(
+        query=query,
+        contract=contract,
+        audit_review=review,
+        expansion_count=0,
+        max_expansions=1,
+        previous_worker_notes=["Portal A nihil."],
+    )
+    assert adj_pass0.decision == "expand"
+    assert len(adj_pass0.follow_up_subcontracts) == 2
+    assert adj_pass0.follow_up_subcontracts[0].role in ("WebScout", "LitScout")
+    assert "Catatan worker sebelumnya: Portal A nihil." in adj_pass0.follow_up_subcontracts[0].objective
+
+    # Pass 1: Limit reached -> Decision is honest_gap
+    adj_pass1 = decomposer.adjudicate_evidence_audit(
+        query=query,
+        contract=contract,
+        audit_review=review,
+        expansion_count=1,
+        max_expansions=1,
+    )
+    assert adj_pass1.decision == "honest_gap"
+    assert len(adj_pass1.gap_notes) >= 1
+    assert "Honest Data Gap" in adj_pass1.adjudication_summary
+
+
+def test_configurable_max_worker_expansions_setting() -> None:
+    """ScripcyConfig supports configurable max_worker_expansions with a default of 1."""
+    from scripcy.core.config import ScripcyConfig
+
+    cfg_default = ScripcyConfig()
+    assert cfg_default.max_worker_expansions == 1
+
+    cfg_custom = ScripcyConfig(max_worker_expansions=3)
+    assert cfg_custom.max_worker_expansions == 3
+
 
 
 

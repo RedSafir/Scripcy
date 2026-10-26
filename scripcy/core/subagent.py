@@ -33,13 +33,14 @@ class ExtractedFact(BaseModel):
 
 
 class SubagentArtifact(BaseModel):
-    """Compact structured output returned by a subagent after its isolated context is discarded."""
+    """Compact structured output returned by a worker after its isolated context is discarded."""
 
     subcontract_id: str
     role: str
     status: Literal["complete", "partial", "no_data"] = "complete"
     extracted_facts: list[ExtractedFact] = Field(default_factory=list)
     missing_requirements: list[str] = Field(default_factory=list)
+    worker_notes: str = Field(default="", description="Field notes and search limitations encountered by the worker.")
     ingested_stems: list[str] = Field(default_factory=list)
     input_tokens: int = 0
     output_tokens: int = 0
@@ -47,6 +48,9 @@ class SubagentArtifact(BaseModel):
     @property
     def tokens_used(self) -> int:
         return self.input_tokens + self.output_tokens
+
+
+WorkerArtifact = SubagentArtifact
 
 
 class SubagentWorker:
@@ -138,12 +142,14 @@ class SubagentWorker:
                 status = "partial" if facts else "no_data"
                 missing.append("Potongan dokumen lokal belum memuat metrik angka eksplisit yang diminta.")
 
+        w_notes = "; ".join(missing) if missing else ("Fakta terekstrak dari potongan bukti lokal." if facts else "Tidak ada fakta yang cocok pada bukti lokal.")
         return SubagentArtifact(
             subcontract_id=subcontract.id,
             role=subcontract.role,
             status=status,
             extracted_facts=facts,
             missing_requirements=missing,
+            worker_notes=w_notes,
             input_tokens=0,
             output_tokens=0,
         )
@@ -262,12 +268,15 @@ class SubagentWorker:
             if status_val not in ("complete", "partial", "no_data"):
                 status_val = "complete"
 
+            missing_list = [str(m) for m in parsed.get("missing_requirements", [])[:3]]
+            w_note = str(parsed.get("worker_notes") or "; ".join(missing_list) or ("Fakta terekstrak sesuai kontrak." if facts else "Data tidak ditemukan."))
             return SubagentArtifact(
                 subcontract_id=subcontract.id,
                 role=subcontract.role,
                 status=status_val,
                 extracted_facts=facts,
-                missing_requirements=[str(m) for m in parsed.get("missing_requirements", [])[:3]],
+                missing_requirements=missing_list,
+                worker_notes=w_note,
                 input_tokens=in_tok,
                 output_tokens=out_tok,
             )

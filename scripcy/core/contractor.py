@@ -67,6 +67,25 @@ class CritiqueAdjudication(BaseModel):
     )
 
 
+class EvidenceAdjudication(BaseModel):
+    """Adjudication decision by Contractor over Devil's Advocate post-scout evidence audit."""
+
+    decision: Literal["expand", "honest_gap", "approved"] = "approved"
+    follow_up_subcontracts: list[SubContract] = Field(
+        default_factory=list,
+        description="Targeted follow-up SubContracts to be executed if decision is expand.",
+    )
+    gap_notes: list[str] = Field(
+        default_factory=list,
+        description="Declared data gaps if decision is honest_gap.",
+    )
+    rejected_critiques: list[str] = Field(
+        default_factory=list,
+        description="Devil's Advocate complaints vetoed as out-of-scope or beyond contract limits.",
+    )
+    adjudication_summary: str = Field(default="", description="Summary of Contractor adjudication.")
+
+
 SubagentRole = Literal[
     "VaultExtractor",
     "DialecticalExtractor",
@@ -488,6 +507,119 @@ class ContractDecomposer:
             has_evidence_gap=plan.has_evidence_gap,
             gap_reason=plan.gap_reason,
             subcontracts=remaining_subcontracts,
+        )
+
+    def adjudicate_evidence_audit(
+        self,
+        query: str,
+        contract: TaskContract,
+        audit_review: Any,
+        expansion_count: int = 0,
+        max_expansions: int = 1,
+        previous_worker_notes: list[str] | None = None,
+    ) -> EvidenceAdjudication:
+        """Adjudicate Devil's Advocate post-scout audit: decide whether to expand search, declare honest gap, or approve."""
+        if not audit_review or getattr(audit_review, "all_satisfied", True):
+            return EvidenceAdjudication(
+                decision="approved",
+                adjudication_summary="Temuan worker telah memenuhi kontrak; tidak diperlukan penelusuran tambahan.",
+            )
+
+        detected_gaps = list(getattr(audit_review, "detected_gaps", []) or [])
+        suggested_queries = list(getattr(audit_review, "suggested_expansion_queries", []) or [])
+
+        # Filter gaps against contract out_of_scope and forbidden_drift_topics
+        valid_gaps: list[str] = []
+        rejected: list[str] = []
+        forbidden = [p.lower() for p in (list(contract.out_of_scope) + list(contract.forbidden_drift_topics)) if p]
+
+        for gap in detected_gaps:
+            lower_g = gap.lower()
+            if any(f in lower_g for f in forbidden if len(f) > 3):
+                rejected.append(f"[Ditolak - Out of Scope] {gap}")
+                continue
+            if contract.archetype == "DATA_FACTUAL" and any(m in lower_g for m in ("bab 2", "teori", "birokrasi", "landasan")):
+                rejected.append(f"[Ditolak - Tuntutan teori pada DATA_FACTUAL] {gap}")
+                continue
+            valid_gaps.append(gap)
+
+        if not valid_gaps:
+            return EvidenceAdjudication(
+                decision="approved",
+                rejected_critiques=rejected,
+                adjudication_summary=(
+                    f"Contractor memveto {len(rejected)} komplain Devil's Advocate karena melanggar batas kontrak; "
+                    "fakta yang ada disahkan."
+                ),
+            )
+
+        # Check if expansion budget is exhausted
+        try:
+            effective_max = int(max_expansions)
+        except (TypeError, ValueError):
+            effective_max = 1
+
+        if expansion_count >= effective_max:
+            return EvidenceAdjudication(
+                decision="honest_gap",
+                gap_notes=valid_gaps,
+                rejected_critiques=rejected,
+                adjudication_summary=(
+                    f"Batas ekspansi penelusuran ({expansion_count}/{effective_max}) telah tercapai. "
+                    f"Contractor mencatat {len(valid_gaps)} gap sebagai Honest Data Gap."
+                ),
+            )
+
+        # Create targeted follow-up subcontract
+        target_role: SubagentRole = "WebScout" if (contract.archetype == "DATA_FACTUAL" or "web_resmi" in getattr(contract, "required_search_channels", [])) else "LitScout"
+        channel = "web_resmi" if target_role == "WebScout" else "repositori_jurnal"
+        scout_id = f"sub-followup-scout-{expansion_count + 1}"
+        extract_id = f"sub-followup-extract-{expansion_count + 1}"
+
+        clean_gap_desc = "; ".join(valid_gaps[:2])
+        notes_str = "; ".join(previous_worker_notes[:2]) if previous_worker_notes else ""
+        handoff_ctx = f" (Catatan worker sebelumnya: {notes_str})" if notes_str else ""
+
+        follow_up_scout = SubContract(
+            id=scout_id,
+            role=target_role,
+            objective=f"Pencarian lanjutan terarah untuk menutup gap: {clean_gap_desc}{handoff_ctx}",
+            allowed_scope=contract.in_scope,
+            forbidden_scope=list(contract.out_of_scope) + list(contract.forbidden_drift_topics),
+            target_channel=channel,
+            dos=[
+                "Prioritaskan portal resmi/institusi atau repositori ilmiah untuk parameter/tahun yang masih bolong.",
+                "Gunakan variasi kata kunci alternatif jika pencarian sebelumnya nihil.",
+            ],
+            donts=[
+                "Dilarang mengambil blog opini pribadi atau forum komunitas.",
+                "Jangan mengulang kueri persis yang sudah terbukti nihil.",
+            ],
+            search_queries=suggested_queries[:2] or [f"{query} data resmi"],
+            max_output_tokens=180,
+        )
+
+        follow_up_extractor = SubContract(
+            id=extract_id,
+            role="GapExtractor",
+            objective=f"Ekstrak fakta baru dari dokumen hasil pencarian lanjutan untuk melengkapi: '{query}'.",
+            allowed_scope=contract.in_scope,
+            forbidden_scope=list(contract.out_of_scope) + list(contract.forbidden_drift_topics),
+            depends_on=[scout_id],
+            target_channel="vault_lokal",
+            dos=["Ekstrak data dan angka spesifik yang menjawab gap yang ditemukan."],
+            donts=["Jangan menduplikasi fakta yang sudah terekstrak sebelumnya."],
+            max_output_tokens=220,
+        )
+
+        return EvidenceAdjudication(
+            decision="expand",
+            follow_up_subcontracts=[follow_up_scout, follow_up_extractor],
+            gap_notes=valid_gaps,
+            rejected_critiques=rejected,
+            adjudication_summary=(
+                f"Contractor menugaskan 1 putaran follow-up search ({scout_id}) untuk melengkapi {len(valid_gaps)} gap."
+            ),
         )
 
     def _is_critique_out_of_contract(self, item: str, contract: TaskContract, draft_tokens: int) -> tuple[bool, str]:

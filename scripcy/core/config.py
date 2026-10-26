@@ -129,6 +129,12 @@ class ScripcyConfig(BaseModel):
         default=False,
         description="Whether to disable token budget limits (unlimited output tokens for TaskContract and Gatekeeper).",
     )
+    max_worker_expansions: int = Field(
+        default=1,
+        ge=0,
+        le=5,
+        description="Batas maksimum putaran ekspansi/follow-up search saat Devil's Advocate mendeteksi gap pada temuan worker.",
+    )
     workspace_path: str = Field(
         default="~/.scripcy/workspace",
         description="Base path for workspace caches and document vaults.",

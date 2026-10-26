@@ -1244,164 +1244,6 @@ class StudioAgentLoopMixin:
                 evidence = evidence[:5]
                 self.console.print("[dim]● Dibatasi ke 5 chunks teratas untuk penghematan token.[/dim]")
 
-        # Autonomous Deep-Research Literature Discovery Hook (when evidence is insufficient or domain coverage is low)
-        coverage_score = self.engine.evidence_synthesizer.compute_coverage_score(query, evidence) if evidence else 0.0
-        if evidence and coverage_score < 0.35:
-            self.console.print(f"[dim]● Catatan: Cakupan literatur vault terhadap kueri saat ini adalah {int(coverage_score * 100)}%. Evaluasi kritis akan menelusuri literatur tambahan jika diperlukan.[/dim]")
-
-        # Pre-flight auto-scout triggers when vault has no matching evidence OR when existing evidence coverage is very low (< 0.25)
-        needs_auto_scout = (not evidence) or (evidence and coverage_score < 0.25)
-        if needs_auto_scout and self.scout:
-            self.console.print("[bold cyan]●[/bold cyan] [bold bright_white]Berpikir[/bold bright_white] [dim]Mengevaluasi kecukupan literatur di vault...[/dim]")
-            if not evidence:
-                self.console.print("[dim]● Bukti di vault belum mencukupi untuk topik ini.[/dim]")
-            else:
-                self.console.print(f"[dim]● Referensi di vault memiliki kecocokan rendah ({int(coverage_score * 100)}%) terhadap fokus pertanyaan.[/dim]")
-            suggested_topic = self._extract_scout_query(query)
-            target_quota = self._determine_target_scout_quota(query, task_contract)
-            self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Rencana: Menelusuri Web Resmi (.go.id/institusi) & Repositori Ilmiah[/bold bright_white] [cyan]({target_quota} naskah terkait '{suggested_topic}')[/cyan]")
-
-            choice, custom_keyword = interactive_scout_confirm(
-                suggested_topic=suggested_topic,
-                quota=target_quota,
-                console=self.console,
-            )
-
-            if choice == "no":
-                self.console.print("[dim]● Pencarian otomatis dilewati. Melanjutkan sintesis dengan pengetahuan umum...[/dim]\n")
-            else:
-                target_topic = custom_keyword if (choice == "custom" and custom_keyword) else suggested_topic
-                self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Mencari[/bold bright_white] [dim]Menelusuri portal web resmi & repositori ilmiah (WebScout & OpenAlex)...[/dim]")
-
-                initial_active = set(self.get_session_active_documents(session.id if session else None))
-                task = self.task_manager.submit(
-                    name=f"Deep Research Scout: {target_topic}",
-                    task_type="scout",
-                    target_fn=self._background_scout_worker,
-                    query=target_topic,
-                    topic_query=target_topic,
-                    max_download=target_quota,
-                    session_id=session.id if session else None,
-                    lane="io",
-                )
-
-                scout_timeout = getattr(self.config, "scout_timeout", 180.0)
-
-                async def _wait_for_task() -> TaskInfo:
-                    start_t = time.monotonic()
-                    last_progress_t = start_t
-                    last_log_count = 0
-                    while True:
-                        t_info = self.task_manager.get_task(task.id)
-                        if not t_info:
-                            break
-                        if t_info.status in ("completed", "failed", "cancelled"):
-                            return t_info
-                        fut = self.task_manager._futures.get(task.id)
-                        if fut and fut.done():
-                            return self.task_manager.get_task(task.id) or task
-
-                        cur_logs = len(t_info.logs) if t_info and t_info.logs else 0
-                        if cur_logs > last_log_count:
-                            last_log_count = cur_logs
-                            last_progress_t = time.monotonic()
-
-                        if time.monotonic() - last_progress_t > scout_timeout:
-                            raise asyncio.TimeoutError("Scout timeout exceeded")
-                        await asyncio.sleep(0.08)
-                    return task
-
-                def _get_scout_log() -> str:
-                    t_info = self.task_manager.get_task(task.id)
-                    if t_info and t_info.logs:
-                        return f"[Deep Research Scout] {t_info.logs[-1]}"
-                    return f"[Deep Research Scout] Menelusuri repositori ilmiah..."
-
-                prompt_str = f"{self.current_project.name}/chat/{session.name}> " if (self.sub_mode == "chat" and session and self.current_project) else (f"{self.current_project.name}> " if self.current_project else "> ")
-
-                timed_out = False
-                task_cancelled = False
-                completed_task: TaskInfo | None = None
-                wait_coro = _wait_for_task()
-                try:
-                    completed_task = self._run_agent_turn_interactive(
-                        coro=wait_coro,
-                        step_desc=_get_scout_log,
-                        prompt_lbl=prompt_str,
-                        model_label=model_label,
-                        effort=effort,
-                    )
-                except SessionDetachSignal:
-                    self.console.print(f"\n[bold cyan]● Sesi '{session.name if session else ''}' di-detach ke latar belakang.[/bold cyan]")
-                    self.console.print(f"  [dim]Tugas '{task.name}' ({task.id}) tetap berjalan di background (Ketik /proc untuk pantau).[/dim]\n")
-                    if session and self.chat_manager:
-                        self.chat_manager.update_session_status(session.id, "detached")
-                        session.status = "detached"
-                    self.sub_mode = "chat_hub"
-                    return
-                except (asyncio.CancelledError, KeyboardInterrupt):
-                    self.task_manager.cancel_task(task.id)
-                    task_cancelled = True
-                    self.console.print("[dim]● Pencarian literatur dibatalkan oleh pengguna.[/dim]\n")
-                except (asyncio.TimeoutError, TimeoutError):
-                    timed_out = True
-                except Exception as exc:
-                    if hasattr(self, "logger") and self.logger:
-                        self.logger.log_error(session.id if session else None, "AUTO_SCOUT", exc)
-                    self.console.print(f"[dim]● Pemantauan tugas repositori: {exc}. Melanjutkan...[/dim]\n")
-                finally:
-                    import inspect
-                    if inspect.iscoroutine(wait_coro):
-                        try:
-                            wait_coro.close()
-                        except Exception:
-                            pass
-
-                is_timeout = (
-                    timed_out
-                    or (
-                        completed_task
-                        and completed_task.status == "failed"
-                        and any(k in (completed_task.error or "").lower() for k in ("timeout", "timed out", "timed_out", "time out"))
-                    )
-                )
-
-                if is_timeout:
-                    self.console.print("[bold yellow][!] Unduhan repositori membutuhkan waktu > 20 detik.[/bold yellow]")
-                    self.console.print(f"[bold green][✓] Proses dialihkan ke background:[/bold green] [bold cyan]{task.id}[/bold cyan] [dim](Ketik /proc untuk pantau)[/dim]\n")
-                    initial_query_override = (
-                        f"{query}\n\n"
-                        f"[CATATAN SISTEM SCRPCY: Proses penelusuran & pengunduhan literatur untuk topik '{target_topic}' "
-                        f"memerlukan waktu lebih dari 20 detik dan dialihkan ke latar belakang (Task ID: {task.id}).\n"
-                        f"Instruksi untuk AI: Beritahu pengguna secara ringkas bahwa unduhan sedang diproses di background. "
-                        f"Berikan sintesis awal atau fondasi konseptual terbaik berdasarkan pengetahuan yang ada saat ini. "
-                        f"Secara proaktif sarankan fokus konseptual atau hipotesis apa yang bisa dikaji sekarang sementara tugas unduhan selesai di background (JANGAN menyuruh pengguna mengetikkan perintah slash).]"
-                    )
-                    evidence = []
-                elif completed_task and completed_task.status == "completed":
-                    if self.vault_manager:
-                        self.vault_manager.reload_vault(force=False)
-                    self._sync_vault_cache(session_id=session.id if session else None)
-                    updated_docs = self.get_session_active_documents(session.id if session else None)
-                    new_stems = [s for s in updated_docs if s not in initial_active]
-                    if not new_stems and updated_docs:
-                        new_stems = list(updated_docs)
-
-                    active_paths = [self.workspace.get_cache_path(f"{s}.md") for s in updated_docs]
-                    existing_paths = [p for p in active_paths if p.exists()]
-                    evidence = self.engine.evidence_synthesizer.retrieve_evidence(
-                        query=query,
-                        documents=existing_paths,
-                        max_chunks=self.config.citation.max_evidence_chunks,
-                        vector_vault=getattr(self.vault_manager, "vector_vault", None),
-                    )
-                    self.console.print(f"[bold green][✓] Berhasil mengindeks {len(new_stems)} dokumen baru ke vault.[/bold green]")
-                    for s in new_stems:
-                        self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Membaca[/bold bright_white] [cyan]cache/{s}.md[/cyan] [dim](Dokumen siap)[/dim]")
-                    self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Menganalisis[/bold bright_white] [dim]Menyintesis temuan paper baru ke dalam jawaban komprehensif...[/dim]\n")
-                elif completed_task and completed_task.status == "failed":
-                    self.console.print(f"[dim]● Pencarian repositori gagal: {completed_task.error}. Melanjutkan...[/dim]\n")
-
         # 1. Action Indicator: Membaca (jika sudah ada bukti)
         if evidence:
             sources = sorted(list({c.source for c in evidence}))
@@ -1502,6 +1344,7 @@ class StudioAgentLoopMixin:
             final_response = ""
             last_v_report: VerificationReport | None = None
             last_c_report: CritiqueReport | None = None
+            orch_res: Any | None = None
 
             session_runtime = self.get_session_runtime(session.id if session else None)
 
@@ -1518,11 +1361,11 @@ class StudioAgentLoopMixin:
                 nonlocal turn, refinement_turns, locked_supported_claims, best_draft, best_grounding, best_critic, best_composite
                 nonlocal accumulated_input_tokens, accumulated_output_tokens, total_turns_completed, current_query, current_docs
                 nonlocal final_response, last_v_report, last_c_report, max_agent_turns, max_refine_limit, curr_evidence, citation_guide
+                nonlocal orch_res
 
                 attempted_search_channels: set[str] = {"vault_lokal"}
                 contractor_gatekeeper = ContractDecomposer()
                 active_patch_info: tuple[int, list[str]] | None = None
-                orch_res: Any | None = None
 
                 while turn < max_agent_turns:
                     if cancel_event and cancel_event.is_set():
@@ -1566,10 +1409,10 @@ class StudioAgentLoopMixin:
                                     f"{current_query}"
                                 )
 
-                    if turn == 0 and (curr_evidence or task_contract.archetype == "DATA_FACTUAL" or "web_resmi" in getattr(task_contract, "required_search_channels", [])):
+                    if turn == 0:
                         self.task_manager.update_progress(
                             task_id,
-                            "[Contractor] Memecah kontrak ke Subagent (Vault, Web, Literatur)...",
+                            "[Contractor] Memecah kontrak ke Worker (Vault, Web, Literatur)...",
                         )
 
                         def _on_subagent_tree_update(lines: list[str]) -> None:
@@ -1577,7 +1420,7 @@ class StudioAgentLoopMixin:
                                 plain = re.sub(r"\[/?[^\]]+\]", "", raw_line).strip()
                                 if "RUNNING" in plain or "QUEUED" in plain:
                                     cleaned = re.sub(r"^[├└│─\s]+", "", plain)
-                                    self.task_manager.update_progress(task_id, f"[Subagent] {cleaned}")
+                                    self.task_manager.update_progress(task_id, f"[Worker] {cleaned}")
                                     return
 
                         orchestrator = SubagentOrchestrator(
@@ -1679,8 +1522,8 @@ class StudioAgentLoopMixin:
                     if hasattr(self, "logger") and self.logger:
                         self.logger.log_llm_stream_finish(session_id, turn, model_name, out_tok, t_stream_dur, len(raw_resp))
 
-                    # 1. Internal vault tool call check
-                    tool_cmd = self._detect_internal_tool_call(raw_resp)
+                    # 1. Internal vault tool call check (bypassed during Golden Pass when workers already executed)
+                    tool_cmd = None if ("orch_res" in locals() and orch_res is not None) else self._detect_internal_tool_call(raw_resp)
                     if tool_cmd and turn < max_agent_turns - 1:
                         if cancel_event and cancel_event.is_set():
                             return
@@ -2330,11 +2173,15 @@ class StudioAgentLoopMixin:
             grounding_badge = f"Grounding: {int(v_score * 100)}%"
             critic_badge = f"Critic: {c_score}/10"
             actual_turns = max(total_turns_completed, turn + 1)
-            turns_badge = f"{actual_turns} turn" if actual_turns == 1 else f"{actual_turns} turns"
+            if "orch_res" in locals() and orch_res and orch_res.plan and orch_res.plan.subcontracts:
+                n_sc = len(orch_res.plan.subcontracts)
+                contracts_badge = f"{n_sc} small contract" if n_sc == 1 else f"{n_sc} small contracts"
+            else:
+                contracts_badge = f"{actual_turns} turn" if actual_turns == 1 else f"{actual_turns} turns"
 
             footer_badge_md = (
                 f"\n\n---\n"
-                f"*[dim]Tokens: {input_tokens:,} in · {output_tokens:,} out · {total_tokens:,} total ({model_label}) • {turns_badge} • {grounding_badge} • {critic_badge} • {elapsed:.1f}s • {style_name} style[/dim]*"
+                f"*[dim]Tokens: {input_tokens:,} in · {output_tokens:,} out · {total_tokens:,} total ({model_label}) • {contracts_badge} • {grounding_badge} • {critic_badge} • {elapsed:.1f}s • {style_name} style[/dim]*"
             )
             final_response_persisted = f"{final_response}{footer_badge_md}"
 
@@ -2359,7 +2206,8 @@ class StudioAgentLoopMixin:
                 "total_tokens": total_tokens,
                 "elapsed": elapsed,
                 "model_label": model_label,
-                "turns_badge": turns_badge,
+                "turns_badge": contracts_badge,
+                "contracts_badge": contracts_badge,
                 "grounding_badge": grounding_badge,
                 "critic_badge": critic_badge,
                 "style_name": style_name,
@@ -2487,7 +2335,7 @@ class StudioAgentLoopMixin:
             out_tok = task_result_box.get("output_tokens", 0)
             tot_tok = task_result_box.get("total_tokens", 0)
             m_lbl = task_result_box.get("model_label", model_label)
-            t_bdg = task_result_box.get("turns_badge", "1 turn")
+            t_bdg = task_result_box.get("contracts_badge", task_result_box.get("turns_badge", "1 small contract"))
             g_bdg = task_result_box.get("grounding_badge", "Grounding: 100%")
             c_bdg = task_result_box.get("critic_badge", "Critic: 8/10")
             el_s = task_result_box.get("elapsed", 0.0)

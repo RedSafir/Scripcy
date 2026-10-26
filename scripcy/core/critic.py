@@ -72,6 +72,17 @@ class PlanAuditReview(BaseModel):
     output_tokens: int = Field(default=0, description="Tokens used for plan audit.")
 
 
+class EvidenceAuditReview(BaseModel):
+    """Post-execution evaluation by Devil's Advocate assessing whether worker findings satisfy contract."""
+
+    all_satisfied: bool = Field(default=True, description="True if extracted facts satisfy contract objectives without crucial gaps.")
+    detected_gaps: list[str] = Field(default_factory=list, description="Substantive data gaps, missing parameters, or unfulfilled contract dos.")
+    suggested_expansion_queries: list[str] = Field(default_factory=list, description="Targeted queries recommended to fill the detected gaps.")
+    summary: str = Field(default="", description="Concise assessment of evidence completeness.")
+    input_tokens: int = Field(default=0, description="Tokens used for evidence audit.")
+    output_tokens: int = Field(default=0, description="Tokens used for evidence audit.")
+
+
 class DevilsAdvocate:
     """Adversarial critic and scope guard testing contract conformance, evidence recency, and factual rigor."""
 
@@ -212,6 +223,81 @@ class DevilsAdvocate:
             prune_ids=prune_ids,
             prune_reasons=prune_reasons,
             additions=additions,
+            summary=summary,
+        )
+
+    def audit_worker_evidence(
+        self,
+        query: str,
+        contract: Any,
+        subcontracts: list[Any],
+        artifacts: list[Any],
+    ) -> EvidenceAuditReview:
+        """Post-scout audit: challenge extracted worker facts against Small Contract objectives and identify missing data."""
+        detected_gaps: list[str] = []
+        suggested_queries: list[str] = []
+
+        all_facts = [f for art in artifacts for f in getattr(art, "extracted_facts", [])]
+        combined_claims = " ".join(f.claim_or_metric for f in all_facts).lower()
+        years_found = [int(f.year) for f in all_facts if getattr(f, "year", None) and str(f.year).isdigit()]
+
+        lower_q = query.lower()
+        clean_words = [
+            w for w in re.findall(r"\b\w{4,}\b", lower_q)
+            if w not in {
+                "yang", "untuk", "dengan", "dalam", "pada", "oleh", "dari", "tentang",
+                "bagaimana", "apakah", "berapa", "carikan", "tolong", "buatkan", "data",
+                "tahun", "terakhir",
+            }
+        ]
+        base_topic = " ".join(clean_words[:5]) if clean_words else query[:50]
+
+        # 1. Check whether worker reported limitations or missing requirements in worker_notes
+        for art in artifacts:
+            w_notes = getattr(art, "worker_notes", "") or ""
+            missing_reqs = getattr(art, "missing_requirements", []) or []
+            if getattr(art, "status", "") in ("partial", "no_data"):
+                if w_notes and "tidak ada" in w_notes.lower():
+                    detected_gaps.append(f"Worker [{art.role}] melaporkan kendala: {w_notes}")
+                for m in missing_reqs:
+                    if m not in detected_gaps:
+                        detected_gaps.append(f"Worker [{art.role}] missing requirement: {m}")
+
+        # 2. Check temporal completeness for recent years queries (e.g. 5 tahun terakhir)
+        asks_recent = any(
+            p in lower_q
+            for p in ("5 tahun terakhir", "lima tahun terakhir", "terbaru", "mutakhir", "2023", "2024", "2025")
+        )
+        if asks_recent:
+            max_year = max(years_found) if years_found else 0
+            if max_year < self.current_year - 2:
+                gap_msg = (
+                    f"Pertanyaan meminta data terbaru (5 tahun terakhir), namun temuan worker "
+                    f"hanya mencakup hingga tahun {max_year or 'lama'}."
+                )
+                detected_gaps.append(gap_msg)
+                suggested_queries.append(f"{base_topic} data resmi statistik {self.current_year - 2} {self.current_year}")
+
+        # 3. Check quantitative requirements on DATA_FACTUAL queries
+        archetype = getattr(contract, "archetype", "")
+        if archetype == "DATA_FACTUAL" or any(w in lower_q for w in ("berapa", "luas", "jumlah", "angka", "statistik")):
+            has_quant = any(getattr(f, "is_quantitative", False) for f in all_facts)
+            if not has_quant and not all_facts:
+                gap_msg = "Belum ditemukan angka atau metrik statistik resmi yang memadai dari pencarian awal."
+                detected_gaps.append(gap_msg)
+                suggested_queries.append(f"{base_topic} data statistik resmi kementerian lembaga bps")
+
+        all_satisfied = len(detected_gaps) == 0
+        summary = (
+            "Temuan worker telah memenuhi kontrak."
+            if all_satisfied
+            else f"Devil's Advocate mendeteksi {len(detected_gaps)} gap pada temuan worker."
+        )
+
+        return EvidenceAuditReview(
+            all_satisfied=all_satisfied,
+            detected_gaps=detected_gaps,
+            suggested_expansion_queries=suggested_queries,
             summary=summary,
         )
 

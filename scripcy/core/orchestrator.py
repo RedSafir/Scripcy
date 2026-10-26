@@ -34,6 +34,8 @@ class OrchestrationResult(BaseModel):
     assembly_directive: str = ""
     grounding_score: float = 1.0
     plan_audit: Any = None
+    evidence_audit: Any = None
+    evidence_adjudication: Any = None
 
 
 class SubagentOrchestrator:
@@ -89,7 +91,7 @@ class SubagentOrchestrator:
         mode_tag = f"Kontrak: {contract.archetype}"
         lines = [
             f"[bold cyan]●[/bold cyan] [bold bright_white][Orchestrator][/bold bright_white] "
-            f"[dim]Mengelola subagent terisolasi ({mode_tag})...[/dim]"
+            f"[dim]Mengelola worker terisolasi ({mode_tag})...[/dim]"
         ]
         items = list(subcontract_states.items())
         for idx, (label, (state, detail)) in enumerate(items):
@@ -264,6 +266,12 @@ class SubagentOrchestrator:
                 + "\n".join(f"  - {m}" for m in missing_notes[:2])
             )
 
+        parts.append(
+            "[INSTRUKSI DRAF AKHIR GOLDEN PASS]:\n"
+            "- Seluruh investigasi Worker telah selesai tuntas. DILARANG memanggil perintah alat atau sintaks tool internal (seperti /web, /scout, /read).\n"
+            "- TULISKAN JAWABAN AKHIR LENGKAP secara langsung berdasarkan fakta dari ledger di atas."
+        )
+
         return "\n\n".join(parts)
 
     async def orchestrate(
@@ -319,12 +327,12 @@ class SubagentOrchestrator:
                 f"Diaudit: {p_cnt} dipangkas (tidak substansial), {a_cnt} usulan penambahan",
             )
         for sc in local_extractors:
-            states[f"Subagent [{sc.role}]"] = ("running", f"Mengekstrak {len(sc.evidence_slice)} chunk lokal (Paralel)")
+            states[f"Worker [{sc.role}]"] = ("running", f"Mengekstrak {len(sc.evidence_slice)} chunk lokal (Paralel)")
         for sc in scout_contracts:
-            states[f"Subagent [{sc.role}]"] = ("running", f"Menelusuri sumber eksternal ({sc.target_channel})")
+            states[f"Worker [{sc.role}]"] = ("running", f"Menelusuri sumber eksternal ({sc.target_channel})")
         for sc in gap_extractors:
-            states[f"Subagent [{sc.role}]"] = ("waiting", "Menunggu hasil pencarian & batch index (Antre)")
-        states["Subagent [ScopeAuditor]"] = ("waiting", "Menunggu seluruh subagent selesai (Antre)")
+            states[f"Worker [{sc.role}]"] = ("waiting", "Menunggu hasil pencarian & batch index (Antre)")
+        states["Worker [ScopeAuditor]"] = ("waiting", "Menunggu seluruh worker selesai (Antre)")
 
         if on_tree_update:
             on_tree_update(self.format_tree_status(contract, states))
@@ -350,12 +358,12 @@ class SubagentOrchestrator:
                         local_artifacts[idx] = fallback_art
                         art = fallback_art
 
-            states[f"Subagent [{art.role}]"] = (
+            states[f"Worker [{art.role}]"] = (
                 "done",
                 f"{len(art.extracted_facts)} fakta diekstrak ({art.tokens_used} tok)",
             )
         for sc in scout_contracts:
-            states[f"Subagent [{sc.role}]"] = (
+            states[f"Worker [{sc.role}]"] = (
                 "done",
                 f"{len(newly_ingested_stems)} sumber baru diindeks" if newly_ingested_stems else "Selesai",
             )
@@ -378,23 +386,104 @@ class SubagentOrchestrator:
                 )
                 for ge in gap_extractors:
                     ge.evidence_slice = self.decomposer.slice_evidence(query, new_ev, limit=3)
-                    states[f"Subagent [{ge.role}]"] = ("running", f"Mengekstrak {len(ge.evidence_slice)} chunk baru")
+                    states[f"Worker [{ge.role}]"] = ("running", f"Mengekstrak {len(ge.evidence_slice)} chunk baru")
                 gap_artifacts = await asyncio.to_thread(self.pool.run_parallel_extractions, gap_extractors)
                 for g_art in gap_artifacts:
                     g_art.ingested_stems = list(newly_ingested_stems)
-                    states[f"Subagent [{g_art.role}]"] = (
+                    states[f"Worker [{g_art.role}]"] = (
                         "done",
                         f"{len(g_art.extracted_facts)} fakta baru diekstrak ({g_art.tokens_used} tok)",
                     )
                 all_artifacts.extend(gap_artifacts)
             else:
                 for ge in gap_extractors:
-                    states[f"Subagent [{ge.role}]"] = ("done", "Tidak ada dokumen baru")
+                    states[f"Worker [{ge.role}]"] = ("done", "Tidak ada dokumen baru")
         else:
             for ge in gap_extractors:
-                states[f"Subagent [{ge.role}]"] = ("done", "Dilewati (cukup dengan bukti lokal)")
+                states[f"Worker [{ge.role}]"] = ("done", "Dilewati (cukup dengan bukti lokal)")
 
-        states["Subagent [ScopeAuditor]"] = ("running", "Memvalidasi sitasi, memfilter out-of-scope & menyusun fact sheet...")
+        # 4. Post-Scout Evidence Audit by Devil's Advocate & Contractor Adjudication
+        raw_max = getattr(getattr(self.engine, "config", None), "max_worker_expansions", 1)
+        try:
+            max_expansions = int(raw_max)
+        except (TypeError, ValueError):
+            max_expansions = 1
+        prev_worker_notes = [art.worker_notes for art in all_artifacts if getattr(art, "worker_notes", None)]
+        ev_audit = self.auditor.audit_worker_evidence(
+            query=query,
+            contract=contract,
+            subcontracts=plan.subcontracts,
+            artifacts=all_artifacts,
+        )
+        ev_adj = self.decomposer.adjudicate_evidence_audit(
+            query=query,
+            contract=contract,
+            audit_review=ev_audit,
+            expansion_count=0,
+            max_expansions=max_expansions,
+            previous_worker_notes=prev_worker_notes,
+        )
+
+        missing_notes_from_adj: list[str] = []
+        if ev_adj.decision == "expand" and ev_adj.follow_up_subcontracts:
+            states["Evaluasi Temuan [Devil's Advocate]"] = (
+                "done",
+                f"{len(ev_adj.gap_notes)} gap ditemukan. Contractor menugaskan pencarian lanjutan.",
+            )
+            follow_scouts = [sc for sc in ev_adj.follow_up_subcontracts if sc.role in ("WebScout", "LitScout")]
+            follow_extractors = [sc for sc in ev_adj.follow_up_subcontracts if sc.role == "GapExtractor"]
+
+            for sc in follow_scouts:
+                states[f"Worker [{sc.role}]"] = ("running", f"Follow-up: {sc.objective[:45]}...")
+            if on_tree_update:
+                on_tree_update(self.format_tree_status(contract, states))
+
+            follow_stems = await self._execute_autonomous_scout_subcontracts(
+                follow_scouts,
+                session_id=session_id,
+                cancel_event=cancel_event,
+            )
+            for sc in follow_scouts:
+                states[f"Worker [{sc.role}]"] = ("done", f"{len(follow_stems)} sumber baru diindeks" if follow_stems else "Selesai")
+
+            if follow_extractors and follow_stems and self.workspace and self.engine:
+                f_paths = [
+                    self.workspace.get_cache_path(f"{s}.md")
+                    for s in follow_stems
+                    if self.workspace.get_cache_path(f"{s}.md").exists()
+                ]
+                if f_paths:
+                    vec_vault = getattr(self.vault_manager, "vector_vault", None) if self.vault_manager else None
+                    f_ev = self.engine.evidence_synthesizer.retrieve_evidence(
+                        query=query,
+                        documents=f_paths,
+                        max_chunks=4,
+                        vector_vault=vec_vault,
+                    )
+                    for fe in follow_extractors:
+                        fe.evidence_slice = self.decomposer.slice_evidence(query, f_ev, limit=3)
+                        states[f"Worker [{fe.role}]"] = ("running", "Mengekstrak temuan follow-up...")
+                    f_artifacts = await asyncio.to_thread(self.pool.run_parallel_extractions, follow_extractors)
+                    for f_art in f_artifacts:
+                        f_art.ingested_stems = list(follow_stems)
+                        states[f"Worker [{f_art.role}]"] = ("done", f"{len(f_art.extracted_facts)} fakta baru diekstrak")
+                    all_artifacts.extend(f_artifacts)
+
+            for s in follow_stems:
+                if s not in newly_ingested_stems:
+                    newly_ingested_stems.append(s)
+
+            plan.subcontracts.extend(ev_adj.follow_up_subcontracts)
+        elif ev_adj.decision == "honest_gap":
+            states["Evaluasi Temuan [Contractor]"] = (
+                "done",
+                f"Mencatat {len(ev_adj.gap_notes)} Honest Data Gap (pencarian dihentikan).",
+            )
+            missing_notes_from_adj.extend(ev_adj.gap_notes)
+        else:
+            states["Evaluasi Temuan [Contractor]"] = ("done", "Seluruh Small Contract terbukti terpenuhi.")
+
+        states["Worker [ScopeAuditor]"] = ("running", "Memvalidasi sitasi, memfilter out-of-scope & menyusun fact sheet...")
         audit_res = self.auditor.audit_fact_ledger(
             query=query,
             contract=contract,
@@ -402,6 +491,9 @@ class SubagentOrchestrator:
         )
         verified_facts: list[ExtractedFact] = audit_res["verified_facts"]
         missing_notes: list[str] = audit_res["missing_notes"]
+        for g_note in missing_notes_from_adj:
+            if g_note not in missing_notes:
+                missing_notes.append(g_note)
         if plan.has_evidence_gap and plan.gap_reason and not newly_ingested_stems:
             if plan.gap_reason not in missing_notes:
                 missing_notes.insert(0, plan.gap_reason)
@@ -409,7 +501,7 @@ class SubagentOrchestrator:
         total_raw_facts = len(verified_facts) + audit_res.get("dropped_count", 0)
         deterministic_grounding = round(len(verified_facts) / total_raw_facts, 2) if total_raw_facts > 0 else 1.0
 
-        states["Subagent [ScopeAuditor]"] = (
+        states["Worker [ScopeAuditor]"] = (
             "done",
             f"{len(verified_facts)} fakta terverifikasi (Fact Sheet Grounding: {int(deterministic_grounding * 100)}%)",
         )
@@ -432,6 +524,8 @@ class SubagentOrchestrator:
         return OrchestrationResult(
             plan=plan,
             plan_audit=plan_audit,
+            evidence_audit=ev_audit,
+            evidence_adjudication=ev_adj,
             artifacts=all_artifacts,
             verified_facts=verified_facts,
             missing_notes=missing_notes,
@@ -443,3 +537,6 @@ class SubagentOrchestrator:
             assembly_directive=directive,
             grounding_score=deterministic_grounding,
         )
+
+
+WorkerOrchestrator = SubagentOrchestrator

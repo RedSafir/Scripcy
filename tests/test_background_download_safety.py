@@ -19,6 +19,7 @@ class MockStreamChunk:
         self.choices = [MagicMock(delta=MagicMock(content=content))]
 
 
+@pytest.mark.skip(reason="Pre-flight auto-scout superseded by Worker & Small Contract architecture")
 def test_background_scout_prevents_cascading_refinement_and_fake_evidence(
     tmp_path: Path,
 ) -> None:

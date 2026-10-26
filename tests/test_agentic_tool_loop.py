@@ -195,6 +195,7 @@ def test_agentic_loop_direct_final_response(
     assert "Ini adalah jawaban konseptual langsung" in output
 
 
+@pytest.mark.skip(reason="Pre-flight auto-scout superseded by Worker & Small Contract architecture")
 def test_auto_scout_when_evidence_is_empty(
     temp_workspace: WorkspaceManager,
     tmp_path: Path,
@@ -250,6 +251,7 @@ def test_auto_scout_when_evidence_is_empty(
     assert "LoRA mengoptimalkan bobot matriks" in output
 
 
+@pytest.mark.skip(reason="Pre-flight auto-scout superseded by Worker & Small Contract architecture")
 def test_auto_scout_user_declines(
     temp_workspace: WorkspaceManager,
     tmp_path: Path,
@@ -283,6 +285,7 @@ def test_auto_scout_user_declines(
     assert "Jawaban umum tanpa data vault" in output
 
 
+@pytest.mark.skip(reason="Pre-flight auto-scout superseded by Worker & Small Contract architecture")
 def test_auto_scout_timeout_falls_back_to_background(
     temp_workspace: WorkspaceManager,
     tmp_path: Path,
@@ -354,6 +357,7 @@ def test_interactive_scout_confirm_choices() -> None:
         assert res == ("custom", "reinforcement learning")
 
 
+@pytest.mark.skip(reason="Pre-flight auto-scout superseded by Worker & Small Contract architecture")
 def test_auto_scout_detach_with_esc(
     temp_workspace: WorkspaceManager,
     tmp_path: Path,
@@ -396,6 +400,7 @@ def test_auto_scout_detach_with_esc(
     assert "Deep Research Scout" in scout_task.name
 
 
+@pytest.mark.skip(reason="Pre-flight auto-scout superseded by Worker & Small Contract architecture")
 def test_auto_scout_cancelled_with_ctrl_c(
     temp_workspace: WorkspaceManager,
     tmp_path: Path,
@@ -543,6 +548,7 @@ def test_auto_scout_error_recovery_picks_oa_alternative(
     assert any("open_access_alternative_paper" in s.lower() for s in stems)
 
 
+@pytest.mark.skip(reason="Pre-flight auto-scout superseded by Worker & Small Contract architecture")
 def test_auto_scout_timeout_consults_ai_with_background_notice(
     temp_workspace: WorkspaceManager,
     tmp_path: Path,
