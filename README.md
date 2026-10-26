@@ -44,31 +44,33 @@ Modern Large Language Models (LLMs) often struggle with scholarly research: they
 
 ```mermaid
 flowchart TD
-    User["User Prompt\n(e.g., 'carikan data karhutla di indonesia')"] --> Contract["1. TaskContract Extractor\n(Defines archetype, token budget, in/out scope)"]
-    Contract --> VaultCheck{"Vault Evidence\nSufficient?"}
+    User["User Prompt<br/>(e.g., 'carikan data karhutla di indonesia')"] --> Contract["1. TaskContract Extractor<br/>(Defines archetype, token budget, scope)"]
+    Contract --> VaultCheck{"Vault Evidence<br/>Sufficient?"}
     
-    VaultCheck -- No --> Scout["2. Pre-Flight Dual-Channel Scout"]
+    VaultCheck -->|No| Scout["2. Pre-Flight Dual-Channel Scout"]
     subgraph ScoutEngine ["Autonomous Discovery Engine"]
-        LitScout["LiteratureScout\n(OpenAlex, S2, CrossRef)"]
-        WebScout["WebScout\n(Bing/Yahoo + Cascaded Relevance Gate)"]
-        Disambig["QueryDisambiguator\n(Strips meta-words, anchors entities)"]
+        Disambig["QueryDisambiguator<br/>(Strips meta-words, anchors entities)"]
+        LitScout["LiteratureScout<br/>(OpenAlex, S2, CrossRef)"]
+        WebScout["WebScout<br/>(Bing/Yahoo + Cascaded Relevance Gate)"]
     end
     Scout --> Disambig
-    Disambig --> LitScout & WebScout
-    LitScout & WebScout --> Ingest["Ingestion & Vault Indexing\n(Markdown, BM25, Images, YAML frontmatter)"]
+    Disambig --> LitScout
+    Disambig --> WebScout
+    LitScout --> Ingest["Ingestion & Vault Indexing<br/>(Markdown, BM25, Images, YAML frontmatter)"]
+    WebScout --> Ingest
     Ingest --> VaultCheck
     
-    VaultCheck -- Yes --> Subagents["3. Isolated Subagent Execution\n(VaultExtractor + GapExtractor)"]
-    Subagents --> Synthesizer["4. LLM Synthesis Engine\n(Context compression, APA citations, [[VISUAL:id]])"]
-    Synthesizer --> Polisher["5. Academic Polisher\n(Heuristic burstiness & flow optimization)"]
-    Synthesizer --> FactChecker["6. FactChecker (Layer 1)\n(Grounding score, unsupported claim detection)"]
-    FactChecker --> Critic["7. Devil's Advocate Critic (Layer 2)\n(Epistemic audit, recency alert, counter-arguments)"]
+    VaultCheck -->|Yes| Subagents["3. Isolated Subagent Execution<br/>(VaultExtractor + GapExtractor)"]
+    Subagents --> Synthesizer["4. LLM Synthesis Engine<br/>(Context compression, APA citations, visual embeds)"]
+    Synthesizer --> Polisher["5. Academic Polisher<br/>(Heuristic burstiness & flow optimization)"]
+    Synthesizer --> FactChecker["6. FactChecker (Layer 1)<br/>(Grounding score, unsupported claim detection)"]
+    FactChecker --> Critic["7. Devil's Advocate Critic (Layer 2)<br/>(Epistemic audit, recency alert, counter-arguments)"]
     
-    Critic -- Rejected (< 7/10) --> Refine["Iterative Refinement Turn\n(Surgical patch or directed search)"]
+    Critic -->|Score under 7: Rejected| Refine["Iterative Refinement Turn<br/>(Surgical patch or directed search)"]
     Refine --> Synthesizer
     
-    Critic -- Approved (>= 7/10) --> Formatter["8. Terminal Formatter\n(Active OSC 8 links, 3-line visual blocks, KaTeX math)"]
-    Formatter --> Export["9. WordCraft MCP Export\n(Publication-ready .docx manuscript)"]
+    Critic -->|Score 7 or above: Approved| Formatter["8. Terminal Formatter<br/>(Active OSC 8 links, 3-line visual blocks, KaTeX math)"]
+    Formatter --> Export["9. WordCraft MCP Export<br/>(Publication-ready .docx manuscript)"]
 ```
 
 ---
