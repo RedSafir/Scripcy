@@ -93,8 +93,13 @@ class TestCheckpointHandshake:
         t = threading.Thread(target=_worker_fn)
         t.start()
 
-        time.sleep(0.05)
-        assert tm.get_pending_checkpoint(task.id) is not None
+        pending = None
+        for _ in range(50):
+            pending = tm.get_pending_checkpoint(task.id)
+            if pending is not None:
+                break
+            time.sleep(0.02)
+        assert pending is not None
 
         # User cancels task
         tm.cancel_task(task.id)
@@ -127,8 +132,12 @@ class TestCheckpointHandshake:
         t = threading.Thread(target=_bg_runner)
         t.start()
 
-        time.sleep(0.05)
-        pending = cli_studio.task_manager.get_pending_checkpoint(task.id)
+        pending = None
+        for _ in range(50):
+            pending = cli_studio.task_manager.get_pending_checkpoint(task.id)
+            if pending is not None:
+                break
+            time.sleep(0.02)
         assert pending is not None
         assert pending.prompt_data["completed_turns"] == 3
 
