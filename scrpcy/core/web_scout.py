@@ -156,6 +156,213 @@ class WebSearchResult(BaseModel):
     institution: str = ""
     authority_tier: int = 4
     reasons: list[str] = Field(default_factory=list)
+    relevance_score: float = 1.0
+    final_score: float = 1.0
+
+
+# Sectoral Topic Authority Anchors for Specialized Official Portals
+TOPIC_AUTHORITY_ANCHORS: dict[str, dict[str, Any]] = {
+    "karhutla": {
+        "synonyms": ["karhutla", "kebakaran hutan", "titik api", "titik panas", "hotspot", "api hutan"],
+        "domains": ["sipongi.menlhk.go.id", "menlhk.go.id", "bmkg.go.id", "bnpb.go.id", "bps.go.id"],
+        "metric_terms": ["luas", "hektar", "hotspot", "sebaran"],
+        "institution": "SiPongi - Karhutla Monitoring Sistem KLHK",
+    },
+    "kebakaran hutan": {
+        "synonyms": ["kebakaran hutan", "karhutla", "titik api", "titik panas", "hotspot", "api hutan"],
+        "domains": ["sipongi.menlhk.go.id", "menlhk.go.id", "bmkg.go.id", "bnpb.go.id", "bps.go.id"],
+        "metric_terms": ["luas", "hektar", "hotspot", "sebaran"],
+        "institution": "SiPongi - Karhutla Monitoring Sistem KLHK",
+    },
+    "stunting": {
+        "synonyms": ["stunting", "gizi buruk", "tengkes", "ssgi", "ski"],
+        "domains": ["kemkes.go.id", "bps.go.id", "bkkbn.go.id"],
+        "metric_terms": ["prevalensi", "persentase", "balita", "survei"],
+        "institution": "Kementerian Kesehatan RI",
+    },
+    "inflasi": {
+        "synonyms": ["inflasi", "ihk", "indeks harga konsumen", "deflasi"],
+        "domains": ["bi.go.id", "bps.go.id", "kemenkeu.go.id"],
+        "metric_terms": ["ihk", "persentase", "yoy", "mtm"],
+        "institution": "Bank Indonesia",
+    },
+    "kemiskinan": {
+        "synonyms": ["kemiskinan", "garis kemiskinan", "penduduk miskin"],
+        "domains": ["bps.go.id", "kemensos.go.id", "bappenas.go.id"],
+        "metric_terms": ["persentase", "garis kemiskinan", "susenas"],
+        "institution": "Badan Pusat Statistik (BPS)",
+    },
+}
+
+
+def is_root_or_generic_landing(url: str) -> bool:
+    """Detect if a URL is merely a top-level root or shallow generic landing page
+    (e.g., bps.go.id/id, data.go.id/, indonesia.go.id/instantion) without deep content path."""
+    try:
+        parsed = urlparse(url)
+        clean_path = parsed.path.strip("/")
+        if not clean_path:
+            return True
+        shallow_segments = {
+            "", "id", "en", "home", "beranda", "index.html", "index.php",
+            "instantion", "tentang", "about", "contact", "hubungi-kami", "profil",
+        }
+        parts = [p.lower() for p in clean_path.split("/") if p]
+        if len(parts) == 1 and parts[0] in shallow_segments:
+            return True
+        if len(parts) == 2 and parts[0] in shallow_segments and parts[1] in shallow_segments:
+            return True
+        return False
+    except Exception:
+        return False
+
+
+def compute_topic_relevance(
+    title: str,
+    snippet: str,
+    url: str,
+    core_terms: list[str],
+    synonyms: list[str] | None = None,
+) -> float:
+    """Compute semantic and lexical overlap between search hit and core research topic.
+    Implements MindSearch and FlashRAG pre-fetch lexical anchor gate.
+    Returns score between 0.0 and 1.0."""
+    if not core_terms:
+        return 1.0
+
+    haystack = f"{title} {snippet} {url}".lower()
+    all_check_terms: set[str] = {t.lower().strip() for t in core_terms if t.strip()}
+    if synonyms:
+        all_check_terms.update(s.lower().strip() for s in synonyms if s.strip())
+
+    # Lexical Anchor Gate: at least one core term or synonym MUST match
+    matched = [t for t in all_check_terms if t in haystack]
+    if not matched:
+        return 0.0
+
+    title_lower = title.lower()
+    snippet_lower = snippet.lower()
+    url_lower = url.lower()
+
+    score = 0.40  # Base score for passing the lexical anchor
+    if any(t in title_lower for t in all_check_terms):
+        score += 0.35  # Strong boost for title match
+    if any(t in snippet_lower for t in all_check_terms):
+        score += 0.15  # Boost for snippet match
+    if any(t in url_lower for t in all_check_terms):
+        score += 0.10  # Boost for URL path match
+
+    return min(1.0, score)
+
+
+class DisambiguatedQuery(BaseModel):
+    """Normalized query parameters formulated by QueryDisambiguator."""
+
+    raw_query: str
+    core_entity_terms: list[str] = Field(default_factory=list)
+    context_terms: list[str] = Field(default_factory=list)
+    clean_topic_phrase: str = ""
+    synonyms: list[str] = Field(default_factory=list)
+    targeted_queries: list[str] = Field(default_factory=list)
+    anchored_domains: list[str] = Field(default_factory=list)
+    primary_institution: str = ""
+
+
+class QueryDisambiguator:
+    """Disambiguates conversational search prompts, extracts core topical anchors,
+    strips generic meta-tokens, and generates targeted search query strategies
+    based on Stanford STORM and GPT-Researcher principles."""
+
+    CONVERSATIONAL_PREFIXES = {
+        "carikan", "tolong", "coba", "aku", "saya", "kami", "kita", "kamu", "anda",
+        "berikan", "carikanlah", "tolonglah", "bagaimana", "mengapa", "apa",
+        "apakah", "siapa", "kapan", "dimana", "di mana", "mengenai", "tentang",
+        "seperti", "yaitu", "adalah", "ini", "itu", "tersebut", "secara", "pada",
+        "please", "find", "search", "give", "tell", "show", "what", "how", "who", "where",
+    }
+
+    GENERIC_META_TOKENS = {
+        "data", "informasi", "laporan", "statistik", "rekapitulasi", "rekap",
+        "angka", "tabel", "grafik", "diagram", "dokumen", "berkas", "file",
+        "terbaru", "terkini", "update", "teranyar", "mutakhir", "terupdate",
+        "pengertian", "definisi", "arti", "makna", "maksud", "contoh", "fungsi",
+        "manfaat", "tujuan", "metode", "cara", "analisis", "kajian", "studi",
+        "report", "overview", "info", "information", "statistics", "dataset",
+        "latest", "newest", "recent", "definition", "meaning", "analysis",
+    }
+
+    @classmethod
+    def disambiguate(cls, raw_query: str) -> DisambiguatedQuery:
+        """Formulate targeted query strategies without generic meta-token pollution."""
+        clean_raw = raw_query.strip().lower()
+        tokens = [w for w in re.findall(r"\b[\w\-]+\b", clean_raw) if len(w) > 1]
+
+        core_terms: list[str] = []
+        context_terms: list[str] = []
+        synonyms: list[str] = []
+        anchored_domains: list[str] = []
+        institution = ""
+        metric_terms: list[str] = []
+
+        # 1. Match against known topic authority anchors
+        for anchor_key, anchor_info in TOPIC_AUTHORITY_ANCHORS.items():
+            if anchor_key in clean_raw or any(syn in clean_raw for syn in anchor_info["synonyms"]):
+                if anchor_key not in core_terms:
+                    core_terms.append(anchor_key)
+                synonyms.extend(anchor_info["synonyms"])
+                anchored_domains.extend(anchor_info["domains"])
+                metric_terms.extend(anchor_info.get("metric_terms", []))
+                if not institution:
+                    institution = anchor_info.get("institution", "")
+
+        # 2. Filter remaining tokens into core vs context vs meta
+        for t in tokens:
+            if t in cls.CONVERSATIONAL_PREFIXES:
+                continue
+            if t in cls.GENERIC_META_TOKENS:
+                continue
+            # Check if t is temporal or geographic
+            if re.match(r"^20\d\d$", t) or t in ("tahun", "terakhir", "indonesia", "nasional", "provinsi"):
+                if t not in context_terms:
+                    context_terms.append(t)
+            elif t not in core_terms:
+                core_terms.append(t)
+
+        if not core_terms:
+            # Fallback if query was entirely meta words
+            core_terms = [t for t in tokens if t not in cls.CONVERSATIONAL_PREFIXES]
+            if not core_terms:
+                core_terms = ["riset"]
+
+        clean_topic = " ".join(core_terms + context_terms)
+        core_quoted = f'"{core_terms[0]}"' if core_terms else clean_topic
+
+        # Formulate targeted query list (Stanford STORM perspective pattern)
+        metrics_str = f"({' OR '.join(metric_terms[:3])})" if metric_terms else "luas OR angka"
+        ctx_str = " ".join(context_terms)
+
+        targeted: list[str] = []
+        # Target 1: Official government scoped query with metric expansion & definition exclusion
+        targeted.append(f"{core_quoted} {metrics_str} {ctx_str} site:go.id -pengertian -definisi -kamus".strip())
+
+        # Target 2: Anchored primary portal query (if known authority exists)
+        if anchored_domains:
+            prim_dom = anchored_domains[0]
+            targeted.append(f"site:{prim_dom} {core_quoted} {ctx_str}".strip())
+
+        # Target 3: Broad official fallback
+        targeted.append(f"{core_quoted} {clean_topic} resmi".strip())
+
+        return DisambiguatedQuery(
+            raw_query=raw_query,
+            core_entity_terms=core_terms,
+            context_terms=context_terms,
+            clean_topic_phrase=clean_topic,
+            synonyms=list(dict.fromkeys(synonyms)),
+            targeted_queries=targeted,
+            anchored_domains=list(dict.fromkeys(anchored_domains)),
+            primary_institution=institution,
+        )
 
 
 class OfficialDomainScorer:
@@ -548,7 +755,7 @@ class WebScout:
     async def _get_client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
             headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 ScrpcyAcademic/1.0",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
                 "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
                 "Accept-Language": "id,en-US;q=0.9,en;q=0.8",
             }
@@ -655,23 +862,32 @@ class WebScout:
         target_official_domains: set[str] | None = None,
         custom_whitelist: set[str] | None = None,
     ) -> list[WebSearchResult]:
-        """Search authoritative web resources via Bing with Yahoo and DuckDuckGo fallbacks."""
+        """Search authoritative web resources using QueryDisambiguator, Cascaded Waterfall filtering,
+        and multi-engine fallbacks (Bing, Yahoo, DuckDuckGo)."""
         client = await self._get_client()
+        disambiguated = QueryDisambiguator.disambiguate(query)
+        primary_query = disambiguated.targeted_queries[0] if disambiguated.targeted_queries else query
+
         raw_hits: list[tuple[str, str, str]] = []
 
         # 1. Primary: Bing HTML search
         try:
-            resp = await client.get("https://www.bing.com/search", params={"q": query})
+            resp = await client.get("https://www.bing.com/search", params={"q": primary_query})
             text = getattr(resp, "text", "")
             if isinstance(text, str) and text.strip():
                 raw_hits = self._parse_bing_results(text)
+            if not raw_hits and primary_query != query:
+                resp = await client.get("https://www.bing.com/search", params={"q": query})
+                text = getattr(resp, "text", "")
+                if isinstance(text, str) and text.strip():
+                    raw_hits = self._parse_bing_results(text)
         except Exception as b_err:
             logger.debug(f"Bing search failed, falling back: {b_err}")
 
         # 2. Secondary fallback: Yahoo HTML search
         if not raw_hits:
             try:
-                resp = await client.get("https://search.yahoo.com/search", params={"q": query})
+                resp = await client.get("https://search.yahoo.com/search", params={"q": primary_query})
                 text = getattr(resp, "text", "")
                 if isinstance(text, str) and text.strip():
                     raw_hits = self._parse_yahoo_results(text)
@@ -682,24 +898,55 @@ class WebScout:
         if not raw_hits:
             try:
                 search_url = "https://html.duckduckgo.com/html/"
-                data = {"q": query, "b": "", "kl": ""}
+                data = {"q": primary_query, "b": "", "kl": ""}
                 resp = await client.post(search_url, data=data)
                 text = getattr(resp, "text", "")
                 if isinstance(text, str) and text.strip():
                     raw_hits = self._parse_ddg_results(text)
+                if not raw_hits and primary_query != query:
+                    data = {"q": query, "b": "", "kl": ""}
+                    resp = await client.post(search_url, data=data)
+                    text = getattr(resp, "text", "")
+                    if isinstance(text, str) and text.strip():
+                        raw_hits = self._parse_ddg_results(text)
             except Exception as ddg_err:
                 logger.debug(f"DuckDuckGo search failed: {ddg_err}")
+
+        # Merge anchored domains if available
+        effective_target_domains = set(target_official_domains or [])
+        if disambiguated.anchored_domains:
+            effective_target_domains.update(disambiguated.anchored_domains)
 
         candidates: list[WebSearchResult] = []
         for title_text, clean_url, snippet_text in raw_hits:
             auth = OfficialDomainFilter.evaluate(
                 clean_url,
-                target_official_domains=target_official_domains,
+                target_official_domains=effective_target_domains or None,
                 custom_whitelist=custom_whitelist,
             )
 
-            # Skip outright spam or content farm domains (score < 0.20)
-            if auth.authority_score < 0.20 and require_official:
+            # Compute semantic/lexical overlap against core topic terms (MindSearch pattern)
+            relevance = compute_topic_relevance(
+                title=title_text,
+                snippet=snippet_text,
+                url=clean_url,
+                core_terms=disambiguated.core_entity_terms,
+                synonyms=disambiguated.synonyms,
+            )
+
+            # Detect root or generic landing page (e.g. bps.go.id/id, data.go.id/)
+            is_root = is_root_or_generic_landing(clean_url)
+            if is_root and relevance < 0.70:
+                relevance = 0.0
+
+            # Cascaded Waterfall Scoring (FlashRAG formula)
+            if relevance >= 0.30:
+                final_score = relevance * (1.0 + 0.5 * auth.authority_score)
+            else:
+                final_score = 0.0
+
+            # Skip spam, content farms, or candidates that failed relevance gating
+            if require_official and (auth.authority_score < 0.20 or final_score <= 0.0):
                 continue
 
             candidates.append(WebSearchResult(
@@ -712,16 +959,18 @@ class WebScout:
                 institution=auth.institution_name,
                 authority_tier=auth.authority_tier,
                 reasons=auth.reasons,
+                relevance_score=relevance,
+                final_score=final_score,
             ))
 
-        # Two-stage re-ranking: prioritize official sources, then descending authority score
-        candidates.sort(key=lambda r: (r.is_official, r.authority_score), reverse=True)
+        # Re-rank by official status, final score, and authority score
+        candidates.sort(key=lambda r: (r.is_official, r.final_score, r.authority_score), reverse=True)
 
         if require_official:
-            official_candidates = [c for c in candidates if c.is_official]
+            official_candidates = [c for c in candidates if c.is_official and c.final_score > 0.0]
             if official_candidates:
                 return official_candidates[:limit]
-            return [c for c in candidates if c.authority_score >= 0.50][:limit]
+            return [c for c in candidates if c.authority_score >= 0.50 and c.final_score > 0.0][:limit]
 
         return candidates[:limit]
 
@@ -732,6 +981,7 @@ class WebScout:
         save_to_cache: bool = True,
         require_official: bool = True,
         vector_vault: Any | None = None,
+        required_topic_terms: list[str] | None = None,
     ) -> ParsedDocument:
         """Fetch official web page, extract visuals, format academic Markdown, and persist to vault."""
         client = await self._get_client()
@@ -813,6 +1063,15 @@ class WebScout:
             metadata=metadata,
             images=substantive_images,
         )
+
+        # MindSearch Post-Fetch Content Gate: verify topic relevance before persisting
+        if required_topic_terms:
+            content_lower = f"{title} {full_markdown}".lower()
+            has_topic = any(term.lower() in content_lower for term in required_topic_terms)
+            if not has_topic and len(full_markdown) < 500:
+                raise OfficialSourceRejectedError(
+                    f"Content at '{url}' does not discuss requested topic terms: {required_topic_terms}"
+                )
 
         # Save HTML snapshot in vault/web/
         snapshot_filename = f"{cite_key}.html"

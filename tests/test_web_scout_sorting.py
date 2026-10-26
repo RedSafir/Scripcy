@@ -176,3 +176,139 @@ class TestWebScoutReranking:
         assert len(report.directed_search_queries) > 0
         assert len(report.directed_web_queries) > 0
         assert any("resmi" in q or "statistik" in q or "pemerintah" in q for q in report.directed_web_queries)
+
+
+class TestQueryDisambiguator:
+    """Tests for Stanford STORM and GPT-Researcher inspired QueryDisambiguator."""
+
+    def test_strips_conversational_and_generic_tokens(self):
+        from scrpcy.core.web_scout import QueryDisambiguator
+        d = QueryDisambiguator.disambiguate("carikan aku data terbaru karhutla di indonesia")
+        # Core entity must be isolated to karhutla
+        assert "karhutla" in d.core_entity_terms
+        assert "indonesia" in d.context_terms
+        # Generic meta-tokens like 'data' and 'terbaru' must NOT be in core entities
+        assert "data" not in d.core_entity_terms
+        assert "terbaru" not in d.core_entity_terms
+        assert "carikan" not in d.core_entity_terms
+        assert "aku" not in d.core_entity_terms
+
+        # Generated queries must contain domain operators and metric indicators
+        assert len(d.targeted_queries) >= 2
+        assert any("site:go.id" in q for q in d.targeted_queries)
+        assert any("-pengertian" in q for q in d.targeted_queries)
+
+    def test_anchors_karhutla_to_sipongi_and_klhk(self):
+        from scrpcy.core.web_scout import QueryDisambiguator
+        d = QueryDisambiguator.disambiguate("rekapitulasi titik api karhutla 2024")
+        assert "karhutla" in d.core_entity_terms
+        assert any("sipongi.menlhk.go.id" in dom for dom in d.anchored_domains)
+        assert "kebakaran hutan" in d.synonyms
+        assert any("site:sipongi.menlhk.go.id" in q for q in d.targeted_queries)
+
+
+class TestCascadedWaterfallAndRelevanceGate:
+    """Tests for FlashRAG and MindSearch inspired cascaded relevance gating."""
+
+    def test_root_landing_page_detection(self):
+        from scrpcy.core.web_scout import is_root_or_generic_landing
+        # Generic root / shallow pages must return True
+        assert is_root_or_generic_landing("https://www.bps.go.id/") is True
+        assert is_root_or_generic_landing("https://www.bps.go.id/id") is True
+        assert is_root_or_generic_landing("https://data.go.id/") is True
+        assert is_root_or_generic_landing("https://indonesia.go.id/instantion") is True
+
+        # Deep substantive content pages must return False
+        assert is_root_or_generic_landing("https://sipongi.menlhk.go.id/publikasi/statistik-2024") is False
+        assert is_root_or_generic_landing("https://www.bps.go.id/id/statistics-table/2/MTA0MSMy/luas-kebakaran-hutan-dan-lahan.html") is False
+
+    def test_topic_relevance_computation(self):
+        from scrpcy.core.web_scout import compute_topic_relevance
+        # Completely irrelevant page
+        rel_zero = compute_topic_relevance(
+            title="Badan Pusat Statistik Indonesia",
+            snippet="Portal resmi BPS RI AllStats data dan sensus penduduk.",
+            url="https://www.bps.go.id/id",
+            core_terms=["karhutla"],
+        )
+        assert rel_zero == 0.0
+
+        # Highly relevant page
+        rel_high = compute_topic_relevance(
+            title="SiPongi KLHK - Rekapitulasi Luas Kebakaran Hutan dan Lahan",
+            snippet="Data resmi luasan karhutla tahun 2024 per provinsi di Indonesia.",
+            url="https://sipongi.menlhk.go.id/publikasi/karhutla-2024",
+            core_terms=["karhutla"],
+            synonyms=["kebakaran hutan"],
+        )
+        assert rel_high >= 0.85
+
+    @pytest.mark.asyncio
+    async def test_rejects_irrelevant_official_homepage_in_search(self, tmp_path: Path):
+        from scrpcy.core.web_scout import WebScout
+        mock_html = """
+        <div class="result">
+            <h2 class="result__title"><a href="https://duckduckgo.com/l/?uddg=https%3A%2F%2Fwww.bps.go.id%2Fid">Badan Pusat Statistik Indonesia</a></h2>
+            <div class="result__snippet">Portal resmi Badan Pusat Statistik untuk statistik ekonomi dan sensus.</div>
+            <a class="result__url" href="https://duckduckgo.com/l/?uddg=https%3A%2F%2Fwww.bps.go.id%2Fid"></a>
+        </div>
+        <div class="result">
+            <h2 class="result__title"><a href="https://duckduckgo.com/l/?uddg=https%3A%2F%2Fsipongi.menlhk.go.id%2Fpublikasi%2Fluas-karhutla-2024">SiPongi KLHK - Rekapitulasi Luas Karhutla Indonesia 2024</a></h2>
+            <div class="result__snippet">Data rekapitulasi luas area kebakaran hutan dan lahan tahun 2024.</div>
+            <a class="result__url" href="https://duckduckgo.com/l/?uddg=https%3A%2F%2Fsipongi.menlhk.go.id%2Fpublikasi%2Fluas-karhutla-2024"></a>
+        </div>
+        """
+
+        ws = WorkspaceManager(root_dir=tmp_path)
+        ws.ensure_directories()
+        scout = WebScout(workspace=ws)
+
+        mock_resp = AsyncMock()
+        mock_resp.text = mock_html
+        mock_resp.raise_for_status = lambda: None
+
+        with patch.object(scout, "_get_client") as mock_client_fn:
+            mock_client = AsyncMock()
+            mock_client.post = AsyncMock(return_value=mock_resp)
+            mock_client_fn.return_value = mock_client
+
+            results = await scout.search_official_web("carikan aku data terbaru karhutla di indonesia", limit=5, require_official=True)
+
+            # bps.go.id/id MUST be dropped because it is a generic root homepage with 0 relevance to karhutla
+            # only SiPongi KLHK should survive
+            assert len(results) == 1
+            assert results[0].domain == "sipongi.menlhk.go.id"
+            assert "karhutla" in results[0].title.lower()
+
+    @pytest.mark.asyncio
+    async def test_post_fetch_verification_rejects_missing_topic(self, tmp_path: Path):
+        from scrpcy.core.web_scout import WebScout
+        from scrpcy.exceptions import OfficialSourceRejectedError
+
+        ws = WorkspaceManager(root_dir=tmp_path)
+        ws.ensure_directories()
+        scout = WebScout(workspace=ws)
+
+        # Mock HTML for a shell page with no karhutla text
+        mock_shell_html = """
+        <html>
+            <head><title>Portal Resmi</title></head>
+            <body><p>Selamat datang di portal informasi resmi.</p></body>
+        </html>
+        """
+        mock_resp = AsyncMock()
+        mock_resp.text = mock_shell_html
+        mock_resp.url = "https://kementerian.go.id/portal"
+        mock_resp.raise_for_status = lambda: None
+
+        with patch.object(scout, "_get_client") as mock_client_fn:
+            mock_client = AsyncMock()
+            mock_client.get = AsyncMock(return_value=mock_resp)
+            mock_client_fn.return_value = mock_client
+
+            with pytest.raises(OfficialSourceRejectedError) as exc_info:
+                await scout.ingest_url(
+                    "https://kementerian.go.id/portal",
+                    required_topic_terms=["karhutla", "kebakaran"],
+                )
+            assert "does not discuss requested topic terms" in str(exc_info.value)

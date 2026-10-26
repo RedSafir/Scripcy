@@ -43,6 +43,7 @@ from scrpcy.core.tasks import TaskInfo, TaskManager
 from scrpcy.core.tracker import TokenTracker
 from scrpcy.core.vault import VaultItem, VaultManager
 from scrpcy.core.verifier import FactChecker, VerificationReport
+from scrpcy.core.web_scout import QueryDisambiguator
 from scrpcy.core.workspace import WorkspaceManager
 
 from scrpcy.studio.signals import (
@@ -554,10 +555,15 @@ class StudioProcessingMixin:
                     )
                     if w_hits:
                         vec_vault = getattr(self.vault_manager, "vector_vault", None) if self.vault_manager else None
+                        disambiguated = QueryDisambiguator.disambiguate(clean_query)
                         for wh in w_hits[:2]:
                             try:
                                 parsed_w = w_loop.run_until_complete(
-                                    self.web_scout.ingest_url(wh.url, vector_vault=vec_vault)
+                                    self.web_scout.ingest_url(
+                                        wh.url,
+                                        vector_vault=vec_vault,
+                                        required_topic_terms=disambiguated.core_entity_terms,
+                                    )
                                 )
                                 if parsed_w and parsed_w.metadata and parsed_w.metadata.cite_key:
                                     ingested_stems.append(parsed_w.metadata.cite_key)
