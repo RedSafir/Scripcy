@@ -11,15 +11,15 @@ import pymupdf
 import pytest
 import yaml
 
-from scrpcy.core.extractor import (
+from scripcy.core.extractor import (
     GeminiMetadataExtractor,
     MockMetadataExtractor,
     clean_json_text,
 )
-from scrpcy.core.models import DocumentMetadata, ParsedDocument
-from scrpcy.core.parser import DocumentParser, parse_pdf
-from scrpcy.core.workspace import WorkspaceManager
-from scrpcy.exceptions import (
+from scripcy.core.models import DocumentMetadata, ParsedDocument
+from scripcy.core.parser import DocumentParser, parse_pdf
+from scripcy.core.workspace import WorkspaceManager
+from scripcy.exceptions import (
     CorruptedPDFError,
     MetadataExtractionError,
     PDFParseError,

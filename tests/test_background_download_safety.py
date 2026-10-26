@@ -6,12 +6,12 @@ from typing import Any
 from unittest.mock import MagicMock, patch
 
 from rich.console import Console
-from scrpcy.cli_studio import CLIStudio
-from scrpcy.core.config import ScrpcyConfig
-from scrpcy.core.engine import LLMEngine
-from scrpcy.core.project import ProjectInfo, ProjectManager
-from scrpcy.core.tasks import TaskManager
-from scrpcy.core.workspace import WorkspaceManager
+from scripcy.cli_studio import CLIStudio
+from scripcy.core.config import ScripcyConfig
+from scripcy.core.engine import LLMEngine
+from scripcy.core.project import ProjectInfo, ProjectManager
+from scripcy.core.tasks import TaskManager
+from scripcy.core.workspace import WorkspaceManager
 
 
 class MockStreamChunk:
@@ -33,7 +33,7 @@ def test_background_scout_prevents_cascading_refinement_and_fake_evidence(
     old_cache = ws.cache_dir / "Unrelated_Paper_Old.md"
     old_cache.write_text("# Old Paper\nUnrelated content about algorithms.", encoding="utf-8")
 
-    cfg = ScrpcyConfig(workspace_path=str(ws.root_dir))
+    cfg = ScripcyConfig(workspace_path=str(ws.root_dir))
     cfg.api_keys["gemini"] = "mock_key"
     console = Console(file=io.StringIO(), force_terminal=True, color_system=None)
     pm = ProjectManager(registry_file=tmp_path / "reg1.json")
@@ -74,7 +74,7 @@ def test_chat_error_cancels_background_task(tmp_path: Path) -> None:
     ws = WorkspaceManager(root_dir=tmp_path / "test_ws2")
     ws.ensure_directories()
 
-    cfg = ScrpcyConfig(workspace_path=str(ws.root_dir))
+    cfg = ScripcyConfig(workspace_path=str(ws.root_dir))
     cfg.api_keys["gemini"] = "mock_key"
     console = Console(file=io.StringIO(), force_terminal=True, color_system=None)
     pm = ProjectManager(registry_file=tmp_path / "reg2.json")

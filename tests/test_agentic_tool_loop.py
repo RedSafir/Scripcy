@@ -1,4 +1,4 @@
-"""Unit tests for the autonomous agentic tool execution loop and scrpcy_manual skill."""
+"""Unit tests for the autonomous agentic tool execution loop and scripcy_manual skill."""
 
 import asyncio
 import io
@@ -9,13 +9,13 @@ from unittest.mock import MagicMock, patch
 import pytest
 from rich.console import Console
 
-from scrpcy.cli_studio import CLIStudio
-from scrpcy.core.config import ScrpcyConfig
-from scrpcy.core.engine import LLMEngine
-from scrpcy.core.project import ProjectManager
-from scrpcy.core.scout import LiteratureScout, ScoutResult
-from scrpcy.core.skills import DEFAULT_SCRPCY_MANUAL_PROMPT, SkillsLoader
-from scrpcy.core.workspace import WorkspaceManager
+from scripcy.cli_studio import CLIStudio
+from scripcy.core.config import ScripcyConfig
+from scripcy.core.engine import LLMEngine
+from scripcy.core.project import ProjectManager
+from scripcy.core.scout import LiteratureScout, ScoutResult
+from scripcy.core.skills import DEFAULT_SCRIPCY_MANUAL_PROMPT, SkillsLoader
+from scripcy.core.workspace import WorkspaceManager
 
 
 class MockStreamChunk:
@@ -23,8 +23,8 @@ class MockStreamChunk:
         self.choices = [MagicMock(delta=MagicMock(content=content))]
 
 
-def test_scrpcy_manual_is_default_skill(tmp_path: Path) -> None:
-    """Verify scrpcy_manual is auto-seeded as default skill and obsolete personas cleaned up."""
+def test_scripcy_manual_is_default_skill(tmp_path: Path) -> None:
+    """Verify scripcy_manual is auto-seeded as default skill and obsolete personas cleaned up."""
     skills_dir = tmp_path / "skills"
     skills_dir.mkdir(parents=True, exist_ok=True)
     (skills_dir / "academic_writer.md").write_text("old", encoding="utf-8")
@@ -33,11 +33,11 @@ def test_scrpcy_manual_is_default_skill(tmp_path: Path) -> None:
     skills = loader.list_skills()
     names = [s.name for s in skills]
 
-    assert "scrpcy_manual" in names
+    assert "scripcy_manual" in names
     assert "academic_writer" not in names
     assert not (skills_dir / "academic_writer.md").exists()
 
-    manual = loader.get_skill("scrpcy_manual")
+    manual = loader.get_skill("scripcy_manual")
     assert "/vault read" in manual.system_prompt
     assert "/vault list" in manual.system_prompt
     assert "/scout" in manual.system_prompt
@@ -47,7 +47,7 @@ def test_agentic_loop_internal_vault_read(
     temp_workspace: WorkspaceManager,
     tmp_path: Path,
 ) -> None:
-    """When AI requests an internal read tool (/vault read 1), Scrpcy reads it, shows 'Membaca' & 'Menganalisis', and completes."""
+    """When AI requests an internal read tool (/vault read 1), Scripcy reads it, shows 'Membaca' & 'Menganalisis', and completes."""
     temp_workspace.save_to_cache(
         "attention_paper.md",
         "# Attention Is All You Need\nVaswani et al.\n\nMulti-Head Attention projects queries, keys, and values.",
@@ -56,7 +56,7 @@ def test_agentic_loop_internal_vault_read(
     console = Console(file=io.StringIO(), force_terminal=True, color_system=None)
     pm = ProjectManager(registry_file=tmp_path / "reg.json")
     proj = pm.create_project("thesis", temp_workspace.root_dir)
-    cfg = ScrpcyConfig(workspace_path=str(temp_workspace.root_dir))
+    cfg = ScripcyConfig(workspace_path=str(temp_workspace.root_dir))
 
     call_count = 0
 
@@ -64,7 +64,7 @@ def test_agentic_loop_internal_vault_read(
         nonlocal call_count
         call_count += 1
         if call_count == 1:
-            yield MockStreamChunk("```scrpcy\n/vault read 1\n```")
+            yield MockStreamChunk("```scripcy\n/vault read 1\n```")
         else:
             yield MockStreamChunk("Berdasarkan Paper #1 Vaswani et al., Multi-Head Attention menggunakan proyeksi matriks linier.")
 
@@ -98,11 +98,11 @@ def test_agentic_loop_internal_web_scout(
     temp_workspace: WorkspaceManager,
     tmp_path: Path,
 ) -> None:
-    """When AI requests an internal web tool (/web https://www.bps.go.id/inflasi), Scrpcy ingests it, shows live indicators, and completes."""
+    """When AI requests an internal web tool (/web https://www.bps.go.id/inflasi), Scripcy ingests it, shows live indicators, and completes."""
     console = Console(file=io.StringIO(), force_terminal=True, color_system=None)
     pm = ProjectManager(registry_file=tmp_path / "reg.json")
     proj = pm.create_project("inflasi_study", temp_workspace.root_dir)
-    cfg = ScrpcyConfig(workspace_path=str(temp_workspace.root_dir))
+    cfg = ScripcyConfig(workspace_path=str(temp_workspace.root_dir))
 
     call_count = 0
 
@@ -110,7 +110,7 @@ def test_agentic_loop_internal_web_scout(
         nonlocal call_count
         call_count += 1
         if call_count == 1:
-            yield MockStreamChunk("```scrpcy\n/web https://www.bps.go.id/inflasi-2023\n```")
+            yield MockStreamChunk("```scripcy\n/web https://www.bps.go.id/inflasi-2023\n```")
         else:
             yield MockStreamChunk("Berdasarkan rilis resmi BPS 2023, laju inflasi tercatat 2,61 persen. [status: ok]")
 
@@ -168,7 +168,7 @@ def test_agentic_loop_direct_final_response(
     console = Console(file=io.StringIO(), force_terminal=True, color_system=None)
     pm = ProjectManager(registry_file=tmp_path / "reg.json")
     proj = pm.create_project("thesis", temp_workspace.root_dir)
-    cfg = ScrpcyConfig(workspace_path=str(temp_workspace.root_dir))
+    cfg = ScripcyConfig(workspace_path=str(temp_workspace.root_dir))
 
     async def mock_acompletion(**kwargs: Any):
         yield MockStreamChunk("Ini adalah jawaban konseptual langsung tanpa perlu membaca file lain.")
@@ -199,11 +199,11 @@ def test_auto_scout_when_evidence_is_empty(
     temp_workspace: WorkspaceManager,
     tmp_path: Path,
 ) -> None:
-    """When vault has no evidence, Scrpcy proposes a scout plan, user confirms (Y), auto-ingests, and completes."""
+    """When vault has no evidence, Scripcy proposes a scout plan, user confirms (Y), auto-ingests, and completes."""
     console = Console(file=io.StringIO(), force_terminal=True, color_system=None)
     pm = ProjectManager(registry_file=tmp_path / "reg.json")
     proj = pm.create_project("thesis", temp_workspace.root_dir)
-    cfg = ScrpcyConfig(workspace_path=str(temp_workspace.root_dir))
+    cfg = ScripcyConfig(workspace_path=str(temp_workspace.root_dir))
 
     async def mock_acompletion(**kwargs: Any):
         yield MockStreamChunk("LoRA mengoptimalkan bobot matriks rank rendah secara efisien.")
@@ -258,7 +258,7 @@ def test_auto_scout_user_declines(
     console = Console(file=io.StringIO(), force_terminal=True, color_system=None)
     pm = ProjectManager(registry_file=tmp_path / "reg.json")
     proj = pm.create_project("thesis", temp_workspace.root_dir)
-    cfg = ScrpcyConfig(workspace_path=str(temp_workspace.root_dir))
+    cfg = ScripcyConfig(workspace_path=str(temp_workspace.root_dir))
 
     async def mock_acompletion(**kwargs: Any):
         yield MockStreamChunk("Jawaban umum tanpa data vault.")
@@ -291,7 +291,7 @@ def test_auto_scout_timeout_falls_back_to_background(
     console = Console(file=io.StringIO(), force_terminal=True, color_system=None)
     pm = ProjectManager(registry_file=tmp_path / "reg.json")
     proj = pm.create_project("thesis", temp_workspace.root_dir)
-    cfg = ScrpcyConfig(workspace_path=str(temp_workspace.root_dir))
+    cfg = ScripcyConfig(workspace_path=str(temp_workspace.root_dir))
 
     async def mock_acompletion(**kwargs: Any):
         yield MockStreamChunk("Jawaban sementara saat unduhan berjalan di background.")
@@ -322,7 +322,7 @@ def test_auto_scout_timeout_falls_back_to_background(
 
 def test_interactive_scout_confirm_choices() -> None:
     """Test interactive_scout_confirm across all 3 choices according to DESIGN.md."""
-    from scrpcy.ui.interactive import interactive_scout_confirm
+    from scripcy.ui.interactive import interactive_scout_confirm
 
     console = Console(file=io.StringIO(), force_terminal=True)
 
@@ -359,12 +359,12 @@ def test_auto_scout_detach_with_esc(
     tmp_path: Path,
 ) -> None:
     """When user presses Esc during scouting, session is detached and task continues in background."""
-    from scrpcy.studio.signals import SessionDetachSignal
+    from scripcy.studio.signals import SessionDetachSignal
 
     console = Console(file=io.StringIO(), force_terminal=True, color_system=None)
     pm = ProjectManager(registry_file=tmp_path / "reg.json")
     proj = pm.create_project("thesis", temp_workspace.root_dir)
-    cfg = ScrpcyConfig(workspace_path=str(temp_workspace.root_dir))
+    cfg = ScripcyConfig(workspace_path=str(temp_workspace.root_dir))
 
     engine = LLMEngine(config=cfg)
     studio = CLIStudio(
@@ -404,7 +404,7 @@ def test_auto_scout_cancelled_with_ctrl_c(
     console = Console(file=io.StringIO(), force_terminal=True, color_system=None)
     pm = ProjectManager(registry_file=tmp_path / "reg.json")
     proj = pm.create_project("thesis", temp_workspace.root_dir)
-    cfg = ScrpcyConfig(workspace_path=str(temp_workspace.root_dir))
+    cfg = ScripcyConfig(workspace_path=str(temp_workspace.root_dir))
 
     engine = LLMEngine(config=cfg)
     studio = CLIStudio(
@@ -467,7 +467,7 @@ def test_vault_remove_internal_tool(
     console = Console(file=io.StringIO(), force_terminal=True, color_system=None)
     pm = ProjectManager(registry_file=tmp_path / "reg.json")
     proj = pm.create_project("thesis", temp_workspace.root_dir)
-    cfg = ScrpcyConfig(workspace_path=str(temp_workspace.root_dir))
+    cfg = ScripcyConfig(workspace_path=str(temp_workspace.root_dir))
 
     engine = LLMEngine(config=cfg)
     studio = CLIStudio(
@@ -551,7 +551,7 @@ def test_auto_scout_timeout_consults_ai_with_background_notice(
     console = Console(file=io.StringIO(), force_terminal=True, color_system=None)
     pm = ProjectManager(registry_file=tmp_path / "reg.json")
     proj = pm.create_project("thesis", temp_workspace.root_dir)
-    cfg = ScrpcyConfig(workspace_path=str(temp_workspace.root_dir))
+    cfg = ScripcyConfig(workspace_path=str(temp_workspace.root_dir))
 
     received_prompts = []
 
@@ -594,7 +594,7 @@ def test_agentic_loop_internal_vault_remove(
     temp_workspace: WorkspaceManager,
     tmp_path: Path,
 ) -> None:
-    """When AI requests an internal remove tool (/vault remove 1), Scrpcy archives it, shows 'Mengarsipkan' & 'Menganalisis', and completes."""
+    """When AI requests an internal remove tool (/vault remove 1), Scripcy archives it, shows 'Mengarsipkan' & 'Menganalisis', and completes."""
     (temp_workspace.vault_dir / "ocean_paper.pdf").write_bytes(b"%PDF-1.4 dummy")
     temp_workspace.save_to_cache(
         "ocean_paper.md",
@@ -604,7 +604,7 @@ def test_agentic_loop_internal_vault_remove(
     console = Console(file=io.StringIO(), force_terminal=True, color_system=None)
     pm = ProjectManager(registry_file=tmp_path / "reg.json")
     proj = pm.create_project("thesis", temp_workspace.root_dir)
-    cfg = ScrpcyConfig(workspace_path=str(temp_workspace.root_dir))
+    cfg = ScripcyConfig(workspace_path=str(temp_workspace.root_dir))
 
     call_count = 0
 
@@ -612,7 +612,7 @@ def test_agentic_loop_internal_vault_remove(
         nonlocal call_count
         call_count += 1
         if call_count == 1:
-            yield MockStreamChunk("```scrpcy\n/vault remove 1\n```")
+            yield MockStreamChunk("```scripcy\n/vault remove 1\n```")
         else:
             yield MockStreamChunk("Dokumen ocean iron cycle telah disingkirkan dari analisis utama.")
 
@@ -651,7 +651,7 @@ def test_detailed_background_chat_task_logs(
     console = Console(file=io.StringIO(), force_terminal=True, color_system=None)
     pm = ProjectManager(registry_file=tmp_path / "reg.json")
     proj = pm.create_project("thesis", temp_workspace.root_dir)
-    cfg = ScrpcyConfig(workspace_path=str(temp_workspace.root_dir))
+    cfg = ScripcyConfig(workspace_path=str(temp_workspace.root_dir))
 
     async def mock_acompletion(**kwargs: Any):
         yield MockStreamChunk("Ini adalah sintesis lengkap dari respons AI latar belakang.")
@@ -698,7 +698,7 @@ def test_bare_line_internal_tool_call_is_hidden_and_executed(
     console = Console(file=io.StringIO(), force_terminal=True, color_system=None)
     pm = ProjectManager(registry_file=tmp_path / "reg.json")
     proj = pm.create_project("thesis", temp_workspace.root_dir)
-    cfg = ScrpcyConfig(workspace_path=str(temp_workspace.root_dir))
+    cfg = ScripcyConfig(workspace_path=str(temp_workspace.root_dir))
 
     call_count = 0
 
@@ -737,14 +737,14 @@ def test_sanitize_final_response_strips_slash_commands_and_prompts(
 ) -> None:
     """Ensure _sanitize_final_response removes ambiguous slash commands, prompts, and code blocks from output."""
     console = Console(file=io.StringIO(), force_terminal=True, color_system=None)
-    cfg = ScrpcyConfig(workspace_path=str(temp_workspace.root_dir))
+    cfg = ScripcyConfig(workspace_path=str(temp_workspace.root_dir))
     studio = CLIStudio(workspace=temp_workspace, config=cfg, console=console)
 
     raw_response = (
         "[STATUS: OK]\n"
         "Model transformer menunjukkan performa superior (Vaswani et al., 2017).\n\n"
         "Ketik /scout transformer efficiency untuk mencari literatur pendukung.\n\n"
-        "```scrpcy\n"
+        "```scripcy\n"
         "/scout deep learning\n"
         "/vault read 2\n"
         "```\n\n"
@@ -758,7 +758,7 @@ def test_sanitize_final_response_strips_slash_commands_and_prompts(
     assert "/scout" not in cleaned
     assert "/vault read" not in cleaned
     assert "Ketik /scout" not in cleaned
-    assert "```scrpcy" not in cleaned
+    assert "```scripcy" not in cleaned
 
 
 def test_format_vault_citation_guide_injects_metadata(
@@ -774,7 +774,7 @@ def test_format_vault_citation_guide_injects_metadata(
     console = Console(file=io.StringIO(), force_terminal=True, color_system=None)
     pm = ProjectManager(registry_file=tmp_path / "reg.json")
     proj = pm.create_project("thesis", temp_workspace.root_dir)
-    cfg = ScrpcyConfig(workspace_path=str(temp_workspace.root_dir))
+    cfg = ScripcyConfig(workspace_path=str(temp_workspace.root_dir))
     studio = CLIStudio(workspace=temp_workspace, config=cfg, console=console, project_manager=pm)
     studio.open_project(proj)
 
@@ -798,7 +798,7 @@ def test_permanent_grounding_and_critic_badges_in_chat_history(
     console = Console(file=io.StringIO(), force_terminal=True, color_system=None)
     pm = ProjectManager(registry_file=tmp_path / "reg.json")
     proj = pm.create_project("thesis", temp_workspace.root_dir)
-    cfg = ScrpcyConfig(workspace_path=str(temp_workspace.root_dir))
+    cfg = ScripcyConfig(workspace_path=str(temp_workspace.root_dir))
 
     async def mock_acompletion(**kwargs: Any):
         yield MockStreamChunk("Berdasarkan (Vaswani, 2024), transformer mengandalkan mekanisme self-attention namun memiliki keterbatasan memori.")
@@ -850,7 +850,7 @@ def test_ask_ai_paywall_action_abstract_vs_alternative(
 ) -> None:
     """Verify _ask_ai_paywall_action queries LLM and parses JSON decision."""
     console = Console(file=io.StringIO(), force_terminal=True, color_system=None)
-    cfg = ScrpcyConfig(workspace_path=str(temp_workspace.root_dir))
+    cfg = ScripcyConfig(workspace_path=str(temp_workspace.root_dir))
 
     call_count = 0
     async def mock_acompletion(**kwargs: Any):
@@ -887,8 +887,8 @@ def test_citation_mapping_autodownload_and_paywall_ingest(
     tmp_path: Path,
 ) -> None:
     """When Devil's Advocate triggers needs_citation_mapping, mapped papers are auto-downloaded, paywalls evaluated, and evidence refreshed."""
-    from scrpcy.core.search import sanitize_filename
-    from scrpcy.core.critic import CritiqueReport
+    from scripcy.core.search import sanitize_filename
+    from scripcy.core.critic import CritiqueReport
 
     (temp_workspace.vault_dir / "seed_paper.pdf").write_bytes(b"%PDF-1.4 mock")
     temp_workspace.save_to_cache(
@@ -899,7 +899,7 @@ def test_citation_mapping_autodownload_and_paywall_ingest(
     console = Console(file=io.StringIO(), force_terminal=True, color_system=None)
     pm = ProjectManager(registry_file=tmp_path / "reg.json")
     proj = pm.create_project("thesis", temp_workspace.root_dir)
-    cfg = ScrpcyConfig(workspace_path=str(temp_workspace.root_dir))
+    cfg = ScripcyConfig(workspace_path=str(temp_workspace.root_dir))
 
     call_count = 0
     async def mock_acompletion(**kwargs: Any):
@@ -964,23 +964,23 @@ def test_configurable_agent_turns_in_config_and_studio(
     import pytest
 
     # 1. Config defaults and constraints
-    default_cfg = ScrpcyConfig()
+    default_cfg = ScripcyConfig()
     assert default_cfg.max_agent_turns == 15
 
-    custom_cfg = ScrpcyConfig(max_agent_turns=20)
+    custom_cfg = ScripcyConfig(max_agent_turns=20)
     assert custom_cfg.max_agent_turns == 20
 
     with pytest.raises(ValidationError):
-        ScrpcyConfig(max_agent_turns=0)
+        ScripcyConfig(max_agent_turns=0)
 
     with pytest.raises(ValidationError):
-        ScrpcyConfig(max_agent_turns=51)
+        ScripcyConfig(max_agent_turns=51)
 
     # 2. Studio commands test
     console = Console(file=io.StringIO(), force_terminal=True, color_system=None)
     pm = ProjectManager(registry_file=tmp_path / "reg.json")
     proj = pm.create_project("thesis", temp_workspace.root_dir)
-    cfg = ScrpcyConfig(workspace_path=str(temp_workspace.root_dir), max_agent_turns=15)
+    cfg = ScripcyConfig(workspace_path=str(temp_workspace.root_dir), max_agent_turns=15)
 
     studio = CLIStudio(
         workspace=temp_workspace,
@@ -1012,7 +1012,7 @@ def test_configurable_agent_turns_in_config_and_studio(
 
 def test_evidence_synthesizer_coverage_score():
     """Verify compute_coverage_score correctly distinguishes in-domain vs out-of-domain evidence."""
-    from scrpcy.core.engine import EvidenceSynthesizer, EvidenceChunk
+    from scripcy.core.engine import EvidenceSynthesizer, EvidenceChunk
 
     synth = EvidenceSynthesizer()
 
@@ -1036,7 +1036,7 @@ def test_evidence_synthesizer_coverage_score():
 
 def test_devils_advocate_directed_search_queries():
     """Verify DevilsAdvocate produces typed directed_search_queries for evidence gap filling."""
-    from scrpcy.core.critic import DevilsAdvocate
+    from scripcy.core.critic import DevilsAdvocate
 
     critic = DevilsAdvocate()
     query = "apa peran masyarakat peduli api dalam pencegahan karhutla"
@@ -1061,7 +1061,7 @@ def test_epistemic_exit_and_monotonic_locking(
     console = Console(file=io.StringIO(), force_terminal=True, color_system=None)
     pm = ProjectManager(registry_file=tmp_path / "reg.json")
     proj = pm.create_project("thesis", temp_workspace.root_dir)
-    cfg = ScrpcyConfig(workspace_path=str(temp_workspace.root_dir), max_agent_turns=10, max_refinement_turns=3)
+    cfg = ScripcyConfig(workspace_path=str(temp_workspace.root_dir), max_agent_turns=10, max_refinement_turns=3)
 
     call_count = 0
     async def mock_acompletion(**kwargs: Any):
@@ -1091,8 +1091,8 @@ def test_epistemic_exit_and_monotonic_locking(
 
 def test_factchecker_claim_caching_and_lexical_prefilter():
     """Verify FactChecker caches supported claims and uses 0-token lexical pre-filter for direct matches."""
-    from scrpcy.core.verifier import FactChecker, ClaimVerification
-    from scrpcy.core.engine import EvidenceChunk
+    from scripcy.core.verifier import FactChecker, ClaimVerification
+    from scripcy.core.engine import EvidenceChunk
 
     evidence = [
         EvidenceChunk(
@@ -1105,7 +1105,7 @@ def test_factchecker_claim_caching_and_lexical_prefilter():
 
     llm_called = False
     class MockEngine:
-        config = ScrpcyConfig()
+        config = ScripcyConfig()
         async def acompletion_fn(self, **kwargs):
             pass
 
@@ -1139,11 +1139,11 @@ def test_max_output_tokens_and_cumulative_token_telemetry(
     import pytest
 
     # 1. Config defaults and constraints
-    cfg = ScrpcyConfig()
+    cfg = ScripcyConfig()
     assert cfg.max_output_tokens == 8192
 
     with pytest.raises(ValidationError):
-        ScrpcyConfig(max_output_tokens=100)
+        ScripcyConfig(max_output_tokens=100)
 
     # 2. Settings command updates max_output_tokens
     console = Console(file=io.StringIO(), force_terminal=True, color_system=None)
@@ -1185,10 +1185,10 @@ def test_refinement_turns_and_prioritized_citation_mapping(
     tmp_path: Path,
 ):
     """Verify max_refinement_turns is configurable in settings and needs_citation_mapping triggers search."""
-    from scrpcy.core.search import sanitize_filename
+    from scripcy.core.search import sanitize_filename
 
     # 1. Config defaults
-    cfg = ScrpcyConfig()
+    cfg = ScripcyConfig()
     assert cfg.max_refinement_turns == 8
 
     # 2. Studio settings command

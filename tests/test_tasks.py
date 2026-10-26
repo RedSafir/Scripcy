@@ -6,7 +6,7 @@ import time
 
 import pytest
 
-from scrpcy.core.tasks import TaskManager
+from scripcy.core.tasks import TaskManager
 
 
 @pytest.fixture

@@ -33,6 +33,7 @@ venv.bak/
 .coverage
 htmlcov/
 .scrpcy/
+.scripcy/
 *.docx
 *.pdf
 *.log

@@ -1,1 +1,1 @@
-"""Tests for scrpcy."""
+"""Tests for scripcy."""

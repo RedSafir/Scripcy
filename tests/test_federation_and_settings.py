@@ -9,14 +9,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from rich.console import Console
 
-from scrpcy.core.config import ScrpcyConfig
-from scrpcy.core.scout import LiteratureScout, ScoutQuery, ScoutResult
-from scrpcy.core.search import (
+from scripcy.core.config import ScripcyConfig
+from scripcy.core.scout import LiteratureScout, ScoutQuery, ScoutResult
+from scripcy.core.search import (
     PaperSearcher,
     SearchResult,
     is_cs_ai_domain,
 )
-from scrpcy.studio.app import CLIStudio
+from scripcy.studio.app import CLIStudio
 
 
 def test_arxiv_domain_guard() -> None:
@@ -77,14 +77,14 @@ async def test_unpaywall_lookup() -> None:
     mock_client.get.return_value = mock_response
 
     with patch.object(searcher, "_get_client", return_value=mock_client):
-        pdf_url = await searcher.lookup_unpaywall("10.1234/test.doi", email="researcher@scrpcy.org")
+        pdf_url = await searcher.lookup_unpaywall("10.1234/test.doi", email="researcher@scripcy.org")
         assert pdf_url == "https://repository.univ.edu/paper.pdf"
 
 
 @pytest.mark.asyncio
 async def test_scout_unpaywall_resolution(tmp_path: Path) -> None:
     """Verify that paywalled papers with DOI resolve to Green OA via Unpaywall."""
-    cfg = ScrpcyConfig(unpaywall_email="test@univ.ac.id")
+    cfg = ScripcyConfig(unpaywall_email="test@univ.ac.id")
     scout = LiteratureScout(config=cfg)
 
     paper = ScoutResult(
@@ -118,7 +118,7 @@ async def test_scout_unpaywall_resolution(tmp_path: Path) -> None:
 def test_settings_cmd_toggles_and_keys() -> None:
     """Test /settings commands for toggling providers and setting API keys."""
     test_console = Console(record=True, width=100)
-    studio = CLIStudio(config=ScrpcyConfig(), console=test_console)
+    studio = CLIStudio(config=ScripcyConfig(), console=test_console)
 
     # 1. Toggle Semantic Scholar
     studio.cmd_settings("toggle semantic_scholar")

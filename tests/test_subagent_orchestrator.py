@@ -8,13 +8,13 @@ import time
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
-from scrpcy.core.contractor import ContractDecomposer, SubContract
-from scrpcy.core.contracts import TaskContractExtractor
-from scrpcy.core.critic import DevilsAdvocate
-from scrpcy.core.engine import EvidenceChunk
-from scrpcy.core.orchestrator import SubagentOrchestrator
-from scrpcy.core.subagent import SubagentPool, SubagentWorker
-from scrpcy.core.tasks import TaskManager
+from scripcy.core.contractor import ContractDecomposer, SubContract
+from scripcy.core.contracts import TaskContractExtractor
+from scripcy.core.critic import DevilsAdvocate
+from scripcy.core.engine import EvidenceChunk
+from scripcy.core.orchestrator import SubagentOrchestrator
+from scripcy.core.subagent import SubagentPool, SubagentWorker
+from scripcy.core.tasks import TaskManager
 
 
 def test_task_contract_data_factual_classification() -> None:
@@ -281,10 +281,10 @@ def test_orchestrator_autonomous_fan_out_and_fan_in(tmp_path) -> None:
 
 def test_contract_token_margin_pct_and_ai_first_extraction() -> None:
     """AI-First contract extraction estimates target_output_tokens with configurable +-30% margin and search policy."""
-    from scrpcy.core.config import ScrpcyConfig
-    from scrpcy.core.engine import LLMEngine
+    from scripcy.core.config import ScripcyConfig
+    from scripcy.core.engine import LLMEngine
 
-    cfg = ScrpcyConfig()
+    cfg = ScripcyConfig()
     assert cfg.contract_token_margin_pct == 0.30
 
     def fake_ai_contract_fn(sys_prompt: str, user_query: str) -> dict[str, Any]:
@@ -341,8 +341,8 @@ def test_contract_token_margin_pct_and_ai_first_extraction() -> None:
 
 def test_contractor_gatekeeper_vetoes_devil_advocate_out_of_scope_and_exhausted_search() -> None:
     """Contractor vetoes Devil's Advocate complaints that push Bab 2 drift, counter-arguments, or post-exhaustion searches."""
-    from scrpcy.core.critic import CritiqueReport
-    from scrpcy.core.verifier import VerificationReport
+    from scripcy.core.critic import CritiqueReport
+    from scripcy.core.verifier import VerificationReport
 
     extractor = TaskContractExtractor()
     query = "carikan aku data karhutla di indonesia 5 tahun terakhir"
@@ -401,8 +401,8 @@ def test_contractor_gatekeeper_vetoes_devil_advocate_out_of_scope_and_exhausted_
 
 def test_contractor_gatekeeper_allows_hallucination_fix_and_first_snowball() -> None:
     """Contractor allows revision when FactChecker flags hallucination or when snowballing has not yet run."""
-    from scrpcy.core.critic import CritiqueReport
-    from scrpcy.core.verifier import VerificationReport
+    from scripcy.core.critic import CritiqueReport
+    from scripcy.core.verifier import VerificationReport
 
     extractor = TaskContractExtractor()
     query = "carikan aku data karhutla di indonesia 5 tahun terakhir"

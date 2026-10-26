@@ -4,13 +4,13 @@ from unittest.mock import MagicMock, patch
 import io
 from rich.console import Console
 
-from scrpcy.core.vector_vault import (
+from scripcy.core.vector_vault import (
     ProjectVectorVault,
     HybridSearchResult,
     serialize_f32,
 )
-from scrpcy.core.workspace import WorkspaceManager
-from scrpcy.core.vault import VaultManager
+from scripcy.core.workspace import WorkspaceManager
+from scripcy.core.vault import VaultManager
 
 
 @pytest.fixture
@@ -105,7 +105,7 @@ def test_vault_manager_segregated_listings(temp_workspace: WorkspaceManager):
 
 def test_agent_turn_checkpoint_logic():
     """Verify _check_agent_turn_checkpoint threshold passing and interactive prompting."""
-    from scrpcy.cli_studio import CLIStudio
+    from scripcy.cli_studio import CLIStudio
 
     studio = CLIStudio.__new__(CLIStudio)
     studio.console = Console(file=io.StringIO(), force_terminal=False)
@@ -173,7 +173,7 @@ def test_agent_turn_checkpoint_logic():
 
 def test_cmd_view_table_and_image(temp_workspace: WorkspaceManager):
     """Verify /view table and /view image output formatting."""
-    from scrpcy.cli_studio import CLIStudio
+    from scripcy.cli_studio import CLIStudio
 
     studio = CLIStudio.__new__(CLIStudio)
     output = io.StringIO()

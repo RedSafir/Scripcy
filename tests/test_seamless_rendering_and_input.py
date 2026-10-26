@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 from rich.console import Console
 from rich.text import Text
 
-from scrpcy.ui.interactive import (
+from scripcy.ui.interactive import (
     _render_diff_inplace,
     interactive_input_prompt,
     _clear_lines,
@@ -75,7 +75,7 @@ def test_interactive_input_prompt_initial_buffer() -> None:
     c = Console(force_terminal=True, width=80)
     # Simulate user immediately pressing ENTER
     with patch("sys.stdin.isatty", return_value=True):
-        with patch("scrpcy.ui.interactive._read_key", return_value="ENTER"):
+        with patch("scripcy.ui.interactive._read_key", return_value="ENTER"):
             result = interactive_input_prompt(
                 console=c,
                 prompt_label="test> ",
@@ -89,7 +89,7 @@ def test_key_buffer_queue_preservation() -> None:
     _KEY_BUFFER.append("a")
     _KEY_BUFFER.append("ENTER")
 
-    from scrpcy.ui.interactive import _read_key
+    from scripcy.ui.interactive import _read_key
 
     k1 = _read_key()
     k2 = _read_key()
@@ -104,7 +104,7 @@ def test_render_diff_inplace_does_not_freeze_console_width() -> None:
 
     fake_stdout = io.StringIO()
     with patch("sys.stdout", fake_stdout):
-        with patch("scrpcy.ui.interactive.get_live_terminal_size", return_value=(120, 30)):
+        with patch("scripcy.ui.interactive.get_live_terminal_size", return_value=(120, 30)):
             last_text, count = _render_diff_inplace(c, [Text("Line 1")], "", 0)
 
     # console._width must remain None so subsequent resizes are never ignored
@@ -123,7 +123,7 @@ def test_render_diff_inplace_clears_reflowed_rows_on_terminal_shrink() -> None:
     frame1 = [wide_divider, prompt_line, wide_divider, footer_line]
 
     with patch("sys.stdout", fake_stdout1):
-        with patch("scrpcy.ui.interactive.get_live_terminal_size", return_value=(120, 30)):
+        with patch("scripcy.ui.interactive.get_live_terminal_size", return_value=(120, 30)):
             last_text, count1 = _render_diff_inplace(c, frame1, "", 0)
     assert count1 == 4
 
@@ -135,7 +135,7 @@ def test_render_diff_inplace_clears_reflowed_rows_on_terminal_shrink() -> None:
 
     fake_stdout2 = io.StringIO()
     with patch("sys.stdout", fake_stdout2):
-        with patch("scrpcy.ui.interactive.get_live_terminal_size", return_value=(80, 30)):
+        with patch("scripcy.ui.interactive.get_live_terminal_size", return_value=(80, 30)):
             last_text2, count2 = _render_diff_inplace(c, frame2, last_text, count1)
 
     out2 = fake_stdout2.getvalue()
@@ -165,8 +165,8 @@ def test_interactive_input_prompt_keystrokes_and_live_resize() -> None:
     keys = ["c", "a", "__RESIZE__", "r", "BACKSPACE", "ENTER"]
     with patch("sys.stdin.isatty", return_value=True):
         with patch("sys.stdout", fake_stdout):
-            with patch("scrpcy.ui.interactive.get_live_terminal_size", side_effect=fake_live_size):
-                with patch("scrpcy.ui.interactive._read_key", side_effect=keys):
+            with patch("scripcy.ui.interactive.get_live_terminal_size", side_effect=fake_live_size):
+                with patch("scripcy.ui.interactive._read_key", side_effect=keys):
                     res = interactive_input_prompt(
                         console=c,
                         prompt_label="karhutla/chat/karhutla> ",

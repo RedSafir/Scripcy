@@ -1,4 +1,4 @@
-"""Unit tests for Scrpcy hierarchical sub-modes: Vault, Processing, and Chat."""
+"""Unit tests for Scripcy hierarchical sub-modes: Vault, Processing, and Chat."""
 
 from __future__ import annotations
 
@@ -9,11 +9,11 @@ from unittest.mock import patch
 import pytest
 from rich.console import Console
 
-from scrpcy.cli_studio import CLIStudio
-from scrpcy.core.config import ScrpcyConfig
-from scrpcy.core.gdrive import extract_drive_file_id
-from scrpcy.core.project import ProjectManager
-from scrpcy.core.workspace import WorkspaceManager
+from scripcy.cli_studio import CLIStudio
+from scripcy.core.config import ScripcyConfig
+from scripcy.core.gdrive import extract_drive_file_id
+from scripcy.core.project import ProjectManager
+from scripcy.core.workspace import WorkspaceManager
 
 
 @pytest.fixture
@@ -30,7 +30,7 @@ def cli_studio_submodes(
     """Fixture providing CLIStudio with an active project."""
     pm = ProjectManager(registry_file=tmp_path / "test_reg.json")
     proj = pm.create_project("skripsi", temp_workspace.root_dir)
-    cfg = ScrpcyConfig(workspace_path=str(temp_workspace.root_dir))
+    cfg = ScripcyConfig(workspace_path=str(temp_workspace.root_dir))
     studio = CLIStudio(
         workspace=temp_workspace,
         config=cfg,
@@ -182,7 +182,7 @@ class TestChatSubmodeOperations:
         assert "Sesi chat baru dibuat: chat_run_test" in output
         assert "Kembali ke menu chat: skripsi/chat>" in output
         assert "Returned to project root: skripsi>" in output
-        assert "Closing scrpcy research studio" in output
+        assert "Closing scripcy research studio" in output
         assert cli_studio_submodes.sub_mode is None
 
     def test_chat_keyboard_interrupt_dismisses_submode(self, cli_studio_submodes: CLIStudio) -> None:
@@ -295,7 +295,7 @@ class TestRefinedUIAndModeFlows:
     def test_help_view_simple_available_commands(self) -> None:
         import io
         from rich.console import Console
-        from scrpcy.ui.interactive import interactive_help_view
+        from scripcy.ui.interactive import interactive_help_view
 
         buf = io.StringIO()
         c = Console(file=buf, force_terminal=True, color_system=None)
@@ -304,7 +304,7 @@ class TestRefinedUIAndModeFlows:
         dashboard_out = buf.getvalue()
         assert "Available Commands [Dashboard]" in dashboard_out
         assert "/projects" in dashboard_out
-        assert "Scrpcy CLI" not in dashboard_out
+        assert "Scripcy CLI" not in dashboard_out
         assert "General Workspace" not in dashboard_out
         assert "Keyboard Shortcuts" not in dashboard_out
 
@@ -315,7 +315,7 @@ class TestRefinedUIAndModeFlows:
         assert "Available Commands [skripsi]" in vault_out
         assert "/reload" in vault_out
         assert "/add" in vault_out
-        assert "Scrpcy CLI" not in vault_out
+        assert "Scripcy CLI" not in vault_out
 
 
         bare_id = "1AbCdEfGhIjKlMnOpQrStUvWxYz12345"

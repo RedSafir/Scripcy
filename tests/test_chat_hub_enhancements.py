@@ -6,10 +6,10 @@ from unittest.mock import patch
 
 from rich.console import Console
 
-from scrpcy.cli_studio import CLIStudio
-from scrpcy.core.config import ScrpcyConfig
-from scrpcy.core.project import ProjectManager
-from scrpcy.core.workspace import WorkspaceManager
+from scripcy.cli_studio import CLIStudio
+from scripcy.core.config import ScripcyConfig
+from scripcy.core.project import ProjectManager
+from scripcy.core.workspace import WorkspaceManager
 
 
 def test_chat_command_lands_in_chat_hub(
@@ -20,7 +20,7 @@ def test_chat_command_lands_in_chat_hub(
     console = Console(file=io.StringIO(), force_terminal=True, color_system=None)
     pm = ProjectManager(registry_file=tmp_path / "test_reg.json")
     proj = pm.create_project("skripsi", temp_workspace.root_dir)
-    cfg = ScrpcyConfig(workspace_path=str(temp_workspace.root_dir))
+    cfg = ScripcyConfig(workspace_path=str(temp_workspace.root_dir))
     studio = CLIStudio(
         workspace=temp_workspace,
         config=cfg,
@@ -47,7 +47,7 @@ def test_new_chat_name_prompt_and_default(
     console = Console(file=io.StringIO(), force_terminal=True, color_system=None)
     pm = ProjectManager(registry_file=tmp_path / "test_reg.json")
     proj = pm.create_project("skripsi", temp_workspace.root_dir)
-    cfg = ScrpcyConfig(workspace_path=str(temp_workspace.root_dir))
+    cfg = ScripcyConfig(workspace_path=str(temp_workspace.root_dir))
     studio = CLIStudio(
         workspace=temp_workspace,
         config=cfg,
@@ -85,7 +85,7 @@ def test_delete_multiple_sessions(
     console = Console(file=io.StringIO(), force_terminal=True, color_system=None)
     pm = ProjectManager(registry_file=tmp_path / "test_reg.json")
     proj = pm.create_project("skripsi", temp_workspace.root_dir)
-    cfg = ScrpcyConfig(workspace_path=str(temp_workspace.root_dir))
+    cfg = ScripcyConfig(workspace_path=str(temp_workspace.root_dir))
     studio = CLIStudio(
         workspace=temp_workspace,
         config=cfg,
@@ -124,7 +124,7 @@ def test_resume_displays_chat_history(
     console = Console(file=io.StringIO(), force_terminal=True, color_system=None)
     pm = ProjectManager(registry_file=tmp_path / "test_reg.json")
     proj = pm.create_project("skripsi", temp_workspace.root_dir)
-    cfg = ScrpcyConfig(workspace_path=str(temp_workspace.root_dir))
+    cfg = ScripcyConfig(workspace_path=str(temp_workspace.root_dir))
     studio = CLIStudio(
         workspace=temp_workspace,
         config=cfg,

@@ -3,7 +3,7 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "scrpcy"
+name = "scripcy"
 version = "0.1.0"
 description = "A local-first academic research studio"
 readme = "README.md"
@@ -32,7 +32,8 @@ dependencies = [
 ]
 
 [project.scripts]
-scrpcy = "scrpcy.cli:app"
+scripcy = "scripcy.cli:app"
+scrpcy = "scripcy.cli:app"
 
 [project.optional-dependencies]
 dev = [
@@ -47,4 +48,4 @@ pythonpath = ["."]
 asyncio_mode = "auto"
 
 [tool.setuptools.packages.find]
-include = ["scrpcy*"]
+include = ["scripcy*"]

@@ -11,16 +11,16 @@ from unittest.mock import MagicMock
 import pytest
 from rich.console import Console
 
-from scrpcy.core.config import ScrpcyConfig
-from scrpcy.core.engine import EvidenceChunk, LLMEngine
-from scrpcy.core.project import ProjectManager
-from scrpcy.core.references import (
+from scripcy.core.config import ScripcyConfig
+from scripcy.core.engine import EvidenceChunk, LLMEngine
+from scripcy.core.project import ProjectManager
+from scripcy.core.references import (
     append_vault_bibliography,
     resolve_vault_reference_entries,
 )
-from scrpcy.core.vault import VaultManager
-from scrpcy.core.workspace import WorkspaceManager
-from scrpcy.cli_studio import CLIStudio
+from scripcy.core.vault import VaultManager
+from scripcy.core.workspace import WorkspaceManager
+from scripcy.cli_studio import CLIStudio
 
 
 class TestVaultBibliographyAppender:
@@ -222,7 +222,7 @@ class TestVaultBibliographyAppender:
         console = Console(file=io.StringIO(), force_terminal=True, color_system=None)
         pm = ProjectManager(registry_file=tmp_path / "reg.json")
         proj = pm.create_project("thesis", temp_workspace.root_dir)
-        cfg = ScrpcyConfig(workspace_path=str(temp_workspace.root_dir))
+        cfg = ScripcyConfig(workspace_path=str(temp_workspace.root_dir))
         cfg.citation.style = "apa"
 
         class MockChunk:

@@ -1,8 +1,8 @@
 import pytest
 from pathlib import Path
-from scrpcy.core.workspace import WorkspaceManager
-from scrpcy.core.vault import VaultManager
-from scrpcy.core.vector_vault import ProjectVectorVault
+from scripcy.core.workspace import WorkspaceManager
+from scripcy.core.vault import VaultManager
+from scripcy.core.vector_vault import ProjectVectorVault
 
 
 def test_search_visual_assets_empty(tmp_path: Path):

@@ -11,13 +11,13 @@ from unittest.mock import MagicMock, patch
 import pytest
 from rich.console import Console
 
-from scrpcy.cli_studio import CLIStudio
-from scrpcy.core.chats import ChatManager
-from scrpcy.core.config import ScrpcyConfig
-from scrpcy.core.engine import LLMEngine
-from scrpcy.core.project import ProjectManager
-from scrpcy.core.tasks import TaskInfo, TaskManager
-from scrpcy.core.workspace import WorkspaceManager
+from scripcy.cli_studio import CLIStudio
+from scripcy.core.chats import ChatManager
+from scripcy.core.config import ScripcyConfig
+from scripcy.core.engine import LLMEngine
+from scripcy.core.project import ProjectManager
+from scripcy.core.tasks import TaskInfo, TaskManager
+from scripcy.core.workspace import WorkspaceManager
 
 
 class MockStreamChunk:
@@ -59,11 +59,11 @@ def test_background_task_completion_injects_system_note(
     temp_workspace: WorkspaceManager,
     tmp_path: Path,
 ) -> None:
-    """When a background task bound to a session completes, Scrpcy logs a system note into SQLite chats.db."""
+    """When a background task bound to a session completes, Scripcy logs a system note into SQLite chats.db."""
     console = Console(file=io.StringIO(), force_terminal=True, color_system=None)
     pm = ProjectManager(registry_file=tmp_path / "reg.json")
     proj = pm.create_project("thesis", temp_workspace.root_dir)
-    cfg = ScrpcyConfig(workspace_path=str(temp_workspace.root_dir))
+    cfg = ScripcyConfig(workspace_path=str(temp_workspace.root_dir))
     engine = LLMEngine(config=cfg)
 
     studio = CLIStudio(
@@ -113,7 +113,7 @@ def test_exit_chat_while_task_running(
     console = Console(file=io.StringIO(), force_terminal=True, color_system=None)
     pm = ProjectManager(registry_file=tmp_path / "reg.json")
     proj = pm.create_project("thesis", temp_workspace.root_dir)
-    cfg = ScrpcyConfig(workspace_path=str(temp_workspace.root_dir))
+    cfg = ScripcyConfig(workspace_path=str(temp_workspace.root_dir))
     engine = LLMEngine(config=cfg)
 
     studio = CLIStudio(
@@ -169,7 +169,7 @@ def test_resume_chat_shows_bound_tasks_and_passes_history(
     console = Console(file=io.StringIO(), force_terminal=True, color_system=None)
     pm = ProjectManager(registry_file=tmp_path / "reg.json")
     proj = pm.create_project("thesis", temp_workspace.root_dir)
-    cfg = ScrpcyConfig(workspace_path=str(temp_workspace.root_dir))
+    cfg = ScripcyConfig(workspace_path=str(temp_workspace.root_dir))
 
     passed_history = []
 

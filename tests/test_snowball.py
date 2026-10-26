@@ -7,8 +7,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from scrpcy.core.search import PaperSearcher, SearchResult
-from scrpcy.core.snowball import (
+from scripcy.core.search import PaperSearcher, SearchResult
+from scripcy.core.snowball import (
     CitationSnowballer,
     ConvergenceResult,
     SeedThread,

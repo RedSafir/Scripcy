@@ -8,12 +8,12 @@ from typing import Any
 import pytest
 from rich.console import Console
 
-from scrpcy.core.config import ScrpcyConfig
-from scrpcy.core.engine import LLMEngine
-from scrpcy.core.polisher import AcademicPolisher, PolishResult
-from scrpcy.core.project import ProjectManager
-from scrpcy.core.workspace import WorkspaceManager
-from scrpcy.cli_studio import CLIStudio
+from scripcy.core.config import ScripcyConfig
+from scripcy.core.engine import LLMEngine
+from scripcy.core.polisher import AcademicPolisher, PolishResult
+from scripcy.core.project import ProjectManager
+from scripcy.core.workspace import WorkspaceManager
+from scripcy.cli_studio import CLIStudio
 
 
 class TestAcademicPolisher:
@@ -108,7 +108,7 @@ class TestAcademicPolisher:
         console = Console(file=io.StringIO(), force_terminal=True, color_system=None)
         pm = ProjectManager(registry_file=tmp_path / "reg.json")
         proj = pm.create_project("thesis", temp_workspace.root_dir)
-        cfg = ScrpcyConfig(workspace_path=str(temp_workspace.root_dir))
+        cfg = ScripcyConfig(workspace_path=str(temp_workspace.root_dir))
 
         from unittest.mock import MagicMock
 

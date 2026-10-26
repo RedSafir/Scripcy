@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from scrpcy.core.vault import VaultManager
-from scrpcy.core.workspace import WorkspaceManager
+from scripcy.core.vault import VaultManager
+from scripcy.core.workspace import WorkspaceManager
 
 
 @pytest.fixture

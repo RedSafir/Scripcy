@@ -5,7 +5,7 @@ import time
 from unittest.mock import MagicMock
 import pytest
 
-from scrpcy.core.tasks import TaskManager, TaskInfo
+from scripcy.core.tasks import TaskManager, TaskInfo
 
 
 def test_cancel_session_tasks():

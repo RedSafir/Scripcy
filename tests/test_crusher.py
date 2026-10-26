@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import json
 
-from scrpcy.core.crusher import MarkdownMinifier, SmartCrusher
-from scrpcy.core.engine import EvidenceChunk, EvidenceSynthesizer
-from scrpcy.core.orchestrator import SubagentOrchestrator
-from scrpcy.core.subagent import ExtractedFact
-from scrpcy.core.contracts import TaskContract
+from scripcy.core.crusher import MarkdownMinifier, SmartCrusher
+from scripcy.core.engine import EvidenceChunk, EvidenceSynthesizer
+from scripcy.core.orchestrator import SubagentOrchestrator
+from scripcy.core.subagent import ExtractedFact
+from scripcy.core.contracts import TaskContract
 
 
 def test_markdown_minifier_strips_html_images_and_redundant_newlines() -> None:
@@ -122,7 +122,7 @@ def test_evidence_synthesizer_uses_markdown_minifier() -> None:
 
 
 def test_orchestrator_builds_tsv_assembly_directive() -> None:
-    from scrpcy.core.orchestrator import SubagentOrchestrator
+    from scripcy.core.orchestrator import SubagentOrchestrator
     from unittest.mock import MagicMock
 
     contract = TaskContract(

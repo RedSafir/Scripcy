@@ -6,12 +6,12 @@ from pathlib import Path
 from typing import Any
 import pytest
 
-from scrpcy.core.config import ConfigManager, ScrpcyConfig
-from scrpcy.core.contractor import ContractDecomposer, SubContract
-from scrpcy.core.contracts import RubricCriterion, TaskContract, TaskContractExtractor
-from scrpcy.core.critic import CritiqueReport
-from scrpcy.core.engine import EvidenceChunk, LLMEngine
-from scrpcy.core.vector_vault import HybridSearchResult
+from scripcy.core.config import ConfigManager, ScripcyConfig
+from scripcy.core.contractor import ContractDecomposer, SubContract
+from scripcy.core.contracts import RubricCriterion, TaskContract, TaskContractExtractor
+from scripcy.core.critic import CritiqueReport
+from scripcy.core.engine import EvidenceChunk, LLMEngine
+from scripcy.core.vector_vault import HybridSearchResult
 
 
 def test_unlimited_token_contract_properties() -> None:
@@ -120,7 +120,7 @@ def test_detect_evidence_gap_prioritizes_official_web_for_factual_data() -> None
 
 def test_official_web_scoring_boost_in_evidence_synthesizer() -> None:
     """EvidenceSynthesizer boosts chunks from official web domains on factual questions."""
-    from scrpcy.core.engine import EvidenceSynthesizer
+    from scripcy.core.engine import EvidenceSynthesizer
 
     synth = EvidenceSynthesizer()
     query = "data resmi luas kebakaran hutan riau tahun 2023"
@@ -147,7 +147,7 @@ def test_official_web_scoring_boost_in_evidence_synthesizer() -> None:
 
 def test_settings_commands_for_unlimited_tokens_and_margin(tmp_path: Path) -> None:
     """Studio settings command toggles and configures unlimited tokens and margin of error."""
-    from scrpcy.studio.commands import StudioCommandsMixin
+    from scripcy.studio.commands import StudioCommandsMixin
     from rich.console import Console
 
     class DummyStudio(StudioCommandsMixin):

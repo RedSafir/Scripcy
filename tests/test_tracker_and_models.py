@@ -8,13 +8,13 @@ import pytest
 from rich.console import Console
 from typer.testing import CliRunner
 
-from scrpcy.cli import app as cli_app
-from scrpcy.cli_studio import CLIStudio
-from scrpcy.core.config import ScrpcyConfig
-from scrpcy.core.engine import LLMEngine
-from scrpcy.core.project import ProjectManager
-from scrpcy.core.tracker import TokenRecord, TokenTracker
-from scrpcy.core.workspace import WorkspaceManager
+from scripcy.cli import app as cli_app
+from scripcy.cli_studio import CLIStudio
+from scripcy.core.config import ScripcyConfig
+from scripcy.core.engine import LLMEngine
+from scripcy.core.project import ProjectManager
+from scripcy.core.tracker import TokenRecord, TokenTracker
+from scripcy.core.workspace import WorkspaceManager
 
 
 class TestTokenTracker:
@@ -50,7 +50,7 @@ class TestTokenTracker:
         assert data["project_name"] == "my_research_project"
 
         # Check per-project log file
-        proj_log = proj_dir / ".scrpcy" / "token_usage.jsonl"
+        proj_log = proj_dir / ".scripcy" / "token_usage.jsonl"
         assert proj_log.is_file()
         proj_lines = proj_log.read_text(encoding="utf-8").strip().splitlines()
         assert len(proj_lines) == 1
@@ -103,7 +103,7 @@ class Test9RouterConfiguration:
     """Tests for 9Router configuration, base URL resolution, and setup helper."""
 
     def test_setup_9router_defaults(self) -> None:
-        cfg = ScrpcyConfig()
+        cfg = ScripcyConfig()
         cfg.setup_9router(port=20128, host="localhost", api_key="sk-9r-test", default_model="9router/gpt-4o")
 
         assert cfg.default_model == "9router/gpt-4o"
@@ -113,7 +113,7 @@ class Test9RouterConfiguration:
         assert cfg.get_api_base_for_model("9router/gpt-4o") == "http://localhost:20128/v1"
 
     def test_get_api_base_for_openai_and_custom(self) -> None:
-        cfg = ScrpcyConfig()
+        cfg = ScripcyConfig()
         cfg.set_api_base("openai", "http://my-proxy:8080/v1")
         assert cfg.get_api_base_for_model("openai/gpt-4o") == "http://my-proxy:8080/v1"
 
@@ -131,7 +131,7 @@ class TestEngine9RouterAndTokens:
         proj_dir.mkdir(parents=True, exist_ok=True)
         tracker = TokenTracker(global_log_path=global_log)
 
-        cfg = ScrpcyConfig()
+        cfg = ScripcyConfig()
         cfg.setup_9router(port=20128, api_key="sk-test-key", default_model="9router/gpt-4o")
 
         invoked_kwargs: dict = {}
@@ -196,7 +196,7 @@ class TestCLIModelsAndStatus:
         tracker = TokenTracker(global_log_path=global_log)
         tracker.record_usage("openai/gpt-4o", 100, 200, project_name="Dissertation")
 
-        monkeypatch.setattr("scrpcy.cli.TokenTracker", lambda: tracker)
+        monkeypatch.setattr("scripcy.cli.TokenTracker", lambda: tracker)
 
         runner = CliRunner()
         res = runner.invoke(cli_app, ["models", "tokens"])
@@ -212,7 +212,7 @@ class TestCLIModelsAndStatus:
         proj_dir.mkdir(parents=True, exist_ok=True)
         pm.create_project("SkripsiAI", proj_dir)
 
-        monkeypatch.setattr("scrpcy.cli.ProjectManager", lambda: pm)
+        monkeypatch.setattr("scripcy.cli.ProjectManager", lambda: pm)
 
         runner = CliRunner()
         res = runner.invoke(cli_app, ["status", "SkripsiAI"])
@@ -276,7 +276,7 @@ class TestCLIModelsAndStatus:
         # Mock isatty and interactive_model_selector
         monkeypatch.setattr("sys.stdin.isatty", lambda: True)
         monkeypatch.setattr(
-            "scrpcy.cli_studio.interactive_model_selector",
+            "scripcy.cli_studio.interactive_model_selector",
             lambda **kwargs: ("9router/gemini-2.5-flash", "high"),
         )
 

@@ -1,7 +1,7 @@
 """Unit tests for Dynamic Task Contract, DoD Extraction, and Adaptive Critic."""
 
-from scrpcy.core.contracts import TaskContract, TaskContractExtractor, RubricCriterion
-from scrpcy.core.critic import DevilsAdvocate
+from scripcy.core.contracts import TaskContract, TaskContractExtractor, RubricCriterion
+from scripcy.core.critic import DevilsAdvocate
 
 
 def test_task_contract_argument_extraction() -> None:

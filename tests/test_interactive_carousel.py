@@ -1,9 +1,9 @@
-"""Unit tests for interactive_carousel_table in scrpcy.ui.interactive."""
+"""Unit tests for interactive_carousel_table in scripcy.ui.interactive."""
 
 from unittest.mock import patch
 from rich.console import Console
 
-from scrpcy.ui.interactive import interactive_carousel_table
+from scripcy.ui.interactive import interactive_carousel_table
 
 
 def test_carousel_empty_rows() -> None:
@@ -37,7 +37,7 @@ def test_carousel_interactive_navigation_and_input() -> None:
     # Simulate keys: RIGHT (slide 2), '1', '0', ENTER
     simulated_keys = ["RIGHT", "1", "0", "ENTER"]
     with patch("sys.stdin.isatty", return_value=True):
-        with patch("scrpcy.ui.interactive._read_key", side_effect=simulated_keys):
+        with patch("scripcy.ui.interactive._read_key", side_effect=simulated_keys):
             res = interactive_carousel_table(
                 "Literature Results",
                 columns=columns,
@@ -55,7 +55,7 @@ def test_carousel_interactive_cancel_q() -> None:
 
     # Immediate 'q' on empty buffer cancels
     with patch("sys.stdin.isatty", return_value=True):
-        with patch("scrpcy.ui.interactive._read_key", return_value="q"):
+        with patch("scripcy.ui.interactive._read_key", return_value="q"):
             res = interactive_carousel_table(
                 "Literature Results",
                 columns=columns,
@@ -71,7 +71,7 @@ def test_carousel_interactive_cancel_esc() -> None:
     rows = [[str(i), f"Paper {i}"] for i in range(1, 6)]
 
     with patch("sys.stdin.isatty", return_value=True):
-        with patch("scrpcy.ui.interactive._read_key", return_value="ESC"):
+        with patch("scripcy.ui.interactive._read_key", return_value="ESC"):
             res = interactive_carousel_table(
                 "Literature Results",
                 columns=columns,

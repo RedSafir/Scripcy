@@ -8,15 +8,15 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from rich.console import Console
 
-from scrpcy.core.config import ScrpcyConfig
-from scrpcy.core.critic import DevilsAdvocate, CritiqueReport
-from scrpcy.core.engine import EvidenceChunk, LLMEngine
-from scrpcy.core.project import ProjectManager
-from scrpcy.core.scout import LiteratureScout, ScoutResult
-from scrpcy.core.search import PaperSearcher, SearchResult
-from scrpcy.core.verifier import FactChecker, VerificationReport
-from scrpcy.core.workspace import WorkspaceManager
-from scrpcy.cli_studio import CLIStudio
+from scripcy.core.config import ScripcyConfig
+from scripcy.core.critic import DevilsAdvocate, CritiqueReport
+from scripcy.core.engine import EvidenceChunk, LLMEngine
+from scripcy.core.project import ProjectManager
+from scripcy.core.scout import LiteratureScout, ScoutResult
+from scripcy.core.search import PaperSearcher, SearchResult
+from scripcy.core.verifier import FactChecker, VerificationReport
+from scripcy.core.workspace import WorkspaceManager
+from scripcy.cli_studio import CLIStudio
 
 
 class TestFactChecker:
@@ -171,7 +171,7 @@ class TestAgentLoopVerificationIntegration:
         console = Console(file=io.StringIO(), force_terminal=True, color_system=None)
         pm = ProjectManager(registry_file=tmp_path / "reg.json")
         proj = pm.create_project("thesis", temp_workspace.root_dir)
-        cfg = ScrpcyConfig(workspace_path=str(temp_workspace.root_dir))
+        cfg = ScripcyConfig(workspace_path=str(temp_workspace.root_dir))
 
         class MockChunk:
             def __init__(self, text: str) -> None:
@@ -205,7 +205,7 @@ class TestDualLayerCriticAudit:
     """Tests separating Layer 1 (Contract Conformance) and Layer 2 (Epistemic Rigor)."""
 
     def test_dod_checked_but_hallucinated_fails_epistemic_rigor(self) -> None:
-        from scrpcy.core.contracts import TaskContract
+        from scripcy.core.contracts import TaskContract
         critic = DevilsAdvocate()
         contract = TaskContract(
             primary_goal="Analisis komparatif restorasi",
@@ -245,7 +245,7 @@ class TestDualLayerCriticAudit:
         assert any("grounding" in w.lower() or "halusinasi" in w.lower() for w in report.weaknesses)
 
     def test_word_count_tolerance_285_words_passes_conformance(self) -> None:
-        from scrpcy.core.contracts import TaskContract
+        from scripcy.core.contracts import TaskContract
         critic = DevilsAdvocate()
         contract = TaskContract(
             primary_goal="Analisis restorasi",
@@ -280,7 +280,7 @@ class TestDualLayerCriticAudit:
         assert report.score >= 7
 
     def test_word_count_below_tolerance_fails_conformance(self) -> None:
-        from scrpcy.core.contracts import TaskContract
+        from scripcy.core.contracts import TaskContract
         critic = DevilsAdvocate()
         contract = TaskContract(
             primary_goal="Analisis mendalam",

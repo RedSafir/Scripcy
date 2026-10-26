@@ -3,7 +3,7 @@ from pathlib import Path
 from PIL import Image
 from rich.console import Console
 
-from scrpcy.ui.terminal_image import (
+from scripcy.ui.terminal_image import (
     init_virtual_terminal,
     render_image_to_ansi,
     render_visual_panel,
@@ -60,7 +60,7 @@ def test_render_visual_panel_image(tmp_path: Path):
 
 def test_render_visual_panel_table(tmp_path: Path):
     md_path = tmp_path / "tbl_sample.md"
-    md_path.write_text("| Model | F1 |\n|---|---|\n| Baseline | 0.85 |\n| Scrpcy | 0.94 |", encoding="utf-8")
+    md_path.write_text("| Model | F1 |\n|---|---|\n| Baseline | 0.85 |\n| Scripcy | 0.94 |", encoding="utf-8")
 
     v_info = {
         "asset_type": "table",

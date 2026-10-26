@@ -10,12 +10,12 @@ from unittest.mock import MagicMock
 import pytest
 from rich.console import Console
 
-from scrpcy.cli_studio import CLIStudio
-from scrpcy.core.config import ScrpcyConfig
-from scrpcy.core.engine import LLMEngine
-from scrpcy.core.project import ProjectManager
-from scrpcy.core.vector_vault import ProjectVectorVault
-from scrpcy.core.workspace import WorkspaceManager
+from scripcy.cli_studio import CLIStudio
+from scripcy.core.config import ScripcyConfig
+from scripcy.core.engine import LLMEngine
+from scripcy.core.project import ProjectManager
+from scripcy.core.vector_vault import ProjectVectorVault
+from scripcy.core.workspace import WorkspaceManager
 
 
 class MockStreamChunk:
@@ -70,7 +70,7 @@ def test_visual_placeholder_resolution_to_clickable_links(tmp_path: Path):
 
 def test_render_academic_markdown_renders_file_hyperlinks():
     """Verify render_academic_markdown produces true OSC 8 clickable terminal hyperlinks for file:// links."""
-    from scrpcy.ui.formatters import render_academic_markdown
+    from scripcy.ui.formatters import render_academic_markdown
     from rich.markdown import Markdown
 
     c = Console(force_terminal=True, legacy_windows=False)
@@ -102,7 +102,7 @@ def test_surgical_paragraph_patch_preserves_verified_paragraphs(
     console = Console(file=io.StringIO(), force_terminal=True, color_system=None)
     pm = ProjectManager(registry_file=tmp_path / "reg.json")
     proj = pm.create_project("stunting_proj", temp_workspace.root_dir)
-    cfg = ScrpcyConfig(workspace_path=str(temp_workspace.root_dir), max_agent_turns=3, max_refinement_turns=2)
+    cfg = ScripcyConfig(workspace_path=str(temp_workspace.root_dir), max_agent_turns=3, max_refinement_turns=2)
 
     call_count = 0
     received_queries: list[str] = []

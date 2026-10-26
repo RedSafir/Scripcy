@@ -3,8 +3,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 from rich.console import Console
 
-from scrpcy.cli_studio import CLIStudio
-from scrpcy.core.tasks import TaskInfo
+from scripcy.cli_studio import CLIStudio
+from scripcy.core.tasks import TaskInfo
 
 
 def test_render_system_message_clean():

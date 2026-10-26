@@ -9,19 +9,19 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from PIL import Image
 import pytest
 
-from scrpcy import (
+from scripcy import (
     OfficialDomainFilter,
     OfficialSourceRejectedError,
     WebScout,
     WebScoutError,
 )
-from scrpcy.core.models import DocumentMetadata
-from scrpcy.core.web_scout import (
+from scripcy.core.models import DocumentMetadata
+from scripcy.core.web_scout import (
     SubstantiveVisualAsset,
     SubstantiveVisualExtractor,
     WebPageToMarkdownConverter,
 )
-from scrpcy.core.workspace import WorkspaceManager
+from scripcy.core.workspace import WorkspaceManager
 
 
 def create_mock_png(width: int = 600, height: int = 400, color: tuple[int, int, int] = (100, 150, 200)) -> bytes:

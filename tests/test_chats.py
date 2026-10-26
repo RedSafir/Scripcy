@@ -8,8 +8,8 @@ import time
 
 import pytest
 
-from scrpcy.core.chats import ChatManager, SessionEvent
-from scrpcy.core.tasks import TaskManager
+from scripcy.core.chats import ChatManager, SessionEvent
+from scripcy.core.tasks import TaskManager
 
 
 @pytest.fixture
@@ -264,15 +264,15 @@ class TestTaskDAGAndSessionActorRuntime:
     def test_studio_detached_output_arbitration_and_reattach_flush(self, tmp_path: Path) -> None:
         import io
         from rich.console import Console
-        from scrpcy.cli_studio import CLIStudio
-        from scrpcy.core.config import ScrpcyConfig
-        from scrpcy.core.project import ProjectManager
-        from scrpcy.core.workspace import WorkspaceManager
+        from scripcy.cli_studio import CLIStudio
+        from scripcy.core.config import ScripcyConfig
+        from scripcy.core.project import ProjectManager
+        from scripcy.core.workspace import WorkspaceManager
 
         ws = WorkspaceManager(tmp_path / "ws")
         pm = ProjectManager(registry_file=tmp_path / "reg.json")
         proj = pm.create_project("riset_ui", ws.root_dir)
-        cfg = ScrpcyConfig(workspace_path=str(ws.root_dir))
+        cfg = ScripcyConfig(workspace_path=str(ws.root_dir))
         buf = io.StringIO()
         console = Console(file=buf, force_terminal=True, color_system=None)
 

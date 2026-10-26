@@ -26,7 +26,7 @@ A local-first, autonomous academic research studio that bridges scholarly litera
 
 Modern Large Language Models (LLMs) often struggle with scholarly research: they hallucinate citations, generate superficial prose ("AI slop"), become overwhelmed by generic token matching (such as treating the word *"data"* as the query topic instead of the substantive entity), and prioritize high-level institutional homepages over empirical data.
 
-**Scrpcy** is engineered from the ground up to eliminate these vulnerabilities. Operating on a **local-first paradigm**, Scrpcy stores all document vaults, caches, vector embeddings, chat sessions, and SQLite state machines directly inside isolated project directories on your machine (`projects/<name>/`).
+**Scripcy** is engineered from the ground up to eliminate these vulnerabilities. Operating on a **local-first paradigm**, Scripcy stores all document vaults, caches, vector embeddings, chat sessions, and SQLite state machines directly inside isolated project directories on your machine (`projects/<name>/`).
 
 ### Core Design Principles
 1. **Zero Hallucination Tolerance**: Every claim must be supported by local vault documents. If evidence is missing, the system explicitly declares the data gap rather than fabricating statistics.
@@ -78,7 +78,7 @@ flowchart TD
 ## Key Capabilities
 
 ### 1. Pre-Flight Dual-Channel Scouting
-Rather than treating official websites as a reactive fallback, Scrpcy initiates two discovery pipelines in parallel:
+Rather than treating official websites as a reactive fallback, Scripcy initiates two discovery pipelines in parallel:
 - **Literature Scout**: Explores 250M+ scholarly works across OpenAlex and Semantic Scholar, resolving open-access PDFs, abstracts, and citation counts.
 - **Web Scout**: Queries Bing, Yahoo, and DuckDuckGo for sovereign government domains (`.go.id`, `.gov`, `.gov.uk`, `.mil`), accredited research institutes (`.ac.id`, `.edu`), and intergovernmental organizations (`who.int`, `worldbank.org`, `ipcc.ch`).
 
@@ -95,7 +95,7 @@ Inspired by FlashRAG and MindSearch, WebScout prevents domain authority from ove
 - **Waterfall Score**: Computes $\text{FinalScore} = \text{Relevance} \times (1 + 0.5 \times \text{Authority})$ for all candidates passing the threshold.
 
 ### 4. Local-First Dense + Sparse Hybrid Search (RRF)
-Unlike typical RAG systems that rely solely on approximate dense vector embeddings or third-party cloud vector databases, Scrpcy runs a **zero-dependency, local-first hybrid retrieval engine** embedded directly into each project's SQLite database (`vault/project_vault.db`):
+Unlike typical RAG systems that rely solely on approximate dense vector embeddings or third-party cloud vector databases, Scripcy runs a **zero-dependency, local-first hybrid retrieval engine** embedded directly into each project's SQLite database (`vault/project_vault.db`):
 - **Lexical Sparse Search (FTS5 BM25)**: Evaluates term frequency and inverse document frequency via SQLite FTS5 with Okapi BM25 scoring for exact acronyms, model names, and domain terminology.
 - **Semantic Dense Search (`sqlite-vec`)**: Computes cosine distance over dense vector embeddings (`text-embedding-004` or custom embedding models) directly inside SQLite.
 - **Reciprocal Rank Fusion (RRF)**: Merges sparse lexical and dense semantic rankings using the Cormack, Clarke, and Büttcher (SIGIR 2009) algorithm with $k=60$:
@@ -103,13 +103,13 @@ Unlike typical RAG systems that rely solely on approximate dense vector embeddin
 - **Multimodal Visual Boosting**: Automatically injects indexed visual tables and figures into candidate pools, boosting chunks containing empirical evidence by $1.40\times$ for factual archetypes.
 
 ### 5. Multi-Thread Citation Snowballing & Graph Traversal
-Adhering to the systematic literature review methodology established by Claes Wohlin (2014), Scrpcy uncovers seminal works through multi-thread citation network traversal:
+Adhering to the systematic literature review methodology established by Claes Wohlin (2014), Scripcy uncovers seminal works through multi-thread citation network traversal:
 - **Backward Snowballing**: Automatically parses reference lists of seed vault papers to identify foundational antecedents.
 - **Forward Snowballing**: Queries the Semantic Scholar Graph API and OpenCitations to discover emerging studies that cite your vault papers.
 - **Cross-Citation Convergence Scoring**: Ranks candidate papers by cross-cutting hub density, prioritizing literature cited across multiple independent threads.
 
 ### 6. Structured 3-Line Visual Blocks with Clickable Links
-When raster plots, charts, or maps are indexed from papers or web pages, Scrpcy renders them in a readable 3-line block:
+When raster plots, charts, or maps are indexed from papers or web pages, Scripcy renders them in a readable 3-line block:
 ```markdown
 [📊 Buka Gambar](file:///C:/path/to/project/vault/images/fig_1.png)  
 Figure 3. Annual Hotspot Distribution Across Peatland Formations  
@@ -144,7 +144,7 @@ projects/
 
 ### 1. Clone the Repository
 ```bash
-git clone https://github.com/your-username/scrpcy.git
+git clone https://github.com/your-username/scripcy.git
 cd scrpcy
 ```
 
@@ -159,7 +159,7 @@ python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 ```
 
-### 3. Install Scrpcy in Editable Mode
+### 3. Install Scripcy in Editable Mode
 ```bash
 pip install -e ".[dev]"
 ```
@@ -173,7 +173,7 @@ scrpcy --help
 
 ## Configuration & BYOK Models
 
-Scrpcy utilizes a Bring-Your-Own-Key (BYOK) architecture. Your API keys are saved locally in `~/.scrpcy/config.json` and are never shared or sent to external telemetry servers.
+Scripcy utilizes a Bring-Your-Own-Key (BYOK) architecture. Your API keys are saved locally in `~/.scripcy/config.json` and are never shared or sent to external telemetry servers.
 
 ### 1. Store API Keys
 ```bash
@@ -222,7 +222,7 @@ scrpcy start --port 8080
 
 ### Contextual Sub-Mode Navigation
 
-Inside the Scrpcy terminal studio, seamless slash commands allow switching context between projects, document repositories, and task queues:
+Inside the Scripcy terminal studio, seamless slash commands allow switching context between projects, document repositories, and task queues:
 
 | Command | Mode / Context | Description |
 | :--- | :--- | :--- |
@@ -245,7 +245,7 @@ Inside the Scrpcy terminal studio, seamless slash commands allow switching conte
 
 ### 1. Document Ingestion & Parsing
 ```python
-from scrpcy import DocumentParser
+from scripcy import DocumentParser
 
 parser = DocumentParser()
 result = parser.parse("path/to/paper.pdf")
@@ -259,7 +259,7 @@ print("Cached Markdown Path:", result.cache_path)
 ### 2. Streaming Evidence-Grounded Synthesis
 ```python
 import asyncio
-from scrpcy import LLMEngine
+from scripcy import LLMEngine
 
 async def main():
     engine = LLMEngine()
@@ -275,8 +275,8 @@ asyncio.run(main())
 ### 3. Dual-Channel Web & Literature Scouting
 ```python
 import asyncio
-from scrpcy.core.web_scout import WebScout
-from scrpcy.core.scout import LiteratureScout, ScoutQuery
+from scripcy.core.web_scout import WebScout
+from scripcy.core.scout import LiteratureScout, ScoutQuery
 
 async def main():
     # 1. Sovereign Web Scout
@@ -303,42 +303,42 @@ asyncio.run(main())
 
 ## References & Acknowledgements
 
-The architecture of Scrpcy has been deeply informed and inspired by foundational research in information retrieval, hybrid search algorithms, autonomous multi-agent systems, and academic synthesis:
+The architecture of Scripcy has been deeply informed and inspired by foundational research in information retrieval, hybrid search algorithms, autonomous multi-agent systems, and academic synthesis:
 
 ### Retrieval & Hybrid Search Algorithms
-| Reference / Algorithm | Origin / Publication | Architectural Contribution to Scrpcy |
+| Reference / Algorithm | Origin / Publication | Architectural Contribution to Scripcy |
 | :--- | :--- | :--- |
-| **[Reciprocal Rank Fusion (RRF)](https://dl.acm.org/doi/10.1145/1571941.1572114)** | Cormack, Clarke, and Büttcher (SIGIR 2009) | **Dense + Sparse Hybrid Aggregation**: Powers Scrpcy's local hybrid retrieval in `VectorVault`, merging sparse FTS5 BM25 lexical rankings with dense cosine similarity vectors via $\sum \frac{1}{k + r_m(d)}$. |
+| **[Reciprocal Rank Fusion (RRF)](https://dl.acm.org/doi/10.1145/1571941.1572114)** | Cormack, Clarke, and Büttcher (SIGIR 2009) | **Dense + Sparse Hybrid Aggregation**: Powers Scripcy's local hybrid retrieval in `VectorVault`, merging sparse FTS5 BM25 lexical rankings with dense cosine similarity vectors via $\sum \frac{1}{k + r_m(d)}$. |
 | **[sqlite-vec](https://github.com/asg017/sqlite-vec)** | Alex Garcia | **In-Process Local Vector Search**: Provides zero-dependency, C-based SIMD vector search running natively inside per-project SQLite databases (`project_vault.db`) without external vector DB infrastructure. |
-| **[Okapi BM25 (SQLite FTS5)](https://www.sqlite.org/fts5.html)** | Robertson & Zaragoza (2009) | **Lexical Relevance Scoring**: Powers Scrpcy's exact lexical indexing for domain jargon, paper titles, author names, and visual captions across project vaults. |
-| **[FlashRAG](https://github.com/RUC-NLPIR/FlashRAG)** | RUC AI Box | **Cascaded Waterfall Relevance Gating**: Provided the mathematical foundation for Scrpcy's gated search scoring, ensuring domain authority cannot override low-relevance results ($\text{FinalScore} = \text{Relevance} \times [1 + 0.5 \times \text{Authority}]$). |
-| **[MindSearch](https://github.com/InternLM/MindSearch)** | InternLM | **Lexical Anchor Pre-Fetch Check & Root Landing Page Rejection**: Inspired Scrpcy's pre-fetch gate verifying core entity occurrences in snippets before scraping, and the automatic rejection of shallow root homepages (`bps.go.id/id`). |
-| **[Perplexica](https://github.com/ItzCrazyK/Perplexica)** | ItzCrazyK | **Boolean Search Restructuring**: Informed Scrpcy's search operator formulation and multi-engine fallback strategies across Bing, Yahoo, and DuckDuckGo. |
+| **[Okapi BM25 (SQLite FTS5)](https://www.sqlite.org/fts5.html)** | Robertson & Zaragoza (2009) | **Lexical Relevance Scoring**: Powers Scripcy's exact lexical indexing for domain jargon, paper titles, author names, and visual captions across project vaults. |
+| **[FlashRAG](https://github.com/RUC-NLPIR/FlashRAG)** | RUC AI Box | **Cascaded Waterfall Relevance Gating**: Provided the mathematical foundation for Scripcy's gated search scoring, ensuring domain authority cannot override low-relevance results ($\text{FinalScore} = \text{Relevance} \times [1 + 0.5 \times \text{Authority}]$). |
+| **[MindSearch](https://github.com/InternLM/MindSearch)** | InternLM | **Lexical Anchor Pre-Fetch Check & Root Landing Page Rejection**: Inspired Scripcy's pre-fetch gate verifying core entity occurrences in snippets before scraping, and the automatic rejection of shallow root homepages (`bps.go.id/id`). |
+| **[Perplexica](https://github.com/ItzCrazyK/Perplexica)** | ItzCrazyK | **Boolean Search Restructuring**: Informed Scripcy's search operator formulation and multi-engine fallback strategies across Bing, Yahoo, and DuckDuckGo. |
 
 ### Autonomous Multi-Agent Systems & Literature Discovery
-| Project / Reference | Origin / Organization | Architectural Contribution to Scrpcy |
+| Project / Reference | Origin / Organization | Architectural Contribution to Scripcy |
 | :--- | :--- | :--- |
-| **[Stanford STORM](https://github.com/stanford-oval/storm)** | Stanford OVAL | **Perspective-Guided Querying & Meta-Word Stripping**: Informed Scrpcy's `QueryDisambiguator`, removing conversational tokens and meta-words (`data`, `overview`) in favor of empirical metric expansion and two-phase portal discovery. |
-| **[GPT-Researcher](https://github.com/assafelovic/gpt-researcher)** | Assaf Elovic | **Sub-Query Decomposition & Negative Filtering**: Informed Scrpcy's query reformulation, decomposing complex user questions into targeted sub-queries with negative exclusion operators (`-pengertian -definisi`). |
-| **[Citation Snowballing Guidelines](https://dl.acm.org/doi/10.1145/2601248.2601268)** | Claes Wohlin (EASE 2014) | **Systematic Citation Graph Traversal**: Governs Scrpcy's 1-hop backward reference parsing and forward citation harvesting in `CitationSnowballer` to identify seminal cross-cutting hub literature. |
-| **[OpenAlex](https://openalex.org/)** | Priem, Piwowar, & Orr (2022) | **Open Bibliometric Federation**: Primary metadata source for Scrpcy's Literature Scout, indexing 250M+ global scholarly works, authors, institutions, and open-access PDF links. |
+| **[Stanford STORM](https://github.com/stanford-oval/storm)** | Stanford OVAL | **Perspective-Guided Querying & Meta-Word Stripping**: Informed Scripcy's `QueryDisambiguator`, removing conversational tokens and meta-words (`data`, `overview`) in favor of empirical metric expansion and two-phase portal discovery. |
+| **[GPT-Researcher](https://github.com/assafelovic/gpt-researcher)** | Assaf Elovic | **Sub-Query Decomposition & Negative Filtering**: Informed Scripcy's query reformulation, decomposing complex user questions into targeted sub-queries with negative exclusion operators (`-pengertian -definisi`). |
+| **[Citation Snowballing Guidelines](https://dl.acm.org/doi/10.1145/2601248.2601268)** | Claes Wohlin (EASE 2014) | **Systematic Citation Graph Traversal**: Governs Scripcy's 1-hop backward reference parsing and forward citation harvesting in `CitationSnowballer` to identify seminal cross-cutting hub literature. |
+| **[OpenAlex](https://openalex.org/)** | Priem, Piwowar, & Orr (2022) | **Open Bibliometric Federation**: Primary metadata source for Scripcy's Literature Scout, indexing 250M+ global scholarly works, authors, institutions, and open-access PDF links. |
 | **[Semantic Scholar Graph API](https://www.semanticscholar.org/product/api)** | Allen Institute for AI (Kinney et al., 2023) | **Citation Graph & TLDR Federation**: Powers citation count mapping, paper influence scoring, and forward citation tracking across literature pipelines. |
 | **[Unpaywall](https://unpaywall.org/)** | OurResearch | **Automated Open-Access Harvesting**: Resolves legitimate open-access PDF endpoints directly from scholarly DOIs. |
-| **[PaperQA / PaperQA2](https://github.com/Future-House/paper-qa)** | FutureHouse | **Evidence Synthesis & Fact-Grounding**: Informed Scrpcy's chunk-level evidence ranking, context compression, and automated citation mapping to prevent LLM hallucinations. |
+| **[PaperQA / PaperQA2](https://github.com/Future-House/paper-qa)** | FutureHouse | **Evidence Synthesis & Fact-Grounding**: Informed Scripcy's chunk-level evidence ranking, context compression, and automated citation mapping to prevent LLM hallucinations. |
 | **[Microsoft AutoGen](https://github.com/microsoft/autogen)** | Microsoft Research | **Multi-Agent Conversational Choreography**: Guided the isolated subagent architecture separating `Contractor`, `VaultExtractor`, `GapExtractor`, `FactChecker`, and `DevilsAdvocate`. |
 
 ### UI Craft & Ingestion Infrastructure
-| Project / Reference | Origin / Organization | Architectural Contribution to Scrpcy |
+| Project / Reference | Origin / Organization | Architectural Contribution to Scripcy |
 | :--- | :--- | :--- |
-| **[Google Antigravity](https://deepmind.google/)** | Google DeepMind | **Terminal Studio Craft & UX Principles**: Informed Scrpcy's duotone minimalist palette, outlier input framing, background task telemetry, and structured artifact generation. |
-| **[PyMuPDF4LLM](https://github.com/pymupdf/pymupdf4llm)** | Artifex Software | **High-Fidelity Document Ingestion**: Powers Scrpcy's local PDF parsing, converting academic tables and layout columns into clean Markdown. |
-| **[Model Context Protocol (MCP)](https://modelcontextprotocol.io/)** | Anthropic | **Extensible Tool Interoperability**: Utilized in Scrpcy's `WordCraftClient` for dispatching manuscript authoring commands to WordCraft. |
+| **[Google Antigravity](https://deepmind.google/)** | Google DeepMind | **Terminal Studio Craft & UX Principles**: Informed Scripcy's duotone minimalist palette, outlier input framing, background task telemetry, and structured artifact generation. |
+| **[PyMuPDF4LLM](https://github.com/pymupdf/pymupdf4llm)** | Artifex Software | **High-Fidelity Document Ingestion**: Powers Scripcy's local PDF parsing, converting academic tables and layout columns into clean Markdown. |
+| **[Model Context Protocol (MCP)](https://modelcontextprotocol.io/)** | Anthropic | **Extensible Tool Interoperability**: Utilized in Scripcy's `WordCraftClient` for dispatching manuscript authoring commands to WordCraft. |
 
 ---
 
 ## Testing
 
-Scrpcy includes an extensive test suite covering unit heuristics, multi-source federation, subagent contracts, and end-to-end headless verification:
+Scripcy includes an extensive test suite covering unit heuristics, multi-source federation, subagent contracts, and end-to-end headless verification:
 
 ```bash
 # Run the entire test suite
@@ -355,4 +355,4 @@ pytest -q tests/test_agentic_tool_loop.py tests/test_project_submodes.py
 
 ## License
 
-Scrpcy is distributed under the [MIT License](LICENSE).
+Scripcy is distributed under the [MIT License](LICENSE).

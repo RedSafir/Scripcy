@@ -1,4 +1,4 @@
-"""Pytest fixtures for scrpcy parser and workspace testing."""
+"""Pytest fixtures for scripcy parser and workspace testing."""
 
 from __future__ import annotations
 
@@ -9,15 +9,15 @@ import pydantic
 import pymupdf
 import pytest
 
-from scrpcy.core.extractor import MockMetadataExtractor
-from scrpcy.core.models import DocumentMetadata
-from scrpcy.core.workspace import WorkspaceManager
+from scripcy.core.extractor import MockMetadataExtractor
+from scripcy.core.models import DocumentMetadata
+from scripcy.core.workspace import WorkspaceManager
 
 
 @pytest.fixture
 def temp_workspace(tmp_path: Path) -> WorkspaceManager:
     """Provide an isolated WorkspaceManager backed by a temporary directory."""
-    workspace_root = tmp_path / "scrpcy_test_workspace"
+    workspace_root = tmp_path / "scripcy_test_workspace"
     return WorkspaceManager(root_dir=workspace_root)
 
 
@@ -98,11 +98,12 @@ def corrupted_pdf_factory(tmp_path: Path) -> Callable[[str, bytes], Path]:
 
 
 @pytest.fixture(autouse=True)
-def isolate_scrpcy_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Isolate all tests from user's real ~/.scrpcy configuration and project registry."""
-    fake_scrpcy = tmp_path / ".scrpcy_test_home"
-    fake_scrpcy.mkdir(parents=True, exist_ok=True)
-    cfg_file = fake_scrpcy / "config.json"
-    reg_file = fake_scrpcy / "projects.json"
-    monkeypatch.setenv("SCRPCY_CONFIG", str(cfg_file))
+def isolate_scripcy_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Isolate all tests from user's real ~/.scripcy configuration and project registry."""
+    fake_scripcy = tmp_path / ".scripcy_test_home"
+    fake_scripcy.mkdir(parents=True, exist_ok=True)
+    cfg_file = fake_scripcy / "config.json"
+    reg_file = fake_scripcy / "projects.json"
+    monkeypatch.setenv("SCRIPCY_CONFIG", str(cfg_file))
+    monkeypatch.setenv("SCRIPCY_PROJECTS", str(reg_file))
     monkeypatch.setenv("SCRPCY_PROJECTS", str(reg_file))

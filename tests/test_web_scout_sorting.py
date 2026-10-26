@@ -5,13 +5,13 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from scrpcy.core.web_scout import (
+from scripcy.core.web_scout import (
     OfficialDomainFilter,
     OfficialDomainScorer,
     WebScout,
     WebSearchResult,
 )
-from scrpcy.core.workspace import WorkspaceManager
+from scripcy.core.workspace import WorkspaceManager
 
 
 class TestOfficialDomainScorer:
@@ -167,7 +167,7 @@ class TestWebScoutReranking:
             assert not any("spamsite.xyz" in r.domain for r in results)
 
     def test_critic_report_generates_directed_web_queries(self):
-        from scrpcy.core.critic import DevilsAdvocate
+        from scripcy.core.critic import DevilsAdvocate
         critic = DevilsAdvocate()
         report = critic.critique_heuristic(
             query="carikan aku data karhutla di indonesia 5 tahun terakhir",
@@ -182,7 +182,7 @@ class TestQueryDisambiguator:
     """Tests for Stanford STORM and GPT-Researcher inspired QueryDisambiguator."""
 
     def test_strips_conversational_and_generic_tokens(self):
-        from scrpcy.core.web_scout import QueryDisambiguator
+        from scripcy.core.web_scout import QueryDisambiguator
         d = QueryDisambiguator.disambiguate("carikan aku data terbaru karhutla di indonesia")
         # Core entity must be isolated to karhutla
         assert "karhutla" in d.core_entity_terms
@@ -199,7 +199,7 @@ class TestQueryDisambiguator:
         assert any("-pengertian" in q for q in d.targeted_queries)
 
     def test_anchors_karhutla_to_sipongi_and_klhk(self):
-        from scrpcy.core.web_scout import QueryDisambiguator
+        from scripcy.core.web_scout import QueryDisambiguator
         d = QueryDisambiguator.disambiguate("rekapitulasi titik api karhutla 2024")
         assert "karhutla" in d.core_entity_terms
         assert any("sipongi.menlhk.go.id" in dom for dom in d.anchored_domains)
@@ -211,7 +211,7 @@ class TestCascadedWaterfallAndRelevanceGate:
     """Tests for FlashRAG and MindSearch inspired cascaded relevance gating."""
 
     def test_root_landing_page_detection(self):
-        from scrpcy.core.web_scout import is_root_or_generic_landing
+        from scripcy.core.web_scout import is_root_or_generic_landing
         # Generic root / shallow pages must return True
         assert is_root_or_generic_landing("https://www.bps.go.id/") is True
         assert is_root_or_generic_landing("https://www.bps.go.id/id") is True
@@ -223,7 +223,7 @@ class TestCascadedWaterfallAndRelevanceGate:
         assert is_root_or_generic_landing("https://www.bps.go.id/id/statistics-table/2/MTA0MSMy/luas-kebakaran-hutan-dan-lahan.html") is False
 
     def test_topic_relevance_computation(self):
-        from scrpcy.core.web_scout import compute_topic_relevance
+        from scripcy.core.web_scout import compute_topic_relevance
         # Completely irrelevant page
         rel_zero = compute_topic_relevance(
             title="Badan Pusat Statistik Indonesia",
@@ -245,7 +245,7 @@ class TestCascadedWaterfallAndRelevanceGate:
 
     @pytest.mark.asyncio
     async def test_rejects_irrelevant_official_homepage_in_search(self, tmp_path: Path):
-        from scrpcy.core.web_scout import WebScout
+        from scripcy.core.web_scout import WebScout
         mock_html = """
         <div class="result">
             <h2 class="result__title"><a href="https://duckduckgo.com/l/?uddg=https%3A%2F%2Fwww.bps.go.id%2Fid">Badan Pusat Statistik Indonesia</a></h2>
@@ -282,8 +282,8 @@ class TestCascadedWaterfallAndRelevanceGate:
 
     @pytest.mark.asyncio
     async def test_post_fetch_verification_rejects_missing_topic(self, tmp_path: Path):
-        from scrpcy.core.web_scout import WebScout
-        from scrpcy.exceptions import OfficialSourceRejectedError
+        from scripcy.core.web_scout import WebScout
+        from scripcy.exceptions import OfficialSourceRejectedError
 
         ws = WorkspaceManager(root_dir=tmp_path)
         ws.ensure_directories()

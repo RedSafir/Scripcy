@@ -10,13 +10,13 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from scrpcy.core.config import (
+from scripcy.core.config import (
     CitationPreferences,
     ConfigManager,
-    ScrpcyConfig,
+    ScripcyConfig,
     resolve_config_path,
 )
-from scrpcy.core.engine import (
+from scripcy.core.engine import (
     EvidenceChunk,
     EvidenceSynthesizer,
     LLMEngine,
@@ -24,9 +24,9 @@ from scrpcy.core.engine import (
     estimate_tokens,
     tokenize_query,
 )
-from scrpcy.core.models import DocumentMetadata, ParsedDocument
-from scrpcy.core.skills import Skill, SkillsLoader
-from scrpcy.exceptions import ConfigError, EngineError, SkillNotFoundError
+from scripcy.core.models import DocumentMetadata, ParsedDocument
+from scripcy.core.skills import Skill, SkillsLoader
+from scripcy.exceptions import ConfigError, EngineError, SkillNotFoundError
 
 
 class MockChunkChoiceDelta:
@@ -48,7 +48,7 @@ class TestConfigManager:
     """Tests for configuration persistence, validation, and key resolution."""
 
     def test_default_config_values(self) -> None:
-        config = ScrpcyConfig()
+        config = ScripcyConfig()
         assert config.default_model == "gemini/gemini-2.5-pro"
         assert config.citation.style == "apa"
         assert config.citation.max_evidence_chunks == 5
@@ -57,7 +57,7 @@ class TestConfigManager:
 
     def test_config_save_and_load(self, tmp_path: Path) -> None:
         config_path = tmp_path / "test_config.json"
-        config = ScrpcyConfig(
+        config = ScripcyConfig(
             default_model="openai/gpt-4o",
             api_keys={"openai": "sk-test-12345"},
             citation=CitationPreferences(style="ieee", max_evidence_chunks=3),
@@ -66,7 +66,7 @@ class TestConfigManager:
         assert saved_path == config_path
         assert config_path.is_file()
 
-        loaded = ScrpcyConfig.load(config_path)
+        loaded = ScripcyConfig.load(config_path)
         assert loaded.default_model == "openai/gpt-4o"
         assert loaded.api_keys["openai"] == "sk-test-12345"
         assert loaded.citation.style == "ieee"
@@ -79,7 +79,7 @@ class TestConfigManager:
         monkeypatch.setenv("GEMINI_API_KEY", "env-gemini-key")
         monkeypatch.setenv("OPENAI_API_KEY", "env-openai-key")
 
-        config = ScrpcyConfig(api_keys={"anthropic": "conf-anthropic-key"})
+        config = ScripcyConfig(api_keys={"anthropic": "conf-anthropic-key"})
 
         # Resolved from stored config
         assert config.get_api_key("anthropic") == "conf-anthropic-key"
@@ -93,7 +93,7 @@ class TestConfigManager:
         monkeypatch.setenv("OPENAI_API_KEY", "openai-secret")
         monkeypatch.setenv("ANTHROPIC_API_KEY", "anthropic-secret")
 
-        config = ScrpcyConfig()
+        config = ScripcyConfig()
         assert config.get_api_key_for_model("gemini/gemini-2.5-pro") == "gemini-secret"
         assert config.get_api_key_for_model("openai/gpt-4o") == "openai-secret"
         assert config.get_api_key_for_model("claude-3-5-sonnet") == "anthropic-secret"
@@ -114,7 +114,7 @@ class TestConfigManager:
         bad_cfg_file.write_text('{"citation": {"max_evidence_chunks": 999999}}', encoding="utf-8")
 
         with pytest.raises(ConfigError, match="Failed to read or parse"):
-            ScrpcyConfig.load(bad_cfg_file)
+            ScripcyConfig.load(bad_cfg_file)
 
     def test_config_environment_variable_override(
         self,
@@ -122,12 +122,12 @@ class TestConfigManager:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         env_file = tmp_path / "env_override_config.json"
-        cfg = ScrpcyConfig(default_model="groq/llama-3.3-70b")
+        cfg = ScripcyConfig(default_model="groq/llama-3.3-70b")
         cfg.save(env_file)
 
-        monkeypatch.setenv("SCRPCY_CONFIG", str(env_file))
+        monkeypatch.setenv("SCRIPCY_CONFIG", str(env_file))
         assert resolve_config_path() == env_file.resolve()
-        loaded = ScrpcyConfig.load()
+        loaded = ScripcyConfig.load()
         assert loaded.default_model == "groq/llama-3.3-70b"
 
 
@@ -140,11 +140,11 @@ class TestSkillsLoader:
 
         skills = loader.list_skills()
         names = [s.name for s in skills]
-        assert "scrpcy_manual" in names
+        assert "scripcy_manual" in names
 
-        manual = loader.get_skill("scrpcy_manual")
-        assert manual.name == "scrpcy_manual"
-        assert "Scrpcy" in manual.system_prompt
+        manual = loader.get_skill("scripcy_manual")
+        assert manual.name == "scripcy_manual"
+        assert "Scripcy" in manual.system_prompt
 
     def test_parse_skill_with_frontmatter(self, tmp_path: Path) -> None:
         skills_dir = tmp_path / "skills"
@@ -382,7 +382,7 @@ class TestLLMEngine:
     async def test_stream_query_with_mock_litellm(self, tmp_path: Path) -> None:
         skills_dir = tmp_path / "skills"
         loader = SkillsLoader(skills_dir=skills_dir, auto_init=True)
-        config = ScrpcyConfig(default_model="gemini/gemini-2.5-pro")
+        config = ScripcyConfig(default_model="gemini/gemini-2.5-pro")
 
         recorded_kwargs: dict[str, Any] = {}
 
@@ -424,7 +424,7 @@ class TestLLMEngine:
     async def test_query_returns_synthesis_result(self, tmp_path: Path) -> None:
         skills_dir = tmp_path / "skills"
         loader = SkillsLoader(skills_dir=skills_dir, auto_init=True)
-        config = ScrpcyConfig(default_model="gemini/gemini-2.5-pro")
+        config = ScripcyConfig(default_model="gemini/gemini-2.5-pro")
 
         async def mock_acompletion(**kwargs: Any):
             for t in ["Synthesized ", "academic ", "answer."]:
@@ -439,13 +439,13 @@ class TestLLMEngine:
         result = await engine.query(
             query="Explain attention",
             documents=["Attention mechanisms compute weighted representations."],
-            skill_name="scrpcy_manual",
+            skill_name="scripcy_manual",
         )
 
         assert isinstance(result, SynthesisResult)
         assert result.answer == "Synthesized academic answer."
         assert result.model == "gemini/gemini-2.5-pro"
-        assert result.skill == "scrpcy_manual"
+        assert result.skill == "scripcy_manual"
         assert len(result.evidence_chunks) == 1
 
     @pytest.mark.asyncio
@@ -474,7 +474,7 @@ class TestLLMEngine:
     async def test_engine_with_model_and_temp_override(self, tmp_path: Path) -> None:
         skills_dir = tmp_path / "skills"
         loader = SkillsLoader(skills_dir=skills_dir, auto_init=True)
-        config = ScrpcyConfig(default_model="gemini/gemini-2.5-pro")
+        config = ScripcyConfig(default_model="gemini/gemini-2.5-pro")
 
         captured_kwargs: dict[str, Any] = {}
 

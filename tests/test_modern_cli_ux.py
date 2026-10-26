@@ -5,10 +5,10 @@ from unittest.mock import MagicMock, patch
 from rich.console import Console
 from rich.text import Text
 
-from scrpcy.cli_studio import CLIStudio
-from scrpcy.core.tasks import TaskInfo, TaskManager
-from scrpcy.core.chats import ChatManager, ChatSession
-from scrpcy.ui.interactive import interactive_item_browser
+from scripcy.cli_studio import CLIStudio
+from scripcy.core.tasks import TaskInfo, TaskManager
+from scripcy.core.chats import ChatManager, ChatSession
+from scripcy.ui.interactive import interactive_item_browser
 
 
 def test_transient_toast_lifecycle() -> None:
@@ -100,7 +100,7 @@ def test_interactive_item_browser_multi_key_hints_and_quit() -> None:
 
     with patch("sys.stdin.isatty", return_value=True):
         # Test pressing 'c' triggers 'cancel'
-        with patch("scrpcy.ui.interactive._read_key", return_value="c"):
+        with patch("scripcy.ui.interactive._read_key", return_value="c"):
             action, _, _ = interactive_item_browser(
                 title="Tasks",
                 columns=columns,
@@ -112,7 +112,7 @@ def test_interactive_item_browser_multi_key_hints_and_quit() -> None:
             assert action == "cancel"
 
         # Test pressing 'x' also triggers 'cancel'
-        with patch("scrpcy.ui.interactive._read_key", return_value="x"):
+        with patch("scripcy.ui.interactive._read_key", return_value="x"):
             action, _, _ = interactive_item_browser(
                 title="Tasks",
                 columns=columns,
@@ -124,7 +124,7 @@ def test_interactive_item_browser_multi_key_hints_and_quit() -> None:
             assert action == "cancel"
 
         # Test pressing 'q' triggers 'back'
-        with patch("scrpcy.ui.interactive._read_key", return_value="q"):
+        with patch("scripcy.ui.interactive._read_key", return_value="q"):
             action, _, _ = interactive_item_browser(
                 title="Tasks",
                 columns=columns,
@@ -193,7 +193,7 @@ def test_chat_submode_routing_for_modern_ux() -> None:
 
 def test_render_diff_inplace_margin_wrap_clamping() -> None:
     """Test that _render_diff_inplace clamps line widths to prevent terminal auto-wrap cursor displacement."""
-    from scrpcy.ui.interactive import _render_diff_inplace
+    from scripcy.ui.interactive import _render_diff_inplace
     import io
 
     out_buf = io.StringIO()
@@ -224,7 +224,7 @@ def test_render_diff_inplace_margin_wrap_clamping() -> None:
 
 def test_interactive_detail_viewer_no_wrap_overflow() -> None:
     """Test that interactive_detail_viewer renders exact number of lines without row inflation."""
-    from scrpcy.ui.interactive import interactive_detail_viewer
+    from scripcy.ui.interactive import interactive_detail_viewer
 
     c = Console(force_terminal=False, width=80)
     # Non-interactive fallback should print without error

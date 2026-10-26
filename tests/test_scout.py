@@ -12,20 +12,20 @@ import httpx
 import pytest
 from rich.console import Console
 
-from scrpcy.cli_studio import CLIStudio
-from scrpcy.core.config import ScrpcyConfig
-from scrpcy.core.engine import LLMEngine
-from scrpcy.core.models import DocumentMetadata
-from scrpcy.core.project import ProjectManager
-from scrpcy.core.scout import (
+from scripcy.cli_studio import CLIStudio
+from scripcy.core.config import ScripcyConfig
+from scripcy.core.engine import LLMEngine
+from scripcy.core.models import DocumentMetadata
+from scripcy.core.project import ProjectManager
+from scripcy.core.scout import (
     LiteratureScout,
     ScoutQuery,
     ScoutResult,
     reconstruct_inverted_abstract,
 )
-from scrpcy.core.search import PaperSearcher, SearchResult
-from scrpcy.core.workspace import WorkspaceManager
-from scrpcy.exceptions import SearchError
+from scripcy.core.search import PaperSearcher, SearchResult
+from scripcy.core.workspace import WorkspaceManager
+from scripcy.exceptions import SearchError
 
 
 class TestScoutModels:
@@ -115,7 +115,7 @@ class TestLiteratureScoutCriteriaExtraction:
         mock_completion: MagicMock,
         scout: LiteratureScout,
     ) -> None:
-        cfg = ScrpcyConfig(
+        cfg = ScripcyConfig(
             default_model="gemini/gemini-2.5-pro",
             api_keys={"gemini": "test-gemini-key"},
         )
@@ -151,7 +151,7 @@ class TestLiteratureScoutCriteriaExtraction:
         mock_completion: MagicMock,
         scout: LiteratureScout,
     ) -> None:
-        cfg = ScrpcyConfig(
+        cfg = ScripcyConfig(
             default_model="gemini/gemini-2.5-pro",
             gemini_api_key="test-gemini-key",
         )
@@ -169,8 +169,8 @@ class TestLiteratureScoutSearch:
     def scout(self, temp_workspace: WorkspaceManager) -> LiteratureScout:
         return LiteratureScout(workspace=temp_workspace)
 
-    @patch("scrpcy.core.scout.PYALEX_AVAILABLE", True)
-    @patch("scrpcy.core.scout.Works")
+    @patch("scripcy.core.scout.PYALEX_AVAILABLE", True)
+    @patch("scripcy.core.scout.Works")
     def test_search_openalex_success(
         self,
         mock_works_cls: MagicMock,
@@ -274,7 +274,7 @@ class TestLiteratureScoutCurateAndRank:
         mock_completion: MagicMock,
         scout: LiteratureScout,
     ) -> None:
-        cfg = ScrpcyConfig(
+        cfg = ScripcyConfig(
             default_model="gemini/gemini-2.5-pro",
             api_keys={"gemini": "test-gemini-key"},
         )
@@ -383,7 +383,7 @@ class TestCLIStudioScoutCommand:
         tmp_path: Path,
     ) -> CLIStudio:
         pm = ProjectManager(registry_file=tmp_path / "projects.json")
-        cfg = ScrpcyConfig(workspace_path=str(temp_workspace.root_dir))
+        cfg = ScripcyConfig(workspace_path=str(temp_workspace.root_dir))
         st = CLIStudio(
             workspace=temp_workspace,
             config=cfg,

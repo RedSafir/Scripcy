@@ -6,12 +6,12 @@ import os
 from pathlib import Path
 import pytest
 
-from scrpcy.core.workspace import (
+from scripcy.core.workspace import (
     DEFAULT_WORKSPACE_ENV,
     DEFAULT_WORKSPACE_RELATIVE,
     WorkspaceManager,
 )
-from scrpcy.exceptions import WorkspaceError
+from scripcy.exceptions import WorkspaceError
 
 
 def test_default_workspace_path(monkeypatch: pytest.MonkeyPatch) -> None:

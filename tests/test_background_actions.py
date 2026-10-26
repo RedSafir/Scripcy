@@ -6,10 +6,10 @@ from unittest.mock import MagicMock, patch
 
 from rich.console import Console
 
-from scrpcy.cli_studio import CLIStudio
-from scrpcy.core.config import ScrpcyConfig
-from scrpcy.core.project import ProjectManager
-from scrpcy.core.workspace import WorkspaceManager
+from scripcy.cli_studio import CLIStudio
+from scripcy.core.config import ScripcyConfig
+from scripcy.core.project import ProjectManager
+from scripcy.core.workspace import WorkspaceManager
 
 
 def test_gdrive_dispatches_to_processing(
@@ -20,7 +20,7 @@ def test_gdrive_dispatches_to_processing(
     console = Console(file=io.StringIO(), force_terminal=True, color_system=None)
     pm = ProjectManager(registry_file=tmp_path / "test_reg.json")
     proj = pm.create_project("test_proj", temp_workspace.root_dir)
-    cfg = ScrpcyConfig(workspace_path=str(temp_workspace.root_dir))
+    cfg = ScripcyConfig(workspace_path=str(temp_workspace.root_dir))
     studio = CLIStudio(
         workspace=temp_workspace,
         config=cfg,
@@ -52,7 +52,7 @@ def test_docx_dispatches_to_processing_in_chat(
     console = Console(file=io.StringIO(), force_terminal=True, color_system=None)
     pm = ProjectManager(registry_file=tmp_path / "test_reg.json")
     proj = pm.create_project("test_proj", temp_workspace.root_dir)
-    cfg = ScrpcyConfig(workspace_path=str(temp_workspace.root_dir))
+    cfg = ScripcyConfig(workspace_path=str(temp_workspace.root_dir))
     studio = CLIStudio(
         workspace=temp_workspace,
         config=cfg,
@@ -79,7 +79,7 @@ def test_chat_detects_gdrive_link_and_dispatches(
     console = Console(file=io.StringIO(), force_terminal=True, color_system=None)
     pm = ProjectManager(registry_file=tmp_path / "test_reg.json")
     proj = pm.create_project("test_proj", temp_workspace.root_dir)
-    cfg = ScrpcyConfig(workspace_path=str(temp_workspace.root_dir))
+    cfg = ScripcyConfig(workspace_path=str(temp_workspace.root_dir))
     studio = CLIStudio(
         workspace=temp_workspace,
         config=cfg,

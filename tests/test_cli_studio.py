@@ -10,12 +10,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from rich.console import Console
 
-from scrpcy.cli_studio import CLIStudio, SCRPCY_LOGO, SCRPCY_VERSION
-from scrpcy.core.config import ConfigManager, ScrpcyConfig
-from scrpcy.core.models import DocumentMetadata
-from scrpcy.core.project import ProjectInfo, ProjectManager
-from scrpcy.core.search import SearchResult
-from scrpcy.core.workspace import WorkspaceManager
+from scripcy.cli_studio import CLIStudio, SCRIPCY_LOGO, SCRIPCY_VERSION
+from scripcy.core.config import ConfigManager, ScripcyConfig
+from scripcy.core.models import DocumentMetadata
+from scripcy.core.project import ProjectInfo, ProjectManager
+from scripcy.core.search import SearchResult
+from scripcy.core.workspace import WorkspaceManager
 
 
 @pytest.fixture
@@ -38,7 +38,7 @@ def cli_studio(
     project_manager: ProjectManager,
 ) -> CLIStudio:
     """Fixture providing an isolated CLIStudio instance bound to a workspace."""
-    cfg = ScrpcyConfig(
+    cfg = ScripcyConfig(
         default_model="gemini/gemini-2.5-pro",
         workspace_path=str(temp_workspace.root_dir),
         skills_dir=str(temp_workspace.root_dir / "skills"),
@@ -62,15 +62,15 @@ class TestBigAsciiBanner:
     """Tests for large stylized ASCII logo and version rendering."""
 
     def test_big_ascii_logo_structure(self) -> None:
-        assert "██" in SCRPCY_LOGO
-        assert SCRPCY_VERSION.startswith("v")
+        assert "██" in SCRIPCY_LOGO
+        assert SCRIPCY_VERSION.startswith("v")
 
     def test_banner_rendering(self, test_console: Console, project_manager: ProjectManager) -> None:
         studio = CLIStudio(console=test_console, project_manager=project_manager)
         studio.print_banner()
 
         output = test_console.file.getvalue()
-        assert SCRPCY_VERSION in output
+        assert SCRIPCY_VERSION in output
         assert "Academic Research Studio" in output
 
 
@@ -90,7 +90,7 @@ class TestDashboardFlow:
         assert "/help" in output
 
     def test_dashboard_status(self, test_console: Console, project_manager: ProjectManager, tmp_path: Path) -> None:
-        cfg = ScrpcyConfig(default_model="gemini/gemini-2.5-pro")
+        cfg = ScripcyConfig(default_model="gemini/gemini-2.5-pro")
         studio = CLIStudio(console=test_console, config=cfg, project_manager=project_manager)
         
         # When no projects registered
@@ -268,17 +268,17 @@ class TestProjectCommands:
     def test_cmd_models_cancel_does_not_dump_tables(self, cli_studio: CLIStudio, monkeypatch: pytest.MonkeyPatch) -> None:
         """When user cancels model selector via Esc (None), it should return cleanly without dumping 4 tables."""
         import sys
-        import scrpcy.cli_studio as _cli_studio
+        import scripcy.cli_studio as _cli_studio
         monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
         monkeypatch.setattr(_cli_studio, "interactive_model_selector", lambda **kwargs: None)
-        monkeypatch.setattr("scrpcy.studio.commands.interactive_model_selector", lambda **kwargs: None)
-        monkeypatch.setattr("scrpcy.studio.commands.fetch_9router_models", lambda base: [])
+        monkeypatch.setattr("scripcy.studio.commands.interactive_model_selector", lambda **kwargs: None)
+        monkeypatch.setattr("scripcy.studio.commands.fetch_9router_models", lambda base: [])
         cli_studio.console.file = io.StringIO()
 
         cli_studio.cmd_models("")
         out = cli_studio.console.file.getvalue()
         # Must NOT dump inventory tables on cancel
-        assert "scrpcy Model & Provider Inventory" not in out
+        assert "scripcy Model & Provider Inventory" not in out
         assert "Panduan Perintah 'models'" not in out
 
     def test_interactive_settings_hub_navigation(self, cli_studio: CLIStudio, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -290,7 +290,7 @@ class TestProjectCommands:
             calls.append(first_key)
             return "back"
 
-        monkeypatch.setattr("scrpcy.studio.dashboard.interactive_menu", mock_interactive_menu)
+        monkeypatch.setattr("scripcy.studio.dashboard.interactive_menu", mock_interactive_menu)
         cli_studio.run_interactive_settings()
 
         assert "model" in calls
@@ -308,7 +308,7 @@ class TestProjectCommands:
                 return "s2_toggle"
             return "back"
 
-        monkeypatch.setattr("scrpcy.studio.dashboard.interactive_menu", mock_menu)
+        monkeypatch.setattr("scripcy.studio.dashboard.interactive_menu", mock_menu)
         cli_studio._run_interactive_federation_settings()
 
         # Should be toggled to False
@@ -326,7 +326,7 @@ class TestProjectCommands:
                 return "25"
             return "back"
 
-        monkeypatch.setattr("scrpcy.studio.dashboard.interactive_menu", mock_menu)
+        monkeypatch.setattr("scripcy.studio.dashboard.interactive_menu", mock_menu)
         cli_studio._run_interactive_agent_limits_settings()
 
         assert cli_studio.config.max_agent_turns == 25
@@ -336,11 +336,11 @@ class TestProjectCommands:
         import sys
         import io
         from rich.console import Console
-        from scrpcy.ui.interactive import interactive_menu
+        from scripcy.ui.interactive import interactive_menu
 
         monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
         # Mock single ENTER keypress
-        monkeypatch.setattr("scrpcy.ui.interactive._read_key", lambda: "ENTER")
+        monkeypatch.setattr("scripcy.ui.interactive._read_key", lambda: "ENTER")
 
         out_buf = io.StringIO()
         con = Console(file=out_buf, color_system="truecolor", force_terminal=True)
@@ -431,7 +431,7 @@ class TestProjectManagerClass:
         assert p1.name == "paper1"
         assert (tmp_path / "paper1" / "vault").is_dir()
         assert (tmp_path / "paper1" / "drafts").is_dir()
-        assert (tmp_path / "paper1" / ".scrpcy" / "project.json").is_file()
+        assert (tmp_path / "paper1" / ".scripcy" / "project.json").is_file()
 
         projects = project_manager.list_projects()
         assert len(projects) == 1
@@ -500,7 +500,7 @@ class TestProjectDeletionFlow:
             studio.handle_dashboard_command("delete my_study")
 
         output = test_console.file.getvalue()
-        assert "removed from Scrpcy" in output
+        assert "removed from Scripcy" in output
         assert "remain safe and untouched on disk" in output
         assert len(project_manager.list_projects()) == 0
         assert proj_dir.is_dir()
@@ -519,7 +519,7 @@ class TestProjectDeletionFlow:
             studio.handle_dashboard_command("delete 1")
 
         output = test_console.file.getvalue()
-        assert "removed from Scrpcy" in output
+        assert "removed from Scripcy" in output
         assert len(project_manager.list_projects()) == 0
         assert proj_dir.is_dir()
 
@@ -580,7 +580,7 @@ class TestProjectDeletionFlow:
 
         output = test_console.file.getvalue()
         assert "active_study" in output
-        assert "removed from Scrpcy" in output
+        assert "removed from Scripcy" in output
         assert "Returned to Dashboard" in output
         assert studio.current_project is None
         assert studio.workspace is None
@@ -692,7 +692,7 @@ class TestNewProjectWizardFlow:
             with patch.object(cli_studio.console, "input", side_effect=["y"]):
                 response = (
                     "Berdasarkan analisis, kita perlu paper tambahan:\n"
-                    "```scrpcy\n"
+                    "```scripcy\n"
                     "findpaper machine learning 2023\n"
                     "```\n"
                     "Silakan jalankan aksi di atas."
@@ -702,7 +702,7 @@ class TestNewProjectWizardFlow:
         assert len(executed_cmds) == 1
         assert executed_cmds[0] == "/findpaper machine learning 2023"
         output = cli_studio.console.file.getvalue()
-        assert "Aksi Scrpcy Disarankan AI" in output
+        assert "Aksi Scripcy Disarankan AI" in output
         assert "Menjalankan aksi" in output
 
     def test_handle_suggested_actions_decline(
@@ -714,7 +714,7 @@ class TestNewProjectWizardFlow:
             with patch.object(cli_studio.console, "input", side_effect=["n"]):
                 response = (
                     "Tinjauan selesai:\n"
-                    "```scrpcy\n"
+                    "```scripcy\n"
                     "docx bab1.docx\n"
                     "```\n"
                 )
@@ -722,7 +722,7 @@ class TestNewProjectWizardFlow:
 
         assert len(executed_cmds) == 0
         output = cli_studio.console.file.getvalue()
-        assert "Aksi Scrpcy Disarankan AI" in output
+        assert "Aksi Scripcy Disarankan AI" in output
         assert "dilewati" in output
 
     def test_chat_submode_slash_commands_and_plain_queries(
@@ -887,7 +887,7 @@ class TestAntigravityDesignSystem:
         studio = CLIStudio(console=test_console, project_manager=project_manager)
         studio.print_dashboard_banner()
         output = test_console.file.getvalue()
-        assert "scrpcy" in output
+        assert "scripcy" in output
         assert "dashboard" in output
         # Ensure no giant table of command suggestions is dumped
         assert "Dashboard Commands" not in output
@@ -902,7 +902,7 @@ class TestAntigravityDesignSystem:
         cli_studio.console.file.seek(0)
         cli_studio.print_project_banner()
         output = cli_studio.console.file.getvalue()
-        assert "scrpcy" in output
+        assert "scripcy" in output
         assert cli_studio.current_project.name in output
         # Ensure no command tip footer is printed
         assert "Type /help for commands" not in output
@@ -911,7 +911,7 @@ class TestAntigravityDesignSystem:
         self,
         test_console: Console,
     ) -> None:
-        from scrpcy.ui.interactive import interactive_input_prompt
+        from scripcy.ui.interactive import interactive_input_prompt
 
         with patch.object(test_console, "input", return_value="/vault list"):
             res = interactive_input_prompt(
@@ -929,10 +929,10 @@ class TestAntigravityDesignSystem:
         self,
         test_console: Console,
     ) -> None:
-        from scrpcy.ui.interactive import interactive_help_view
+        from scripcy.ui.interactive import interactive_help_view
 
         with patch("sys.stdin.isatty", return_value=True):
-            with patch("scrpcy.ui.interactive._read_key", side_effect=["ENTER"]):
+            with patch("scripcy.ui.interactive._read_key", side_effect=["ENTER"]):
                 interactive_help_view(
                     console=test_console,
                     current_model="gemini/gemini-2.5-pro",
@@ -944,7 +944,7 @@ class TestAntigravityDesignSystem:
         assert "Available Commands [Project]" in output
         assert "/search" in output
         assert "/vault" in output
-        assert "Scrpcy CLI" not in output
+        assert "Scripcy CLI" not in output
         assert "General Workspace" not in output
         assert "Keyboard Shortcuts" not in output
 
@@ -952,11 +952,11 @@ class TestAntigravityDesignSystem:
         self,
         test_console: Console,
     ) -> None:
-        from scrpcy.ui.interactive import interactive_help_view
+        from scripcy.ui.interactive import interactive_help_view
 
         # Press DOWN then ENTER (exit)
         with patch("sys.stdin.isatty", return_value=True):
-            with patch("scrpcy.ui.interactive._read_key", side_effect=["DOWN", "ENTER"]):
+            with patch("scripcy.ui.interactive._read_key", side_effect=["DOWN", "ENTER"]):
                 interactive_help_view(
                     console=test_console,
                     current_model="gemini/gemini-2.5-pro",
@@ -973,7 +973,7 @@ class TestAntigravityDesignSystem:
         self,
         test_console: Console,
     ) -> None:
-        from scrpcy.ui.interactive import interactive_input_prompt
+        from scripcy.ui.interactive import interactive_input_prompt
 
         # Keystrokes:
         # 1. '/' -> triggers suggestions dropdown
@@ -983,7 +983,7 @@ class TestAntigravityDesignSystem:
         keystrokes = ["/", "v", "TAB", "ENTER"]
 
         with patch("sys.stdin.isatty", return_value=True):
-            with patch("scrpcy.ui.interactive._read_key", side_effect=keystrokes):
+            with patch("scripcy.ui.interactive._read_key", side_effect=keystrokes):
                 result = interactive_input_prompt(
                     console=test_console,
                     prompt_label="> ",
@@ -997,7 +997,7 @@ class TestAgenticUXAndFormatting:
     """Tests for math formatting, action telemetry, input prompt scrollback UX, and skills protocol."""
 
     def test_beautify_academic_math(self) -> None:
-        from scrpcy.ui.formatters import beautify_academic_math
+        from scripcy.ui.formatters import beautify_academic_math
 
         latex_sample = (
             r"Fungsi dot-product: $$\mathrm{Attention}(Q, K, V) = \mathrm{softmax}\left(\frac{Q K^T}{\sqrt{d_k}}\right) V$$ "
@@ -1013,7 +1013,7 @@ class TestAgenticUXAndFormatting:
         assert r"\sqrt" not in beautified
 
     def test_render_academic_markdown(self, test_console: Console) -> None:
-        from scrpcy.ui.formatters import render_academic_markdown
+        from scripcy.ui.formatters import render_academic_markdown
 
         md_sample = (
             "## 1. Analisis Metodologi\n\n"
@@ -1029,24 +1029,24 @@ class TestAgenticUXAndFormatting:
         assert "α ≤ 0.01" in out
 
     def test_skills_agentic_protocol_completeness(self) -> None:
-        from scrpcy.core.skills import SkillsLoader
+        from scripcy.core.skills import SkillsLoader
 
         loader = SkillsLoader()
         skills = loader.list_skills()
         skill_names = [s.name for s in skills]
-        assert "scrpcy_manual" in skill_names
+        assert "scripcy_manual" in skill_names
 
-        manual = loader.get_skill("scrpcy_manual")
+        manual = loader.get_skill("scripcy_manual")
         assert "/search" in manual.system_prompt
         assert "/vault" in manual.system_prompt
         assert "/docx" in manual.system_prompt
-        assert "```scrpcy" in manual.system_prompt
+        assert "```scripcy" in manual.system_prompt
 
     def test_interactive_input_prompt_clean_history(self, test_console: Console) -> None:
-        from scrpcy.ui.interactive import interactive_input_prompt
+        from scripcy.ui.interactive import interactive_input_prompt
 
         with patch("sys.stdin.isatty", return_value=True):
-            with patch("scrpcy.ui.interactive._read_key", side_effect=["h", "i", "ENTER"]):
+            with patch("scripcy.ui.interactive._read_key", side_effect=["h", "i", "ENTER"]):
                 res = interactive_input_prompt(
                     console=test_console,
                     prompt_label="> ",
@@ -1060,7 +1060,7 @@ class TestAgenticUXAndFormatting:
         assert "> hi" in out
 
     def test_handle_chat_telemetry_and_actions(self, cli_studio: CLIStudio) -> None:
-        from scrpcy.core.engine import EvidenceChunk
+        from scripcy.core.engine import EvidenceChunk
 
         cli_studio.config.api_keys["gemini"] = "dummy-key"
         mock_evidence = [
@@ -1075,10 +1075,10 @@ class TestAgenticUXAndFormatting:
         with patch.object(cli_studio.engine.evidence_synthesizer, "retrieve_evidence", return_value=mock_evidence):
             async def mock_stream(*args: Any, **kwargs: Any):
                 yield "Berdasarkan literatur, model ini menggunakan rumus $$L = \\frac{1}{2} x^2$$.\n"
-                yield "```scrpcy\n/docx bab1.docx\n```"
+                yield "```scripcy\n/docx bab1.docx\n```"
 
             with patch.object(cli_studio.engine, "stream_query", side_effect=mock_stream):
-                with patch("scrpcy.cli_studio.interactive_action_confirm", return_value=False):
+                with patch("scripcy.cli_studio.interactive_action_confirm", return_value=False):
                     cli_studio.handle_chat("Bagaimana cara kerja self-attention?")
 
         out = cli_studio.console.file.getvalue()
@@ -1093,10 +1093,10 @@ class TestAgenticUXAndFormatting:
         assert "L = (1 / 2) x²" in out
 
     def test_interactive_action_confirm_in_place_no_clear(self, test_console: Console) -> None:
-        from scrpcy.ui.interactive import interactive_action_confirm
+        from scripcy.ui.interactive import interactive_action_confirm
 
         with patch("sys.stdin.isatty", return_value=True):
-            with patch("scrpcy.ui.interactive._read_key", side_effect=["ENTER"]):
+            with patch("scripcy.ui.interactive._read_key", side_effect=["ENTER"]):
                 with patch.object(test_console, "clear") as mock_clear:
                     confirmed = interactive_action_confirm("/search test", console=test_console)
 
@@ -1105,23 +1105,23 @@ class TestAgenticUXAndFormatting:
         mock_clear.assert_not_called()
 
     def test_interactive_confirm_yes_and_no(self, test_console: Console) -> None:
-        from scrpcy.ui.interactive import interactive_confirm
+        from scripcy.ui.interactive import interactive_confirm
 
         with patch("sys.stdin.isatty", return_value=True):
             # Test default Enter on Yes
-            with patch("scrpcy.ui.interactive._read_key", side_effect=["ENTER"]):
+            with patch("scripcy.ui.interactive._read_key", side_effect=["ENTER"]):
                 assert interactive_confirm("Hapus project?", default=True, console=test_console) is True
 
             # Test direct 'y' key
-            with patch("scrpcy.ui.interactive._read_key", side_effect=["y"]):
+            with patch("scripcy.ui.interactive._read_key", side_effect=["y"]):
                 assert interactive_confirm("Hapus project?", default=False, console=test_console) is True
 
             # Test direct 'n' key
-            with patch("scrpcy.ui.interactive._read_key", side_effect=["n"]):
+            with patch("scripcy.ui.interactive._read_key", side_effect=["n"]):
                 assert interactive_confirm("Hapus project?", default=True, console=test_console) is False
 
             # Test ESC key
-            with patch("scrpcy.ui.interactive._read_key", side_effect=["ESC"]):
+            with patch("scripcy.ui.interactive._read_key", side_effect=["ESC"]):
                 assert interactive_confirm("Hapus project?", default=True, console=test_console) is False
 
     def test_interactive_project_browser_delete_deregisters_project(self, cli_studio: CLIStudio) -> None:
@@ -1133,8 +1133,8 @@ class TestAgenticUXAndFormatting:
             ("delete", 0, proj_a),
             ("back", 0, None),
         ]
-        with patch("scrpcy.cli_studio.interactive_item_browser", side_effect=browser_calls):
-            with patch("scrpcy.cli_studio.interactive_confirm", return_value=True):
+        with patch("scripcy.cli_studio.interactive_item_browser", side_effect=browser_calls):
+            with patch("scripcy.cli_studio.interactive_confirm", return_value=True):
                 cli_studio.run_interactive_dashboard_projects()
 
         # Project should now be completely removed from registry
@@ -1160,7 +1160,7 @@ class TestAgenticUXAndFormatting:
         self,
         cli_studio: CLIStudio,
     ) -> None:
-        from scrpcy.ui.interactive import SLASH_COMMANDS_CHAT
+        from scripcy.ui.interactive import SLASH_COMMANDS_CHAT
 
         cli_studio.sub_mode = "chat"
         session = cli_studio._ensure_active_chat_session()
@@ -1183,10 +1183,10 @@ class TestAgenticUXAndFormatting:
 
     def test_interactive_help_view_in_place_no_clear(self, test_console: Console) -> None:
         """Verify interactive_help_view redraws in place without c.clear() to prevent duplicate blocks."""
-        from scrpcy.ui.interactive import interactive_help_view
+        from scripcy.ui.interactive import interactive_help_view
 
         with patch("sys.stdin.isatty", return_value=True):
-            with patch("scrpcy.ui.interactive._read_key", side_effect=["DOWN", "ESC"]):
+            with patch("scripcy.ui.interactive._read_key", side_effect=["DOWN", "ESC"]):
                 with patch.object(test_console, "clear") as mock_clear:
                     interactive_help_view(console=test_console)
 
@@ -1195,27 +1195,27 @@ class TestAgenticUXAndFormatting:
 
     def test_interactive_token_warning_confirm_options(self, test_console: Console) -> None:
         """Verify token warning confirmation returns proceed, limit, and cancel."""
-        from scrpcy.ui.interactive import interactive_token_warning_confirm
+        from scripcy.ui.interactive import interactive_token_warning_confirm
 
         with patch("sys.stdin.isatty", return_value=True):
             # 1. ENTER on first option -> 'proceed'
-            with patch("scrpcy.ui.interactive._read_key", side_effect=["ENTER"]):
+            with patch("scripcy.ui.interactive._read_key", side_effect=["ENTER"]):
                 res1 = interactive_token_warning_confirm(8, 4, 6000, console=test_console)
                 assert res1 == "proceed"
 
             # 2. DOWN then ENTER -> 'limit'
-            with patch("scrpcy.ui.interactive._read_key", side_effect=["DOWN", "ENTER"]):
+            with patch("scripcy.ui.interactive._read_key", side_effect=["DOWN", "ENTER"]):
                 res2 = interactive_token_warning_confirm(8, 4, 6000, console=test_console)
                 assert res2 == "limit"
 
             # 3. ESC -> 'cancel'
-            with patch("scrpcy.ui.interactive._read_key", side_effect=["ESC"]):
+            with patch("scripcy.ui.interactive._read_key", side_effect=["ESC"]):
                 res3 = interactive_token_warning_confirm(8, 4, 6000, console=test_console)
                 assert res3 == "cancel"
 
     def test_handle_chat_token_warning_cancel_aborts_llm(self, cli_studio: CLIStudio) -> None:
         """Verify if token warning is cancelled, LLM query is aborted and no generation occurs."""
-        from scrpcy.core.engine import EvidenceChunk
+        from scripcy.core.engine import EvidenceChunk
 
         cli_studio.config.api_keys["gemini"] = "dummy-key"
         # 8 chunks (> 5 chunk threshold)
@@ -1224,7 +1224,7 @@ class TestAgenticUXAndFormatting:
             for i in range(8)
         ]
         with patch.object(cli_studio.engine.evidence_synthesizer, "retrieve_evidence", return_value=mock_evidence):
-            with patch("scrpcy.cli_studio.interactive_token_warning_confirm", return_value="cancel"):
+            with patch("scripcy.cli_studio.interactive_token_warning_confirm", return_value="cancel"):
                 with patch.object(cli_studio.engine, "stream_query") as mock_stream:
                     cli_studio.handle_chat("rangkum semua paper di vault")
                     mock_stream.assert_not_called()
@@ -1234,7 +1234,7 @@ class TestAgenticUXAndFormatting:
 
     def test_handle_chat_keyboard_interrupt_cancels_cleanly(self, cli_studio: CLIStudio) -> None:
         """Verify user can cancel a question with Ctrl+C without crashing or exiting chat mode."""
-        from scrpcy.core.engine import EvidenceChunk
+        from scripcy.core.engine import EvidenceChunk
 
         cli_studio.config.api_keys["gemini"] = "dummy-key"
         cli_studio.sub_mode = "chat"
@@ -1255,8 +1255,8 @@ class TestAgenticUXAndFormatting:
 
     def test_handle_chat_detach_signal_hands_off_to_background(self, cli_studio: CLIStudio) -> None:
         """Verify typing /detach while agent is streaming hands off task to background TaskManager."""
-        from scrpcy.core.engine import EvidenceChunk
-        from scrpcy.cli_studio import SessionDetachSignal
+        from scripcy.core.engine import EvidenceChunk
+        from scripcy.cli_studio import SessionDetachSignal
 
         cli_studio.config.api_keys["gemini"] = "dummy-key"
         cli_studio.sub_mode = "chat"
@@ -1286,8 +1286,8 @@ class TestAgenticUXAndFormatting:
 
     def test_handle_chat_close_signal_terminates_session(self, cli_studio: CLIStudio) -> None:
         """Verify typing /close terminates session and cancels background task."""
-        from scrpcy.core.engine import EvidenceChunk
-        from scrpcy.cli_studio import SessionCloseSignal
+        from scripcy.core.engine import EvidenceChunk
+        from scripcy.cli_studio import SessionCloseSignal
 
         cli_studio.config.api_keys["gemini"] = "dummy-key"
         cli_studio.sub_mode = "chat"
@@ -1311,10 +1311,10 @@ class TestAgenticUXAndFormatting:
 
     def test_interactive_input_prompt_esc_returns_detach_in_chat(self) -> None:
         """Verify ESC on empty input returns /detach in chat mode."""
-        from scrpcy.ui.interactive import interactive_input_prompt
+        from scripcy.ui.interactive import interactive_input_prompt
 
         with patch("sys.stdin.isatty", return_value=True):
-            with patch("scrpcy.ui.interactive._read_key", side_effect=["ESC"]):
+            with patch("scripcy.ui.interactive._read_key", side_effect=["ESC"]):
                 res = interactive_input_prompt(
                     mode="chat",
                     is_chat_mode=True,
@@ -1323,11 +1323,11 @@ class TestAgenticUXAndFormatting:
 
     def test_interactive_input_prompt_ctrl_c_raises_keyboard_interrupt(self) -> None:
         """Verify Ctrl+C raises KeyboardInterrupt."""
-        from scrpcy.ui.interactive import interactive_input_prompt
+        from scripcy.ui.interactive import interactive_input_prompt
         import pytest
 
         with patch("sys.stdin.isatty", return_value=True):
-            with patch("scrpcy.ui.interactive._read_key", side_effect=["\x03"]):
+            with patch("scripcy.ui.interactive._read_key", side_effect=["\x03"]):
                 with pytest.raises(KeyboardInterrupt):
                     interactive_input_prompt(
                         mode="chat",
@@ -1336,7 +1336,7 @@ class TestAgenticUXAndFormatting:
 
     def test_interactive_detail_viewer_live_streaming(self) -> None:
         """Verify interactive_detail_viewer pulls updated lines from lines_provider and responds to keys."""
-        from scrpcy.ui.interactive import interactive_detail_viewer
+        from scripcy.ui.interactive import interactive_detail_viewer
 
         log_state = ["Line 1", "Line 2"]
         def provider():
@@ -1344,7 +1344,7 @@ class TestAgenticUXAndFormatting:
 
         with patch("sys.stdin.isatty", return_value=True):
             # First poll returns None (streaming tick), second poll returns ESC
-            with patch("scrpcy.ui.interactive._poll_key", side_effect=[None, "ESC"]):
+            with patch("scripcy.ui.interactive._poll_key", side_effect=[None, "ESC"]):
                 # Update log_state to simulate background task producing new lines
                 log_state.append("Line 3 (newly streamed)")
                 choice = interactive_detail_viewer(
@@ -1356,7 +1356,7 @@ class TestAgenticUXAndFormatting:
 
 
     def test_background_task_completion_records_note_without_redundant_ai_eval(self, cli_studio: CLIStudio) -> None:
-        from scrpcy.core.tasks import TaskInfo
+        from scripcy.core.tasks import TaskInfo
         sess = cli_studio.chat_manager.create_session("Riset Karhutla")
         t1 = TaskInfo(id="task-901", name="Scout Karhutla Ekonomi", task_type="scout", session_id=sess.id, status="completed", result_summary="Added 3 papers")
         cli_studio.task_manager._tasks[t1.id] = t1
@@ -1372,7 +1372,7 @@ class TestAgenticUXAndFormatting:
         assert any("PROSES LATAR BELAKANG SELESAI" in m.content for m in msgs)
 
     def test_interactive_input_prompt_on_idle_clears_and_rerenders(self, test_console: Console) -> None:
-        from scrpcy.ui.interactive import interactive_input_prompt
+        from scripcy.ui.interactive import interactive_input_prompt
 
         idle_called = [0]
         def idle_handler(clear_prompt_fn):
@@ -1391,7 +1391,7 @@ class TestAgenticUXAndFormatting:
             return k
 
         with patch("sys.stdin.isatty", return_value=True):
-            with patch("scrpcy.ui.interactive._read_key", side_effect=fake_read_key):
+            with patch("scripcy.ui.interactive._read_key", side_effect=fake_read_key):
                 res = interactive_input_prompt(
                     console=test_console,
                     prompt_label="> ",
@@ -1402,7 +1402,7 @@ class TestAgenticUXAndFormatting:
         assert idle_called[0] >= 1
 
     def test_background_ui_events_enqueued_and_flushed_on_main_thread(self, cli_studio: CLIStudio) -> None:
-        from scrpcy.core.tasks import TaskInfo
+        from scripcy.core.tasks import TaskInfo
         sess = cli_studio.chat_manager.create_session("Riset ML")
         cli_studio.sub_mode = "chat"
         cli_studio.active_chat_session = sess
@@ -1435,11 +1435,11 @@ class TestAgenticUXAndFormatting:
         assert "Respons AI" in captured_text
 
     def test_interactive_input_prompt_renders_status_line(self, test_console: Console) -> None:
-        from scrpcy.ui.interactive import interactive_input_prompt
+        from scripcy.ui.interactive import interactive_input_prompt
 
         keys = ["/", "q", "u", "i", "t", "ENTER"]
         with patch("sys.stdin.isatty", return_value=True):
-            with patch("scrpcy.ui.interactive._read_key", side_effect=keys):
+            with patch("scripcy.ui.interactive._read_key", side_effect=keys):
                 res = interactive_input_prompt(
                     console=test_console,
                     prompt_label="> ",
@@ -1448,7 +1448,7 @@ class TestAgenticUXAndFormatting:
         assert res == "/quit"
 
     def test_chat_session_restores_running_task_indicator_on_reentry(self, cli_studio: CLIStudio) -> None:
-        from scrpcy.core.tasks import TaskInfo
+        from scripcy.core.tasks import TaskInfo
         sess = cli_studio.chat_manager.create_session("Riset Karhutla")
         cli_studio.sub_mode = "chat"
         cli_studio.active_chat_session = sess
@@ -1470,7 +1470,7 @@ class TestAgenticUXAndFormatting:
         assert active[0].id == "task-777"
 
     def test_render_processing_view_displays_clean_session_and_tokens(self, cli_studio: CLIStudio) -> None:
-        from scrpcy.core.tasks import TaskInfo
+        from scripcy.core.tasks import TaskInfo
         sess = cli_studio.chat_manager.create_session("cari_paper")
         task = TaskInfo(
             id="task-99",
@@ -1493,7 +1493,7 @@ class TestAgenticUXAndFormatting:
         assert "2,450 tok" in rendered
 
     def test_get_sanitized_task_logs_filters_raw_chat_dumps(self, cli_studio: CLIStudio) -> None:
-        from scrpcy.core.tasks import TaskInfo
+        from scripcy.core.tasks import TaskInfo
         raw_logs = [
             "[21:58:12] Started task: 'Chat: uji mutasi'",
             "[21:58:12] Pertanyaan: uji mutasi",

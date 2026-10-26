@@ -5,10 +5,10 @@ from pathlib import Path
 import pytest
 from unittest.mock import MagicMock, patch
 
-from scrpcy.cli_studio import CLIStudio
-from scrpcy.core.chats import ChatSession
-from scrpcy.core.tasks import TaskInfo, TaskManager
-from scrpcy.core.workspace import WorkspaceManager
+from scripcy.cli_studio import CLIStudio
+from scripcy.core.chats import ChatSession
+from scripcy.core.tasks import TaskInfo, TaskManager
+from scripcy.core.workspace import WorkspaceManager
 
 
 @pytest.fixture
@@ -137,7 +137,7 @@ def test_no_duplicate_eval_response_on_task_completion(temp_studio: CLIStudio) -
     temp_studio.active_chat_session = session
 
     # Simulate scout task finishing
-    from scrpcy.core.tasks import TaskInfo
+    from scripcy.core.tasks import TaskInfo
     task = TaskInfo(
         id="task-scout-99",
         name="Deep Scout Simulation",
@@ -173,7 +173,7 @@ def test_dynamic_scout_quota_calculation(temp_studio: CLIStudio) -> None:
 
 
 def test_background_scout_worker_batch_ingestion(temp_studio: CLIStudio) -> None:
-    from scrpcy.core.scout import ScoutResult
+    from scripcy.core.scout import ScoutResult
     from unittest.mock import AsyncMock
 
     mock_candidates = [

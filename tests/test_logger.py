@@ -6,8 +6,8 @@ import json
 from pathlib import Path
 import pytest
 
-from scrpcy.core.engine import EvidenceChunk
-from scrpcy.core.logger import StudioLogger, get_studio_logger
+from scripcy.core.engine import EvidenceChunk
+from scripcy.core.logger import StudioLogger, get_studio_logger
 
 
 class TestStudioLogger:

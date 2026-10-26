@@ -7,7 +7,7 @@ from pathlib import Path
 import docx
 import pytest
 
-from scrpcy.core.mcp_client import (
+from scripcy.core.mcp_client import (
     CitationItem,
     MockMCPTransport,
     WordCraftClient,
@@ -16,9 +16,9 @@ from scrpcy.core.mcp_client import (
     format_reference_entry_apa,
     format_reference_entry_ieee,
 )
-from scrpcy.core.models import DocumentMetadata
-from scrpcy.core.workspace import WorkspaceManager
-from scrpcy.exceptions import (
+from scripcy.core.models import DocumentMetadata
+from scripcy.core.workspace import WorkspaceManager
+from scripcy.exceptions import (
     DocumentGenerationError,
     MCPConnectionError,
 )

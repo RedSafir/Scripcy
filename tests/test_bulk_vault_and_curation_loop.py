@@ -5,15 +5,15 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 import pytest
 
-from scrpcy.core.vault import VaultItem
+from scripcy.core.vault import VaultItem
 
 
 def _make_studio(tmp_path: Path):
     """Build a minimal CLIStudio-like mock for testing vault helpers."""
-    from scrpcy.cli_studio import CLIStudio
-    from scrpcy.core.config import ScrpcyConfig
+    from scripcy.cli_studio import CLIStudio
+    from scripcy.core.config import ScripcyConfig
 
-    config = ScrpcyConfig(data_dir=tmp_path)
+    config = ScripcyConfig(data_dir=tmp_path)
     studio = CLIStudio.__new__(CLIStudio)
     studio.config = config
     studio.console = MagicMock()
@@ -135,8 +135,8 @@ class TestInternalVaultToolBulk:
 # ──────────────────────────────────────────────────────────────────────────────
 
 def test_archive_multiple_atomic_zero_shift(tmp_path):
-    from scrpcy.core.workspace import WorkspaceManager
-    from scrpcy.core.vault import VaultManager
+    from scripcy.core.workspace import WorkspaceManager
+    from scripcy.core.vault import VaultManager
 
     proj_dir = tmp_path / "proj"
     proj_dir.mkdir()

@@ -1,11 +1,11 @@
-"""Unit tests for detailed logging across all Scrpcy core and studio components."""
+"""Unit tests for detailed logging across all Scripcy core and studio components."""
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
 
-from scrpcy.core.logger import StudioLogger
+from scripcy.core.logger import StudioLogger
 
 
 def test_studio_logger_records_all_extended_component_events(tmp_path: Path) -> None:

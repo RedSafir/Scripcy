@@ -9,13 +9,13 @@ from typing import Any
 import httpx
 import pytest
 
-from scrpcy.core.search import (
+from scripcy.core.search import (
     PaperSearcher,
     SearchResult,
     sanitize_filename,
 )
-from scrpcy.core.workspace import WorkspaceManager
-from scrpcy.exceptions import (
+from scripcy.core.workspace import WorkspaceManager
+from scripcy.exceptions import (
     DownloadError,
     NoOpenAccessPDFError,
     RateLimitError,

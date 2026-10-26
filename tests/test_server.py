@@ -12,23 +12,23 @@ from fastapi.testclient import TestClient
 import pytest
 from typer.testing import CliRunner
 
-from scrpcy.cli import app as cli_app
-from scrpcy.core.config import ScrpcyConfig
-from scrpcy.core.engine import EvidenceChunk, LLMEngine
-from scrpcy.core.extractor import MockMetadataExtractor
-from scrpcy.core.mcp_client import MockMCPTransport, WordCraftClient
-from scrpcy.core.models import DocumentMetadata
-from scrpcy.core.parser import DocumentParser
-from scrpcy.core.search import PaperSearcher, SearchResult
-from scrpcy.core.skills import SkillsLoader
-from scrpcy.core.workspace import WorkspaceManager
-from scrpcy.server import create_app
+from scripcy.cli import app as cli_app
+from scripcy.core.config import ScripcyConfig
+from scripcy.core.engine import EvidenceChunk, LLMEngine
+from scripcy.core.extractor import MockMetadataExtractor
+from scripcy.core.mcp_client import MockMCPTransport, WordCraftClient
+from scripcy.core.models import DocumentMetadata
+from scripcy.core.parser import DocumentParser
+from scripcy.core.search import PaperSearcher, SearchResult
+from scripcy.core.skills import SkillsLoader
+from scripcy.core.workspace import WorkspaceManager
+from scripcy.server import create_app
 
 
 @pytest.fixture
 def test_app_and_deps(tmp_path: Path):
     workspace = WorkspaceManager(root_dir=tmp_path / "server_ws")
-    config = ScrpcyConfig(
+    config = ScripcyConfig(
         default_model="gemini/gemini-2.5-pro",
         skills_dir=str(tmp_path / "skills"),
         workspace_path=str(workspace.root_dir),
@@ -97,7 +97,7 @@ class TestServerEndpoints:
         assert response.status_code == 200
         data = response.json()
         assert data["status"] == "ok"
-        assert data["app"] == "scrpcy"
+        assert data["app"] == "scripcy"
 
     def test_config_endpoint(self, test_app_and_deps) -> None:
         client, _, _ = test_app_and_deps
@@ -113,7 +113,7 @@ class TestServerEndpoints:
         assert response.status_code == 200
         skills = response.json()
         names = [s["name"] for s in skills]
-        assert "scrpcy_manual" in names
+        assert "scripcy_manual" in names
 
     def test_list_and_toggle_documents(self, test_app_and_deps) -> None:
         client, workspace, _ = test_app_and_deps
@@ -223,7 +223,7 @@ class TestServerEndpoints:
             "/api/chat/stream",
             json={
                 "query": "How do Transformers work?",
-                "skill_name": "scrpcy_manual",
+                "skill_name": "scripcy_manual",
                 "active_documents": ["paper.md"],
             },
         )
@@ -281,7 +281,7 @@ class TestCLIOperations:
         runner = CliRunner()
         result = runner.invoke(cli_app, ["--help"])
         assert result.exit_code == 0
-        assert "scrpcy" in result.output
+        assert "scripcy" in result.output
         assert "start" in result.output
         assert "models" in result.output
         assert "status" in result.output
@@ -295,21 +295,21 @@ class TestCLIOperations:
 
     def test_cli_models_set_key(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         cfg_file = tmp_path / "cli_cfg.json"
-        monkeypatch.setenv("SCRPCY_CONFIG", str(cfg_file))
+        monkeypatch.setenv("SCRIPCY_CONFIG", str(cfg_file))
 
         runner = CliRunner()
         result = runner.invoke(cli_app, ["models", "set-key", "gemini", "ai-key-secret-123"])
         assert result.exit_code == 0
         assert "Saved API key for 'gemini'" in result.output
 
-        cfg = ScrpcyConfig.load(cfg_file)
+        cfg = ScripcyConfig.load(cfg_file)
         assert cfg.api_keys["gemini"] == "ai-key-secret-123"
 
     def test_cli_models_use(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         cfg_file = tmp_path / "cli_cfg.json"
-        monkeypatch.setenv("SCRPCY_CONFIG", str(cfg_file))
+        monkeypatch.setenv("SCRIPCY_CONFIG", str(cfg_file))
 
-        from scrpcy.core.project import ProjectManager
+        from scripcy.core.project import ProjectManager
         pm = ProjectManager()
         proj_dir = tmp_path / "test_active_p"
         proj_dir.mkdir(parents=True, exist_ok=True)
@@ -322,14 +322,14 @@ class TestCLIOperations:
 
     def test_cli_models_9router(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         cfg_file = tmp_path / "cli_cfg.json"
-        monkeypatch.setenv("SCRPCY_CONFIG", str(cfg_file))
+        monkeypatch.setenv("SCRIPCY_CONFIG", str(cfg_file))
 
         runner = CliRunner()
         result = runner.invoke(cli_app, ["models", "9router", "--port", "20128", "--key", "test-9r-key", "--model", "9router/claude-3-5-sonnet"])
         assert result.exit_code == 0
         assert "Successfully configured 9Router" in result.output
 
-        cfg = ScrpcyConfig.load(cfg_file)
+        cfg = ScripcyConfig.load(cfg_file)
         assert cfg.default_model == "9router/claude-3-5-sonnet"
         assert cfg.api_bases.get("9router") == "http://localhost:20128/v1"
         assert cfg.api_keys.get("9router") == "test-9r-key"

@@ -9,18 +9,18 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from rich.console import Console
 
-from scrpcy.core.config import ScrpcyConfig
-from scrpcy.core.project import ProjectManager
-from scrpcy.core.scout import ScoutResult
-from scrpcy.core.tasks import TaskInfo, TaskManager
-from scrpcy.core.workspace import WorkspaceManager
-from scrpcy.studio import CLIStudio
+from scripcy.core.config import ScripcyConfig
+from scripcy.core.project import ProjectManager
+from scripcy.core.scout import ScoutResult
+from scripcy.core.tasks import TaskInfo, TaskManager
+from scripcy.core.workspace import WorkspaceManager
+from scripcy.studio import CLIStudio
 
 
 @pytest.fixture
 def cli_studio(temp_workspace: WorkspaceManager, tmp_path) -> CLIStudio:
     """Fixture providing an isolated CLIStudio instance bound to a workspace."""
-    cfg = ScrpcyConfig(
+    cfg = ScripcyConfig(
         default_model="gemini/gemini-2.5-pro",
         workspace_path=str(temp_workspace.root_dir),
         skills_dir=str(temp_workspace.root_dir / "skills"),
@@ -188,7 +188,7 @@ class TestLiveDirectedGapSearch:
 
         if directed_queries and cli_studio.scout:
             for target_gap_q in directed_queries[:2]:
-                from scrpcy.core.scout import ScoutQuery
+                from scripcy.core.scout import ScoutQuery
                 sq = ScoutQuery(keywords=target_gap_q, limit=5)
                 candidates = await cli_studio.scout.search_multi_source(sq, limit=5)
                 if candidates:
