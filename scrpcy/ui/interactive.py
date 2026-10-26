@@ -1196,7 +1196,6 @@ SLASH_COMMANDS_DASHBOARD: list[tuple[str, str]] = [
     ("/open", "Open an existing project folder (/open <#|name>)"),
     ("/delete", "Remove project from Scrpcy (/delete <#|name>)"),
     ("/models", "Manage LLM models, API keys, 9Router, and tokens"),
-    ("/skills", "List available AI persona skills"),
     ("/settings", "Manage workspace and citation preferences"),
     ("/clear", "Clear terminal screen"),
     ("/help", "Open interactive help and keyboard shortcuts"),
@@ -1212,7 +1211,6 @@ SLASH_COMMANDS_PROJECT: list[tuple[str, str]] = [
     ("/chat", "Manage multi-session conversation history (/chat new|list)"),
     ("/chats", "Daftar dan switcher sesi percakapan interaktif (alias: /sessions)"),
     ("/sessions", "Manajemen sesi percakapan interaktif (TMUX-style)"),
-    ("/skill", "Switch active research persona (/skill <name|#>)"),
     ("/models", "Manage LLM models, API keys, 9Router, and tokens"),
     ("/processing", "View and track background tasks and downloads (alias: /process)"),
     ("/process", "View and track background tasks and downloads (alias: /tasks)"),
@@ -1240,7 +1238,6 @@ SLASH_COMMANDS_CHAT: list[tuple[str, str]] = [
     ("/process", "Pantau dan kelola proses latar belakang (alias: /tasks)"),
     ("/tasks", "Pantau dan kelola proses latar belakang (alias: /process)"),
     ("/cancel", "Batalkan proses AI atau task yang sedang berjalan di sesi ini"),
-    ("/skill", "Ganti persona riset aktif (/skill <nama|#>)"),
     ("/status", "Lihat model aktif dan konsumsi token proyek saat ini"),
     ("/new", "Buat sesi percakapan baru (/new [nama])"),
     ("/resume", "Pindah ke sesi percakapan lain (/resume <#|nama>)"),
@@ -1311,9 +1308,6 @@ SUBCOMMAND_SUGGESTIONS: dict[str, list[tuple[str, str]]] = {
     "/settings": [
         ("/settings show", "Show current workspace and citation settings"),
         ("/settings set-citation", "Change citation style preference (apa | ieee)"),
-    ],
-    "/skill": [
-        ("/skill scrpcy_manual", "Scrpcy AI Workbench Manual & autonomous research tool usage"),
     ],
 }
 

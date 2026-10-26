@@ -526,10 +526,9 @@ class StudioAgentLoopMixin:
                 self.console.print("[dim][✓] Riwayat pesan untuk sesi ini telah dibersihkan.[/dim]\n")
             elif cmd in ("/status", "/info"):
                 self.cmd_project_status()
-            elif cmd in ("/skill", "/persona"):
-                self.cmd_skill(arg)
-                if self.active_chat_session and self.chat_manager:
-                    self.chat_manager.update_session_skill(self.active_chat_session.id, self.active_skill_name)
+            elif cmd in ("/skill", "/skills", "/persona"):
+                self.console.print("[yellow][!] Perintah /skill telah ditiadakan.[/yellow]")
+                self.console.print("[dim]Scrpcy kini beroperasi secara terintegrasi menggunakan Autonomous Multi-Agent Academic System.[/dim]\n")
             elif cmd in ("/new", "/create"):
                 if not self.chat_manager:
                     return

@@ -264,7 +264,6 @@ async def main():
     async for chunk in engine.stream_query(
         query="Bagaimana efektivitas parameter-efficient fine-tuning LoRA?",
         documents=["path/to/cached_lora.md"],
-        skill_name="academic_writer",
     ):
         print(chunk, end="", flush=True)
 

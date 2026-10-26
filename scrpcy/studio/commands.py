@@ -165,8 +165,9 @@ class StudioCommandsMixin:
             self.cmd_search(args)
         elif cmd == "/download":
             self.cmd_download(args)
-        elif cmd in ("/skills", "/skill"):
-            self.cmd_skill(args)
+        elif cmd in ("/skills", "/skill", "/persona"):
+            self.console.print("[yellow][!] Perintah /skill telah ditiadakan.[/yellow]")
+            self.console.print("[dim]Scrpcy kini beroperasi secara terintegrasi menggunakan Autonomous Multi-Agent Academic System.[/dim]\n")
         elif cmd in ("/models", "/model", "/config"):
             self.cmd_models(args)
         elif cmd in ("/tokens", "/usage"):
@@ -678,100 +679,19 @@ class StudioCommandsMixin:
             return await searcher.download_paper(paper)
 
     def render_skills_catalog(self, is_project_mode: bool = True) -> None:
-        """Render a formatted table catalog of available research persona skills."""
-        skills = self.skills_loader.list_skills()
-        title = "Available Research Personas / Skills" if is_project_mode else "Installed AI Research Personas / Skills"
-        table = Table(
-            title=title,
-            box=None,
-            padding=(0, 2),
-            show_header=True,
-            header_style="bold bright_cyan",
-        )
-        table.add_column("#", justify="right", style="dim", width=3)
-        table.add_column("Persona / Skill", style="bold green", width=24)
-        table.add_column("Status", justify="center", width=12)
-        table.add_column("Description", style="white")
-
-        for idx, s in enumerate(skills, start=1):
-            if is_project_mode:
-                is_active = (s.name == self.active_skill_name)
-                status = "[bold green][Active][/bold green]" if is_active else "[dim][Standby][/dim]"
-            else:
-                status = "[bold cyan][Installed][/bold cyan]"
-
-            table.add_row(
-                str(idx),
-                s.name,
-                status,
-                s.description or "Standard research persona",
-            )
-
-        self.console.print(table)
-        if is_project_mode:
-            self.console.print("[dim]Switch persona: [bold cyan]/skill <# | name>[/bold cyan] (e.g. [bold cyan]/skill 2[/bold cyan])[/dim]")
-        else:
-            self.console.print("[dim]Activate persona inside a project: open or create a project, then run [bold cyan]/skill <# | name>[/bold cyan][/dim]")
-        self.console.print(f"[dim]Add custom persona: Create a markdown file (.md) in [bold white]{self.skills_loader.skills_dir}[/bold white][/dim]\n")
+        """Deprecated: Perintah /skills telah ditiadakan."""
+        self.console.print("[yellow][!] Perintah /skills telah ditiadakan.[/yellow]")
+        self.console.print("[dim]Scrpcy kini beroperasi secara terintegrasi menggunakan Autonomous Multi-Agent Academic System.[/dim]\n")
 
     def cmd_skills(self) -> None:
-        """List or interactively select research persona skills."""
-        if sys.stdin.isatty():
-            skills = self.skills_loader.list_skills()
-            chosen = interactive_skill_selector(self.active_skill_name, skills, console=self.console)
-            if chosen:
-                self.active_skill_name = chosen
-                if self.active_chat_session and self.chat_manager:
-                    self.chat_manager.update_session_skill(self.active_chat_session.id, chosen)
-                self.console.print(f"\n[bold green][✓] Switched active persona to:[/bold green] [bold cyan]{chosen}[/bold cyan]\n")
-                return
-        self.render_skills_catalog(is_project_mode=True)
+        """Deprecated: Perintah /skills telah ditiadakan."""
+        self.console.print("[yellow][!] Perintah /skills telah ditiadakan.[/yellow]")
+        self.console.print("[dim]Scrpcy kini beroperasi secara terintegrasi menggunakan Autonomous Multi-Agent Academic System.[/dim]\n")
 
-    def cmd_skill(self, arg: str) -> None:
-        """Switch current active persona skill, or view catalog if no argument given."""
-        arg = arg.strip()
-        if arg.lower().startswith("use "):
-            arg = arg[4:].strip()
-        if not arg:
-            if sys.stdin.isatty():
-                skills = self.skills_loader.list_skills()
-                chosen = interactive_skill_selector(self.active_skill_name, skills, console=self.console)
-                if chosen:
-                    self.active_skill_name = chosen
-                    if self.active_chat_session and self.chat_manager:
-                        self.chat_manager.update_session_skill(self.active_chat_session.id, chosen)
-                    self.console.print(f"\n[bold green][✓] Switched active persona to:[/bold green] [bold cyan]{chosen}[/bold cyan]\n")
-                    return
-            self.render_skills_catalog(is_project_mode=True)
-            return
-
-        skills = self.skills_loader.list_skills()
-        target_skill_name = None
-
-        if arg.isdigit():
-            idx = int(arg) - 1
-            if 0 <= idx < len(skills):
-                target_skill_name = skills[idx].name
-            else:
-                self.console.print(f"[bold red][x] Invalid skill number: {arg}.[/bold red] Choose a number between 1 and {len(skills)}.\n")
-                return
-        else:
-            norm_arg = arg.lower().replace(" ", "_").replace("-", "_")
-            for s in skills:
-                if s.name == arg or s.name.lower() == norm_arg:
-                    target_skill_name = s.name
-                    break
-
-        if target_skill_name:
-            try:
-                self.skills_loader.get_skill(target_skill_name)
-                self.active_skill_name = target_skill_name
-                self.console.print(f"[bold green][✓] Switched active skill to:[/bold green] [bold cyan]{target_skill_name}[/bold cyan]\n")
-            except Exception as exc:
-                self.console.print(f"[bold red][x] Error loading skill '{target_skill_name}':[/bold red] {exc}\n")
-        else:
-            available = ", ".join(f"{i}. {s.name}" for i, s in enumerate(skills, start=1))
-            self.console.print(f"[bold red][x] Skill '{arg}' not found.[/bold red] Available skills: {available}\n")
+    def cmd_skill(self, arg: str = "") -> None:
+        """Deprecated: Perintah /skill telah ditiadakan."""
+        self.console.print("[yellow][!] Perintah /skill telah ditiadakan.[/yellow]")
+        self.console.print("[dim]Scrpcy kini beroperasi secara terintegrasi menggunakan Autonomous Multi-Agent Academic System.[/dim]\n")
 
     def cmd_model(self, arg: str) -> None:
         """Alias for /models use <model>."""

@@ -656,8 +656,9 @@ class StudioDashboardMixin:
             self.dashboard_open_project(args)
         elif cmd in ("delete", "remove", "rm"):
             self.dashboard_delete_project(args)
-        elif cmd in ("skills", "skill"):
-            self.render_skills_catalog(is_project_mode=False)
+        elif cmd in ("skills", "skill", "/skills", "/skill"):
+            self.console.print("[yellow][!] Perintah /skill telah ditiadakan.[/yellow]")
+            self.console.print("[dim]Scrpcy kini beroperasi secara terintegrasi menggunakan Autonomous Multi-Agent Academic System.[/dim]\n")
         elif cmd in ("status", "info"):
             if args:
                 self.dashboard_status(args)

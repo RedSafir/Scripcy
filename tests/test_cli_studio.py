@@ -87,7 +87,7 @@ class TestDashboardFlow:
         assert "/open" in output
         assert "/models" in output
         assert "/settings" in output
-        assert "/skills" in output
+        assert "/help" in output
 
     def test_dashboard_status(self, test_console: Console, project_manager: ProjectManager, tmp_path: Path) -> None:
         cfg = ScrpcyConfig(default_model="gemini/gemini-2.5-pro")
@@ -204,64 +204,26 @@ class TestProjectCommands:
         cli_studio.cmd_active("all")
         assert len(cli_studio.active_documents) == 2
 
-    def test_cmd_skills_and_switch(self, cli_studio: CLIStudio) -> None:
-        cli_studio.skills_loader.create_or_update_skill("custom_reviewer", "Custom prompt")
+    def test_cmd_skills_deprecated(self, cli_studio: CLIStudio) -> None:
         cli_studio.cmd_skills()
         output = cli_studio.console.file.getvalue()
-        assert "Available Research Personas / Skills" in output
-        assert "scrpcy_manual" in output
-        assert "custom_reviewer" in output
-        assert "[Active]" in output
+        assert "Perintah /skills telah ditiadakan" in output
 
-        # Switch by name
+    def test_cmd_skill_deprecated(self, cli_studio: CLIStudio) -> None:
         cli_studio.cmd_skill("custom_reviewer")
-        assert cli_studio.active_skill_name == "custom_reviewer"
-
-    def test_cmd_skill_without_args_renders_catalog(self, cli_studio: CLIStudio) -> None:
-        cli_studio.cmd_skill("")
         output = cli_studio.console.file.getvalue()
-        assert "Available Research Personas / Skills" in output
-        assert "Add custom persona:" in output
+        assert "Perintah /skill telah ditiadakan" in output
 
-    def test_cmd_skill_switch_by_numeric_index(self, cli_studio: CLIStudio) -> None:
-        cli_studio.skills_loader.create_or_update_skill("second_skill", "Second prompt")
-        skills = cli_studio.skills_loader.list_skills()
-        assert len(skills) >= 2
-
-        # Switch to skill 2 by number
-        target_skill_2 = skills[1].name
-        cli_studio.cmd_skill("2")
-        assert cli_studio.active_skill_name == target_skill_2
-
-        # Switch back to skill 1 by number
-        target_skill_1 = skills[0].name
-        cli_studio.cmd_skill("1")
-        assert cli_studio.active_skill_name == target_skill_1
-
-    def test_cmd_skill_invalid_index(self, cli_studio: CLIStudio) -> None:
-        cli_studio.cmd_skill("99")
-        output = cli_studio.console.file.getvalue()
-        assert "Invalid skill number: 99" in output
-
-    def test_dashboard_skills_catalog(self, test_console: Console, project_manager: ProjectManager) -> None:
+    def test_dashboard_skills_deprecated(self, test_console: Console, project_manager: ProjectManager) -> None:
         studio = CLIStudio(console=test_console, project_manager=project_manager)
         studio.handle_dashboard_command("skills")
         output = test_console.file.getvalue()
-        assert "Installed AI Research Personas / Skills" in output
-        assert "[Installed]" in output
-        assert "scrpcy_manual" in output
+        assert "Perintah /skill telah ditiadakan" in output
 
-    def test_project_slash_skill_routing(self, cli_studio: CLIStudio) -> None:
-        # Route /skills
+    def test_project_slash_skill_routing_deprecated(self, cli_studio: CLIStudio) -> None:
         cli_studio.handle_project_command("/skills")
         output = cli_studio.console.file.getvalue()
-        assert "Available Research Personas / Skills" in output
-
-        # Route /skill 2
-        cli_studio.skills_loader.create_or_update_skill("route_target", "Prompt")
-        skills = cli_studio.skills_loader.list_skills()
-        cli_studio.handle_project_command("/skill 2")
-        assert cli_studio.active_skill_name == skills[1].name
+        assert "Perintah /skill telah ditiadakan" in output
 
     def test_cmd_model_and_style(self, cli_studio: CLIStudio) -> None:
         cli_studio.cmd_model("openai/gpt-4o")

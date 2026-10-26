@@ -113,7 +113,7 @@ class Skill(BaseModel):
     system_prompt: str = Field(description="System instructions injected into LLM context.")
     model: str | None = Field(default=None, description="Optional model override for this skill.")
     temperature: float | None = Field(default=None, description="Optional sampling temperature override.")
-    source_path: Path = Field(description="Filepath from which this skill was loaded.")
+    source_path: Path | None = Field(default=None, description="Filepath from which this skill was loaded.")
     mtime: float = Field(default=0.0, description="Last modification timestamp on disk.")
 
     def format_prompt(self, **kwargs: Any) -> str:
@@ -129,18 +129,17 @@ class Skill(BaseModel):
 class SkillsLoader:
     """Manages discovery, dynamic loading, and hot-reloading of markdown skill prompts."""
 
-    def __init__(self, skills_dir: Path | str = "./skills", auto_init: bool = True) -> None:
+    def __init__(self, skills_dir: Path | str = "./skills", auto_init: bool = False) -> None:
         self.skills_dir = Path(skills_dir).expanduser().resolve()
         self._skills_cache: dict[str, Skill] = {}
 
-        if auto_init:
+        if auto_init and self.skills_dir.is_dir():
             self.ensure_skills_dir()
 
     def ensure_skills_dir(self) -> None:
-        """Create skills directory and seed default scrpcy_manual skill."""
-        self.skills_dir.mkdir(parents=True, exist_ok=True)
-
-        # Clean up legacy persona skills to keep workspace focused
+        """Clean up legacy persona files if directory exists, without auto-creating disk files."""
+        if not self.skills_dir.is_dir():
+            return
         legacy_skills = ["academic_writer", "literature_synthesizer", "methodology_critic", "gap_finder"]
         for legacy in legacy_skills:
             legacy_file = self.skills_dir / f"{legacy}.md"
@@ -149,24 +148,6 @@ class SkillsLoader:
                     legacy_file.unlink()
                 except OSError:
                     pass
-
-        default_skills = {
-            "scrpcy_manual": {
-                "description": "Scrpcy AI Workbench Manual: autonomous tool usage, literature reading, and research synthesis.",
-                "prompt": DEFAULT_SCRPCY_MANUAL_PROMPT,
-                "temperature": 0.2,
-            },
-        }
-
-        for name, spec in default_skills.items():
-            file_path = self.skills_dir / f"{name}.md"
-            if not file_path.exists():
-                self.create_or_update_skill(
-                    name=name,
-                    system_prompt=spec["prompt"],
-                    description=spec["description"],
-                    temperature=spec["temperature"],
-                )
 
     def _parse_skill_file(self, file_path: Path) -> Skill:
         """Parse a markdown skill file with optional YAML frontmatter."""
@@ -209,10 +190,13 @@ class SkillsLoader:
         file_path = self.skills_dir / f"{norm_name}.md"
 
         if not file_path.is_file():
-            # If requested skill is a legacy persona or not found, fall back to scrpcy_manual if available
-            manual_path = self.skills_dir / "scrpcy_manual.md"
-            if manual_path.is_file():
-                return self.get_skill("scrpcy_manual")
+            if norm_name in ("scrpcy_manual", "default", "academic_writer", "general", "agent_tester"):
+                return Skill(
+                    name=norm_name,
+                    description="Scrpcy AI Workbench Academic Assistant",
+                    system_prompt=DEFAULT_SCRPCY_MANUAL_PROMPT,
+                    temperature=0.2,
+                )
             raise SkillNotFoundError(f"Skill '{name}' not found at '{file_path}'")
 
         current_mtime = file_path.stat().st_mtime
@@ -226,14 +210,24 @@ class SkillsLoader:
         return cached
 
     def list_skills(self) -> list[Skill]:
-        """Scan skills directory and return all discovered skills."""
-        if not self.skills_dir.is_dir():
-            return []
-
+        """Scan skills directory and return discovered skills, defaulting to in-memory built-in."""
         discovered: list[Skill] = []
-        for file_path in sorted(self.skills_dir.glob("*.md")):
-            skill = self.get_skill(file_path.stem)
-            discovered.append(skill)
+        if self.skills_dir.is_dir():
+            for file_path in sorted(self.skills_dir.glob("*.md")):
+                try:
+                    skill = self.get_skill(file_path.stem)
+                    discovered.append(skill)
+                except SkillNotFoundError:
+                    pass
+        if not discovered:
+            discovered.append(
+                Skill(
+                    name="scrpcy_manual",
+                    description="Scrpcy AI Workbench Academic Assistant",
+                    system_prompt=DEFAULT_SCRPCY_MANUAL_PROMPT,
+                    temperature=0.2,
+                )
+            )
         return discovered
 
     def create_or_update_skill(

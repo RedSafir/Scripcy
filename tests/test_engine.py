@@ -138,11 +138,13 @@ class TestSkillsLoader:
         skills_dir = tmp_path / "skills"
         loader = SkillsLoader(skills_dir=skills_dir, auto_init=True)
 
-        assert (skills_dir / "scrpcy_manual.md").is_file()
-
         skills = loader.list_skills()
         names = [s.name for s in skills]
         assert "scrpcy_manual" in names
+
+        manual = loader.get_skill("scrpcy_manual")
+        assert manual.name == "scrpcy_manual"
+        assert "Scrpcy" in manual.system_prompt
 
     def test_parse_skill_with_frontmatter(self, tmp_path: Path) -> None:
         skills_dir = tmp_path / "skills"
