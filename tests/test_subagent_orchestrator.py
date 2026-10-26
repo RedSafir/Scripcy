@@ -473,3 +473,161 @@ def test_ai_contract_extraction_coerces_nonstandard_json_types() -> None:
     assert "reference_mapping_snowballing_backward_forward" in contract.required_search_channels
 
 
+def test_devils_advocate_preflight_plan_audit_prunes_unsubstantial_subcontracts() -> None:
+    """Devil's Advocate audits proposed execution plan pre-flight, pruning unsubstantial/redundant subcontracts and challenging out-of-scope tasks."""
+    from scripcy.core.critic import DevilsAdvocate
+    from scripcy.core.contractor import SubContract
+    from scripcy.core.contracts import TaskContract
+
+    contract = TaskContract(
+        archetype="DATA_FACTUAL",
+        primary_goal="Menyajikan data kebakaran hutan di Riau",
+        in_scope=["Luas kebakaran tahunan di Riau", "Titik hotspot"],
+        out_of_scope=["Analisis hukum korupsi sawit", "Opini LSM internasional"],
+        forbidden_drift_topics=["Bab 2 Tinjauan Pustaka", "Konflik agraria"],
+    )
+
+    subcontracts = [
+        SubContract(
+            id="sub-1",
+            role="VaultExtractor",
+            objective="Ekstrak data angka luas kebakaran hutan di Riau dari dokumen lokal.",
+            dos=["Ambil angka hektare."],
+            donts=["Dilarang beropini."],
+        ),
+        SubContract(
+            id="sub-2",
+            role="VaultExtractor",
+            objective="Ekstrak data angka luas kebakaran hutan di Riau dari dokumen lokal.",  # Redundant!
+            dos=["Ambil angka hektare."],
+            donts=["Dilarang beropini."],
+        ),
+        SubContract(
+            id="sub-3",
+            role="VaultExtractor",
+            objective="Analisis hukum korupsi sawit dan sengketa lahan.",  # Out-of-scope!
+            dos=["Analisis perizinan."],
+            donts=[],
+        ),
+    ]
+
+    da = DevilsAdvocate()
+    review = da.audit_execution_plan(
+        query="data kebakaran hutan di Riau",
+        contract=contract,
+        subcontracts=subcontracts,
+    )
+
+    assert "sub-2" in review.prune_ids  # Redundant pruned
+    assert "sub-3" in review.prune_ids  # Out-of-scope pruned
+    assert "sub-1" not in review.prune_ids  # Substantive retained
+    assert review.prune_reasons["sub-2"] == "Subkontrak redundant/tumpang tindih dengan subkontrak lain."
+    assert review.prune_reasons["sub-3"] == "Subkontrak melanggar batas out-of-scope kontrak."
+
+
+def test_contractor_decomposer_adjudicate_plan_audit_adds_substantive_dimensions() -> None:
+    """Contractor Decomposer applies Devil's Advocate audit by pruning rejected items and injecting missing substantive dimensions."""
+    from scripcy.core.contractor import ContractDecomposer, ExecutionPlan, SubContract
+    from scripcy.core.critic import PlanAuditReview
+    from scripcy.core.contracts import TaskContract
+
+    contract = TaskContract(
+        archetype="DATA_FACTUAL",
+        primary_goal="Data restorasi gambut",
+        in_scope=["Restorasi gambut"],
+        out_of_scope=["Politik"],
+    )
+
+    initial_plan = ExecutionPlan(
+        query="data restorasi gambut",
+        contract=contract,
+        subcontracts=[
+            SubContract(id="sub-1", role="VaultExtractor", objective="Ekstrak data restorasi."),
+            SubContract(id="sub-bad", role="VaultExtractor", objective="Ekstrak opini politik."),
+        ],
+    )
+
+    audit_review = PlanAuditReview(
+        prune_ids=["sub-bad"],
+        prune_reasons={"sub-bad": "Melanggar batas kontrak"},
+        additions=[
+            {
+                "role": "WebScout",
+                "objective": "Ekstrak data resmi target restorasi BRGM dari portal web pemerintah.",
+                "target_channel": "web_resmi",
+                "dos": ["Fokus pada angka hektare kubah gambut yang telah dibasahi kembali."],
+                "donts": ["Jangan mengutip blog non-resmi."],
+                "search_queries": ["restorasi gambut BRGM data capaian"],
+            }
+        ],
+        summary="Audit selesai.",
+    )
+
+    decomposer = ContractDecomposer()
+    adjudicated_plan = decomposer.adjudicate_plan_audit(initial_plan, audit_review)
+
+    sub_ids = [sc.id for sc in adjudicated_plan.subcontracts]
+    assert "sub-1" in sub_ids
+    assert "sub-bad" not in sub_ids
+    assert any("sub-audit-add" in sid for sid in sub_ids)
+
+    added_sc = next(sc for sc in adjudicated_plan.subcontracts if "sub-audit-add" in sc.id)
+    assert added_sc.target_channel == "web_resmi"
+    assert "angka hektare" in added_sc.dos[0]
+    assert "blog" in added_sc.donts[0]
+
+
+def test_subagent_worker_isolation_with_dos_and_donts() -> None:
+    """SubagentWorker executes within an isolated context with explicit DOs and DONTs instructions."""
+    from scripcy.core.subagent import SubagentWorker
+    from scripcy.core.contractor import SubContract
+    from scripcy.core.engine import EvidenceChunk
+
+    recorded_prompts: dict[str, str] = {}
+
+    def mock_llm(system_prompt: str, user_prompt: str, max_tokens: int) -> dict[str, Any]:
+        recorded_prompts["system"] = system_prompt
+        recorded_prompts["user"] = user_prompt
+        return {
+            "status": "complete",
+            "extracted_facts": [
+                {
+                    "claim_or_metric": "Restorasi gambut mencapai 1,4 juta hektare pada 2022.",
+                    "citation_stem": "brgm2022",
+                    "year": "2022",
+                    "is_quantitative": True,
+                }
+            ],
+            "missing_requirements": [],
+        }
+
+    sc = SubContract(
+        id="sub-isolated",
+        role="VaultExtractor",
+        objective="Ekstrak capaian restorasi gambut.",
+        evidence_slice=[
+            EvidenceChunk(
+                chunk_id="ch-1",
+                source="brgm2022",
+                text="Pada laporan tahunan 2022, BRGM mencatat total area restorasi gambut mencapai 1,4 juta hektare.",
+            )
+        ],
+        dos=["Ekstrak capaian luas hektare terverifikasi.", "Cantumkan tahun 2022."],
+        donts=["Dilarang menulis latar belakang filosofis.", "Dilarang berasumsi."],
+    )
+
+    worker = SubagentWorker(llm_completion_fn=mock_llm)
+    artifact = worker.execute(sc)
+
+    assert artifact.status == "complete"
+    assert len(artifact.extracted_facts) == 1
+    assert artifact.extracted_facts[0].citation_stem == "brgm2022"
+
+    user_p = recorded_prompts.get("user", "")
+    assert "DO (WAJIB DILAKUKAN):" in user_p
+    assert "Ekstrak capaian luas hektare terverifikasi." in user_p
+    assert "DONT (DILARANG):" in user_p
+    assert "Dilarang menulis latar belakang filosofis." in user_p
+
+
+

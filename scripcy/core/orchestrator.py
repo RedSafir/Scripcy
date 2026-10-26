@@ -32,6 +32,8 @@ class OrchestrationResult(BaseModel):
     subagent_output_tokens: int = 0
     tree_lines: list[str] = Field(default_factory=list)
     assembly_directive: str = ""
+    grounding_score: float = 1.0
+    plan_audit: Any = None
 
 
 class SubagentOrchestrator:
@@ -275,25 +277,54 @@ class SubagentOrchestrator:
         on_tree_update: Callable[[str], None] | None = None,
     ) -> OrchestrationResult:
         """Execute Fan-Out subagents, Single Batch Write Barrier, and Fan-In Scope Audit."""
-        plan = self.decomposer.decompose(
+        # 1. Dynamic decomposition into granular small contracts
+        raw_plan = self.decomposer.decompose(
             query=query,
             contract=contract,
             evidence=evidence,
             enable_external_scout=enable_autonomous_scout,
         )
 
-        local_extractors = [sc for sc in plan.subcontracts if sc.role in ("VaultExtractor", "DialecticalExtractor")]
-        scout_contracts = [sc for sc in plan.subcontracts if sc.role in ("WebScout", "LitScout")]
+        # 2. Pre-flight Devil's Advocate Audit (challenges unsubstantial/redundant tasks & proposes additions)
+        plan_audit = self.auditor.audit_execution_plan(
+            query=query,
+            contract=contract,
+            subcontracts=raw_plan.subcontracts,
+        )
+
+        # 3. Contractor Adjudication of Plan Audit (prunes challenged subcontracts and adds accepted ones)
+        plan = self.decomposer.adjudicate_plan_audit(raw_plan, plan_audit)
+
+        # Ensure newly added local subcontracts receive an evidence slice
+        for sc in plan.subcontracts:
+            if sc.target_channel == "vault_lokal" and not sc.evidence_slice and evidence:
+                sc.evidence_slice = self.decomposer.slice_evidence(query, evidence, limit=3)
+
+        local_extractors = [
+            sc for sc in plan.subcontracts
+            if sc.target_channel == "vault_lokal" and sc.role != "GapExtractor"
+        ]
+        scout_contracts = [
+            sc for sc in plan.subcontracts
+            if sc.target_channel in ("web_resmi", "repositori_jurnal") or sc.role in ("WebScout", "LitScout")
+        ]
         gap_extractors = [sc for sc in plan.subcontracts if sc.role == "GapExtractor"]
 
         states: dict[str, tuple[str, str]] = {}
+        if plan_audit and (plan_audit.prune_ids or plan_audit.additions):
+            p_cnt = len(plan_audit.prune_ids)
+            a_cnt = len(plan_audit.additions)
+            states["Audit Rencana [Devil's Advocate]"] = (
+                "done",
+                f"Diaudit: {p_cnt} dipangkas (tidak substansial), {a_cnt} usulan penambahan",
+            )
         for sc in local_extractors:
             states[f"Subagent [{sc.role}]"] = ("running", f"Mengekstrak {len(sc.evidence_slice)} chunk lokal (Paralel)")
         for sc in scout_contracts:
-            states[f"Subagent [{sc.role}]"] = ("running", "Menelusuri sumber eksternal (Paralel)")
+            states[f"Subagent [{sc.role}]"] = ("running", f"Menelusuri sumber eksternal ({sc.target_channel})")
         for sc in gap_extractors:
             states[f"Subagent [{sc.role}]"] = ("waiting", "Menunggu hasil pencarian & batch index (Antre)")
-        states["Subagent [ScopeAuditor]"] = ("waiting", "Menunggu seluruh ekstraktor selesai (Antre)")
+        states["Subagent [ScopeAuditor]"] = ("waiting", "Menunggu seluruh subagent selesai (Antre)")
 
         if on_tree_update:
             on_tree_update(self.format_tree_status(contract, states))
@@ -307,7 +338,18 @@ class SubagentOrchestrator:
 
         local_artifacts, newly_ingested_stems = await asyncio.gather(local_future, scout_future)
 
-        for art in local_artifacts:
+        # 1x automated retry fallback for any local extractor that returned no facts
+        for idx, art in enumerate(local_artifacts):
+            if (art.status == "no_data" or not art.extracted_facts) and idx < len(local_extractors):
+                sc = local_extractors[idx]
+                if sc.evidence_slice:
+                    from scripcy.core.subagent import SubagentWorker
+                    worker = SubagentWorker(engine=self.engine)
+                    fallback_art = worker.extract_heuristic(sc)
+                    if fallback_art.extracted_facts:
+                        local_artifacts[idx] = fallback_art
+                        art = fallback_art
+
             states[f"Subagent [{art.role}]"] = (
                 "done",
                 f"{len(art.extracted_facts)} fakta diekstrak ({art.tokens_used} tok)",
@@ -352,7 +394,7 @@ class SubagentOrchestrator:
             for ge in gap_extractors:
                 states[f"Subagent [{ge.role}]"] = ("done", "Dilewati (cukup dengan bukti lokal)")
 
-        states["Subagent [ScopeAuditor]"] = ("running", "Memvalidasi sitasi & memfilter out-of-scope...")
+        states["Subagent [ScopeAuditor]"] = ("running", "Memvalidasi sitasi, memfilter out-of-scope & menyusun fact sheet...")
         audit_res = self.auditor.audit_fact_ledger(
             query=query,
             contract=contract,
@@ -364,9 +406,12 @@ class SubagentOrchestrator:
             if plan.gap_reason not in missing_notes:
                 missing_notes.insert(0, plan.gap_reason)
 
+        total_raw_facts = len(verified_facts) + audit_res.get("dropped_count", 0)
+        deterministic_grounding = round(len(verified_facts) / total_raw_facts, 2) if total_raw_facts > 0 else 1.0
+
         states["Subagent [ScopeAuditor]"] = (
             "done",
-            f"{len(verified_facts)} fakta terverifikasi siap dirakit",
+            f"{len(verified_facts)} fakta terverifikasi (Fact Sheet Grounding: {int(deterministic_grounding * 100)}%)",
         )
         final_tree = self.format_tree_status(contract, states)
         if on_tree_update:
@@ -379,13 +424,14 @@ class SubagentOrchestrator:
         )
 
         attempted_channels = ["vault_lokal"]
-        if any(sc.role == "WebScout" for sc in scout_contracts):
+        if any(sc.target_channel == "web_resmi" or sc.role == "WebScout" for sc in scout_contracts):
             attempted_channels.append("web_resmi")
-        if any(sc.role == "LitScout" for sc in scout_contracts):
+        if any(sc.target_channel == "repositori_jurnal" or sc.role == "LitScout" for sc in scout_contracts):
             attempted_channels.append("repositori_jurnal_multi_source")
 
         return OrchestrationResult(
             plan=plan,
+            plan_audit=plan_audit,
             artifacts=all_artifacts,
             verified_facts=verified_facts,
             missing_notes=missing_notes,
@@ -395,4 +441,5 @@ class SubagentOrchestrator:
             subagent_output_tokens=audit_res["subagent_output_tokens"],
             tree_lines=final_tree.splitlines(),
             assembly_directive=directive,
+            grounding_score=deterministic_grounding,
         )

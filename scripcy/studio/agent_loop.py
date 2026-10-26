@@ -1522,6 +1522,7 @@ class StudioAgentLoopMixin:
                 attempted_search_channels: set[str] = {"vault_lokal"}
                 contractor_gatekeeper = ContractDecomposer()
                 active_patch_info: tuple[int, list[str]] | None = None
+                orch_res: Any | None = None
 
                 while turn < max_agent_turns:
                     if cancel_event and cancel_event.is_set():
@@ -1816,6 +1817,22 @@ class StudioAgentLoopMixin:
                         fact_verdict=v_rep,
                         attempted_search_channels=attempted_search_channels,
                     )
+
+                    # 1-Pass Golden Drafting: If Subagent Orchestrator has pre-flight audited the plan,
+                    # populated the Fact Sheet, and the draft is well-grounded without hallucination warning,
+                    # Contractor Gatekeeper accepts the draft in 1-pass without re-drafting cycles.
+                    if (
+                        orch_res is not None
+                        and not v_rep.hallucination_warning
+                        and v_rep.grounding_score >= 0.7
+                        and (task_contract.archetype == "DATA_FACTUAL" or not c_rep.needs_citation_mapping)
+                    ):
+                        c_rep.passed = True
+                        c_rep.score = max(c_rep.score, 8)
+                        c_rep.needs_citation_mapping = False
+                        c_rep.weaknesses = []
+                        adjudication.should_revise = False
+                        adjudication.override_passed = True
                     if adjudication.rejected_critiques:
                         self.task_manager.log(
                             task_id,

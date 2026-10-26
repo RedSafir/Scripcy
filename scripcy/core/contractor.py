@@ -97,6 +97,12 @@ class SubContract(BaseModel):
         default_factory=list,
         description="Upstream subcontract IDs that must finish before this subcontract starts.",
     )
+    dos: list[str] = Field(default_factory=list, description="Explicit substantive requirements and instructions for this subagent.")
+    donts: list[str] = Field(default_factory=list, description="Explicit out-of-scope restrictions and non-goals for this subagent.")
+    target_channel: str = Field(
+        default="vault_lokal",
+        description="Target search/retrieval channel (vault_lokal, web_resmi, repositori_jurnal, reference_mapping).",
+    )
     max_output_tokens: int = Field(
         default=220,
         ge=64,
@@ -276,12 +282,21 @@ class ContractDecomposer:
                     role="VaultExtractor",
                     objective=(
                         f"Ekstrak HANYA angka, metrik, tahun, lokasi, dan fakta terukur dari bukti lokal "
-                        f"yang menjawab: '{query}'. Jangan menulis narasi teori."
+                        f"yang menjawab: '{query}'."
                     ),
                     allowed_scope=contract.in_scope,
                     forbidden_scope=forbidden,
                     evidence_slice=slice_1,
-                    max_output_tokens=200,
+                    target_channel="vault_lokal",
+                    dos=[
+                        "Ekstrak metrik numerik spesifik, tahun pengamatan, dan unit kuantitatif.",
+                        "Cantumkan stem sitasi resmi untuk setiap klaim fakta.",
+                    ],
+                    donts=[
+                        "Dilarang menulis pengantar teori panjang atau narasi opini.",
+                        "Dilarang mengarang angka di luar teks bukti dokumen.",
+                    ],
+                    max_output_tokens=220,
                 )
             )
         elif contract.archetype in ("DIALECTICAL_CRITIQUE", "COMPARISON"):
@@ -295,7 +310,15 @@ class ContractDecomposer:
                     allowed_scope=contract.in_scope[:2],
                     forbidden_scope=forbidden,
                     evidence_slice=slice_pro,
-                    max_output_tokens=200,
+                    target_channel="vault_lokal",
+                    dos=[
+                        "Identifikasi bukti positif dan parameter keunggulan terukur.",
+                        "Kaitkan klaim dengan kutipan dokumen sumber.",
+                    ],
+                    donts=[
+                        "Jangan menyertakan kritik atau kontra-argumen pada subkontrak ini.",
+                    ],
+                    max_output_tokens=220,
                 )
             )
             slice_contra = self.slice_evidence(
@@ -312,7 +335,14 @@ class ContractDecomposer:
                     allowed_scope=contract.in_scope,
                     forbidden_scope=forbidden,
                     evidence_slice=slice_contra,
-                    max_output_tokens=200,
+                    target_channel="vault_lokal",
+                    dos=[
+                        "Ekstrak trade-off, batasan penerapan, dan kendala empiris yang terbukti.",
+                    ],
+                    donts=[
+                        "Jangan mengulang data keunggulan yang sudah menjadi fokus subkontrak pro.",
+                    ],
+                    max_output_tokens=220,
                 )
             )
         else:
@@ -325,6 +355,9 @@ class ContractDecomposer:
                     allowed_scope=contract.in_scope,
                     forbidden_scope=forbidden,
                     evidence_slice=slice_main,
+                    target_channel="vault_lokal",
+                    dos=["Ekstrak klaim substansial inti beserta sitasi dokumen."],
+                    donts=["Dilarang membahas topik out-of-scope."],
                     max_output_tokens=240,
                 )
             )
@@ -340,7 +373,15 @@ class ContractDecomposer:
                         allowed_scope=contract.in_scope,
                         forbidden_scope=forbidden,
                         search_queries=web_queries[:2],
-                        max_output_tokens=150,
+                        target_channel="web_resmi",
+                        dos=[
+                            "Fokus pada portal resmi .go.id, lembaga pemerintah, atau badan internasional.",
+                            "Ambil tabel data dan siaran pers statistik resmi.",
+                        ],
+                        donts=[
+                            "Dilarang mengambil blog opini pribadi atau forum komunitas.",
+                        ],
+                        max_output_tokens=180,
                     )
                 )
                 upstream_scout_ids.append("sub-scout-web")
@@ -354,7 +395,14 @@ class ContractDecomposer:
                         allowed_scope=contract.in_scope,
                         forbidden_scope=forbidden,
                         search_queries=lit_queries[:2],
-                        max_output_tokens=150,
+                        target_channel="repositori_jurnal",
+                        dos=[
+                            "Prioritaskan jurnal bereputasi dengan peer-review dan DOI resmi.",
+                        ],
+                        donts=[
+                            "Hindari naskah tanpa kejelasan metodologi atau data empiris.",
+                        ],
+                        max_output_tokens=180,
                     )
                 )
                 upstream_scout_ids.append("sub-scout-lit")
@@ -371,6 +419,9 @@ class ContractDecomposer:
                         allowed_scope=contract.in_scope,
                         forbidden_scope=forbidden,
                         depends_on=upstream_scout_ids,
+                        target_channel="vault_lokal",
+                        dos=["Ekstrak temuan baru yang belum tercakup pada ekstraksi awal."],
+                        donts=["Jangan mengulang fakta yang sudah ada."],
                         max_output_tokens=220,
                     )
                 )
@@ -383,6 +434,60 @@ class ContractDecomposer:
             has_evidence_gap=has_gap,
             gap_reason=gap_reason,
             subcontracts=subcontracts,
+        )
+
+    def adjudicate_plan_audit(
+        self,
+        plan: ExecutionPlan,
+        audit_review: Any,
+    ) -> ExecutionPlan:
+        """Adjudicate Devil's Advocate pre-flight plan audit: prune unsubstantial/redundant subcontracts and add valid ones."""
+        if not audit_review:
+            return plan
+
+        prune_ids = set(getattr(audit_review, "prune_ids", []) or [])
+        additions = getattr(audit_review, "additions", []) or []
+
+        # 1. Prune unsubstantial / redundant subcontracts identified by Devil's Advocate
+        remaining_subcontracts = [sc for sc in plan.subcontracts if sc.id not in prune_ids]
+        if not remaining_subcontracts:
+            # Always ensure at least 1 core subcontract survives
+            remaining_subcontracts = plan.subcontracts[:1]
+
+        # 2. Add substantive missing subcontracts approved by Contractor
+        forbidden = list(plan.contract.out_of_scope) + list(plan.contract.forbidden_drift_topics)
+        for idx, add_item in enumerate(additions, 1):
+            if not isinstance(add_item, dict):
+                continue
+            obj = str(add_item.get("objective") or "").strip()
+            if not obj:
+                continue
+            # Scope filter: reject if addition is in forbidden scope
+            if any(f.lower() in obj.lower() for f in forbidden if len(f) > 3):
+                continue
+            new_id = f"sub-audit-add-{idx}"
+            remaining_subcontracts.append(
+                SubContract(
+                    id=new_id,
+                    role=add_item.get("role", "VaultExtractor"),
+                    objective=obj,
+                    allowed_scope=plan.contract.in_scope,
+                    forbidden_scope=forbidden,
+                    target_channel=add_item.get("target_channel", "vault_lokal"),
+                    dos=add_item.get("dos", ["Ekstrak bukti spesifik untuk melengkapi gap yang ditemukan Devil's Advocate."]),
+                    donts=add_item.get("donts", ["Dilarang melebar ke topik out-of-scope."]),
+                    search_queries=add_item.get("search_queries", []),
+                    max_output_tokens=220,
+                )
+            )
+
+        return ExecutionPlan(
+            query=plan.query,
+            contract=plan.contract,
+            is_fast_path=len(remaining_subcontracts) <= 1,
+            has_evidence_gap=plan.has_evidence_gap,
+            gap_reason=plan.gap_reason,
+            subcontracts=remaining_subcontracts,
         )
 
     def _is_critique_out_of_contract(self, item: str, contract: TaskContract, draft_tokens: int) -> tuple[bool, str]:

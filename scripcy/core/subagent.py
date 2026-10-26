@@ -176,8 +176,13 @@ class SubagentWorker:
                 '  "missing_requirements": ["..."]\n'
                 "}"
             )
+            dos_lines = "\n".join(f"  - {d}" for d in (subcontract.dos or ["Ekstrak data dan fakta spesifik."]))
+            donts_lines = "\n".join(f"  - {d}" for d in (subcontract.donts or ["Dilarang melebar ke topik out-of-scope."]))
+
             user_prompt = (
-                f"OBJECTIVE: {subcontract.objective}\n"
+                f"OBJECTIVE: {subcontract.objective}\n\n"
+                f"DO (WAJIB DILAKUKAN):\n{dos_lines}\n\n"
+                f"DONT (DILARANG):\n{donts_lines}\n\n"
                 f"ALLOWED SCOPE: {', '.join(subcontract.allowed_scope)}\n"
                 f"FORBIDDEN DRIFT: {', '.join(subcontract.forbidden_scope)}\n\n"
                 f"EVIDENCE SLICE:\n{context_str}"

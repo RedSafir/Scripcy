@@ -52,6 +52,26 @@ class CritiqueReport(BaseModel):
     output_tokens: int = Field(default=0, description="Estimated output tokens consumed during critique.")
 
 
+class PlanAuditReview(BaseModel):
+    """Pre-flight evaluation of proposed execution plan by Devil's Advocate."""
+
+    prune_ids: list[str] = Field(
+        default_factory=list,
+        description="Subcontract IDs challenged and deemed unsubstantial, redundant, or out-of-scope.",
+    )
+    prune_reasons: dict[str, str] = Field(
+        default_factory=dict,
+        description="Substantive reasoning for why each subcontract should be pruned.",
+    )
+    additions: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="Missing substantive dimensions or micro-tasks proposed for addition.",
+    )
+    summary: str = Field(default="", description="Concise assessment of the plan.")
+    input_tokens: int = Field(default=0, description="Tokens used for plan audit.")
+    output_tokens: int = Field(default=0, description="Tokens used for plan audit.")
+
+
 class DevilsAdvocate:
     """Adversarial critic and scope guard testing contract conformance, evidence recency, and factual rigor."""
 
@@ -134,6 +154,66 @@ class DevilsAdvocate:
             "subagent_input_tokens": in_tok,
             "subagent_output_tokens": out_tok,
         }
+
+    def audit_execution_plan(
+        self,
+        query: str,
+        contract: Any,
+        subcontracts: list[Any],
+    ) -> PlanAuditReview:
+        """Pre-flight audit: challenge unsubstantial/redundant subcontracts and propose missing substantive needs."""
+        if not subcontracts:
+            return PlanAuditReview(summary="Rencana kosong; tidak ada subkontrak untuk diaudit.")
+
+        prune_ids: list[str] = []
+        prune_reasons: dict[str, str] = {}
+        additions: list[dict[str, Any]] = []
+
+        forbidden = [p.lower() for p in (list(getattr(contract, "out_of_scope", [])) + list(getattr(contract, "forbidden_drift_topics", []))) if p]
+
+        # 1. Challenge & prune unsubstantial or out-of-scope subcontracts
+        seen_objectives: set[tuple[str, ...]] = set()
+        for sc in subcontracts:
+            obj_lower = sc.objective.lower()
+
+            # Check if clearly out-of-scope
+            is_forbidden = any(f in obj_lower for f in forbidden if len(f) > 3)
+            if is_forbidden:
+                prune_ids.append(sc.id)
+                prune_reasons[sc.id] = "Subkontrak melanggar batas out-of-scope kontrak."
+                continue
+
+            # Check redundancy (near identical objective)
+            key_words = tuple(sorted(set(re.findall(r"\b\w{4,}\b", obj_lower)) - {"ekstrak", "bukti", "untuk", "data", "fakta"}))
+            if key_words in seen_objectives and len(key_words) >= 2:
+                prune_ids.append(sc.id)
+                prune_reasons[sc.id] = "Subkontrak redundant/tumpang tindih dengan subkontrak lain."
+                continue
+            if key_words:
+                seen_objectives.add(key_words)
+
+        # 2. Identify missing substantive dimensions
+        # If user explicitly asked for data/angka/luas but no subcontract has quantitative objective
+        q_lower = query.lower()
+        has_quant_req = any(w in q_lower for w in ("berapa", "luas", "jumlah", "angka", "data", "statistik", "hektare", "ha", "tren"))
+        has_quant_sub = any("angka" in sc.objective.lower() or "metrik" in sc.objective.lower() or "kuantitatif" in sc.objective.lower() for sc in subcontracts if sc.id not in prune_ids)
+        if has_quant_req and not has_quant_sub:
+            additions.append({
+                "role": "WebScout" if hasattr(contract, "archetype") and contract.archetype == "DATA_FACTUAL" else "VaultExtractor",
+                "objective": f"Ekstrak angka, metrik numerik, dan tren kuantitatif resmi terkait: '{query}'.",
+                "target_channel": "web_resmi" if hasattr(contract, "archetype") and contract.archetype == "DATA_FACTUAL" else "vault_lokal",
+                "dos": ["Ambil angka numerik, unit, dan tahun rilis resmi."],
+                "donts": ["Jangan berspekulasi atau mengambil opini kualitatif."],
+                "search_queries": [f"{query} data statistik resmi"],
+            })
+
+        summary = f"Plan audit selesai: {len(prune_ids)} dipangkas (tidak substansial/redundant), {len(additions)} usulan penambahan."
+        return PlanAuditReview(
+            prune_ids=prune_ids,
+            prune_reasons=prune_reasons,
+            additions=additions,
+            summary=summary,
+        )
 
     def critique_heuristic(
         self,
