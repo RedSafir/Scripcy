@@ -119,9 +119,11 @@ def run_test_flow(
             # Check vault status
             vault_docs = [f for f in wm.vault_dir.iterdir() if f.is_file()] if wm.vault_dir.is_dir() else []
 
-            # Match render complete event for this query turn
+            # Match events for this query turn
             events_file = base_dir / "logs" / "events.jsonl"
             render_events = []
+            subagent_events = []
+            contract_events = []
             if events_file.exists():
                 for line in events_file.read_text(encoding="utf-8").splitlines():
                     if line.strip():
@@ -129,9 +131,19 @@ def run_test_flow(
                             ev = json.loads(line)
                             if ev.get("event") == "RENDER_COMPLETE":
                                 render_events.append(ev)
+                            elif ev.get("event") == "SUBAGENTS":
+                                subagent_events.append(ev)
+                            elif ev.get("event") == "TASK_CONTRACT":
+                                contract_events.append(ev)
                         except Exception:
                             pass
             latest_render = render_events[-1] if render_events and len(render_events) >= idx else (render_events[-1] if render_events else {})
+            latest_subagent = subagent_events[-1] if subagent_events and len(subagent_events) >= idx else (subagent_events[-1] if subagent_events else {})
+            latest_contract = contract_events[-1] if contract_events and len(contract_events) >= idx else (contract_events[-1] if contract_events else {})
+
+            sub_contracts = latest_contract.get("sub_contracts", [])
+            roles_executed = latest_subagent.get("roles_executed", [])
+            contracts_count = len(sub_contracts) if sub_contracts else len(roles_executed)
 
             query_results.append({
                 "query_index": idx,
@@ -141,6 +153,10 @@ def run_test_flow(
                 "response_preview": latest_assistant[:600] + ("..." if len(latest_assistant) > 600 else ""),
                 "full_response": latest_assistant,
                 "vault_count": len(vault_docs),
+                "contracts_count": contracts_count,
+                "roles_executed": roles_executed,
+                "facts_extracted_count": latest_subagent.get("facts_extracted_count", 0),
+                "new_stems_count": latest_subagent.get("new_stems_count", 0),
                 "input_tokens": latest_render.get("input_tokens", 0),
                 "output_tokens": latest_render.get("output_tokens", 0),
                 "total_tokens": latest_render.get("total_tokens", 0),
@@ -191,6 +207,7 @@ if __name__ == "__main__":
     print(f"Dokumen di Vault: {len(res['final_vault_documents'])} file ({res['final_vault_documents']})")
     print(f"Total Event     : {res['total_events_logged']}")
     for qr in res["query_results"]:
-        print(f"\n[Pertanyaan #{qr['query_index']}] Durasi: {qr['elapsed_seconds']}s | Vault: {qr['vault_count']} docs")
-        print(f"Token: {qr.get('input_tokens', 0)} in · {qr.get('output_tokens', 0)} out · {qr.get('total_tokens', 0)} total | Grounding: {int(qr.get('grounding_score', 0.0) * 100)}% | Critic: {qr.get('critic_score', 0)}/10")
+        print(f"\n[Pertanyaan #{qr['query_index']}] Durasi: {qr['elapsed_seconds']}s | Small Contracts: {qr.get('contracts_count', 0)} | Roles: {qr.get('roles_executed', [])} | Vault: {qr['vault_count']} docs")
+        critic_display = f"{qr.get('critic_score')}/10" if qr.get('critic_score') else "Dilewati (One-Pass Golden Pass)"
+        print(f"Token: {qr.get('input_tokens', 0)} in · {qr.get('output_tokens', 0)} out · {qr.get('total_tokens', 0)} total | Grounding: {int(qr.get('grounding_score', 0.0) * 100)}% | Critic: {critic_display}")
         print(f"Preview Respons : {qr['response_preview'][:250]}...")

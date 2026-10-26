@@ -1641,7 +1641,31 @@ class StudioAgentLoopMixin:
                             hallucination_warning=v_rep.hallucination_warning,
                         )
 
-                    # 4. Devil's Advocate + Contractor Gatekeeper Adjudication
+                    # One-Pass Golden Drafting: If Worker Orchestrator was executed (orch_res is not None),
+                    # workers have gathered evidence and audited findings via Tier-2 Devil's Advocate.
+                    # On final draft, FactChecker audits grounding. Devil's Advocate is omitted per architecture,
+                    # and no re-drafting cycles are triggered.
+                    if orch_res is not None:
+                        final_response = self._sanitize_final_response(p_resp)
+                        if self.vault_manager and final_response:
+                            final_response = append_vault_bibliography(
+                                text=final_response,
+                                evidence=curr_evidence,
+                                vault_manager=self.vault_manager,
+                                style=self.config.citation.style,
+                                active_documents=self.get_session_active_documents(session.id if session else None),
+                            )
+                        last_v_report = v_rep
+                        last_c_report = None
+                        stream_in_est = estimate_tokens(current_query) + sum(c.token_estimate or estimate_tokens(c.text) for c in (curr_evidence or [])) + 250
+                        accumulated_input_tokens += stream_in_est + getattr(v_rep, "input_tokens", 0)
+                        accumulated_output_tokens += out_tok + getattr(v_rep, "output_tokens", 0)
+                        total_turns_completed = turn + 1
+                        best_draft = p_resp
+                        best_grounding = v_rep.grounding_score
+                        break
+
+                    # 4. Devil's Advocate + Contractor Gatekeeper Adjudication (Fallback / Non-Orchestrator Mode)
                     if cancel_event and cancel_event.is_set():
                         return
                     cr_msg = "Menjalankan evaluasi kritis (Devil's Advocate)..."
@@ -2169,9 +2193,8 @@ class StudioAgentLoopMixin:
             style_name = self.config.citation.style.upper()
 
             v_score = last_v_report.grounding_score if last_v_report else 1.0
-            c_score = last_c_report.score if last_c_report else 8
             grounding_badge = f"Grounding: {int(v_score * 100)}%"
-            critic_badge = f"Critic: {c_score}/10"
+            critic_badge = f"Critic: {last_c_report.score}/10" if last_c_report else ""
             actual_turns = max(total_turns_completed, turn + 1)
             if "orch_res" in locals() and orch_res and orch_res.plan and orch_res.plan.subcontracts:
                 n_sc = len(orch_res.plan.subcontracts)
@@ -2179,9 +2202,14 @@ class StudioAgentLoopMixin:
             else:
                 contracts_badge = f"{actual_turns} turn" if actual_turns == 1 else f"{actual_turns} turns"
 
+            badge_elements = [contracts_badge, grounding_badge]
+            if critic_badge:
+                badge_elements.append(critic_badge)
+            badge_joined = " • ".join(badge_elements)
+
             footer_badge_md = (
                 f"\n\n---\n"
-                f"*[dim]Tokens: {input_tokens:,} in · {output_tokens:,} out · {total_tokens:,} total ({model_label}) • {contracts_badge} • {grounding_badge} • {critic_badge} • {elapsed:.1f}s • {style_name} style[/dim]*"
+                f"*[dim]Tokens: {input_tokens:,} in · {output_tokens:,} out · {total_tokens:,} total ({model_label}) • {badge_joined} • {elapsed:.1f}s • {style_name} style[/dim]*"
             )
             final_response_persisted = f"{final_response}{footer_badge_md}"
 
@@ -2337,12 +2365,15 @@ class StudioAgentLoopMixin:
             m_lbl = task_result_box.get("model_label", model_label)
             t_bdg = task_result_box.get("contracts_badge", task_result_box.get("turns_badge", "1 small contract"))
             g_bdg = task_result_box.get("grounding_badge", "Grounding: 100%")
-            c_bdg = task_result_box.get("critic_badge", "Critic: 8/10")
+            c_bdg = task_result_box.get("critic_badge", "")
             el_s = task_result_box.get("elapsed", 0.0)
             st_name = task_result_box.get("style_name", "APA")
 
+            cli_badges = [b for b in [t_bdg, g_bdg, c_bdg] if b]
+            cli_badge_str = " • ".join(cli_badges)
+
             self.console.print(
-                f"[dim]── Tokens: {in_tok:,} in · {out_tok:,} out · {tot_tok:,} total ({m_lbl}) • {t_bdg} • {g_bdg} • {c_bdg} • {el_s:.1f}s • {st_name} style ──[/dim]\n"
+                f"[dim]── Tokens: {in_tok:,} in · {out_tok:,} out · {tot_tok:,} total ({m_lbl}) • {cli_badge_str} • {el_s:.1f}s • {st_name} style ──[/dim]\n"
             )
 
             if hasattr(self, "logger") and self.logger:
@@ -2355,7 +2386,7 @@ class StudioAgentLoopMixin:
                     elapsed_total_s=el_s,
                     model_label=m_lbl,
                     grounding_score=v_rep.grounding_score if v_rep else 1.0,
-                    critic_score=c_rep.score if c_rep else 8,
+                    critic_score=c_rep.score if c_rep else 0,
                 )
 
             # Suggested actions & Action Indicator: Mengubah / Menulis
