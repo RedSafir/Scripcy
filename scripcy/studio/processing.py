@@ -384,6 +384,9 @@ class StudioProcessingMixin:
                     f"[bold red][x] Tugas Latar Belakang Gagal:[/bold red] [cyan]{task_name}[/cyan] [dim]({error_msg})[/dim]"
                 )
 
+        # 4. Automatic Session Lifecycle Reconciliation (Auto-Reap completed session)
+        self._reconcile_session_lifecycle(session_id)
+
     def _run_task_ai_evaluation(self, task: Any, session_id: str) -> None:
         """Deprecated: Evaluasi otomatis background dinonaktifkan agar tidak menghasilkan respons ganda."""
         return

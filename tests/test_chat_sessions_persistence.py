@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 from pathlib import Path
+import threading
 import time
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -225,3 +226,95 @@ def test_resume_chat_shows_bound_tasks_and_passes_history(
     assert "Transformer memungkinkan komputasi paralel" in contents
     assert "PROSES LATAR BELAKANG SELESAI" in contents
     assert "Jelaskan detail mekanisme self-attention" in contents
+
+
+def test_session_auto_closes_on_exit_when_no_background_tasks(
+    temp_workspace: WorkspaceManager,
+    tmp_path: Path,
+) -> None:
+    """When a user exits a session (/back) and no background tasks are active, it auto-closes."""
+    console = Console(file=io.StringIO(), force_terminal=True, color_system=None)
+    pm = ProjectManager(registry_file=tmp_path / "reg.json")
+    proj = pm.create_project("auto_close_test", temp_workspace.root_dir)
+    cfg = ScripcyConfig(workspace_path=str(temp_workspace.root_dir))
+    engine = LLMEngine(config=cfg)
+
+    studio = CLIStudio(
+        workspace=temp_workspace,
+        config=cfg,
+        console=console,
+        project_manager=pm,
+        engine=engine,
+    )
+    studio.open_project(proj)
+
+    session = studio.chat_manager.create_session("sess_no_tasks")
+    studio.active_chat_session = session
+    studio.sub_mode = "chat"
+    studio.chat_manager.update_session_status(session.id, "running")
+
+    # User issues /back command
+    studio.handle_chat_submode_interaction("/back")
+
+    assert studio.sub_mode == "chat_hub"
+    refreshed_sess = studio.chat_manager.get_session(session.id)
+    assert refreshed_sess is not None
+    assert refreshed_sess.status == "closed"
+
+
+def test_session_stays_detached_while_task_runs_and_auto_closes_on_finish(
+    temp_workspace: WorkspaceManager,
+    tmp_path: Path,
+) -> None:
+    """Session stays detached if a background task is running, and auto-closes when the task finishes."""
+    console = Console(file=io.StringIO(), force_terminal=True, color_system=None)
+    pm = ProjectManager(registry_file=tmp_path / "reg.json")
+    proj = pm.create_project("auto_reap_test", temp_workspace.root_dir)
+    cfg = ScripcyConfig(workspace_path=str(temp_workspace.root_dir))
+    engine = LLMEngine(config=cfg)
+
+    studio = CLIStudio(
+        workspace=temp_workspace,
+        config=cfg,
+        console=console,
+        project_manager=pm,
+        engine=engine,
+    )
+    studio.open_project(proj)
+
+    session = studio.chat_manager.create_session("sess_with_bg_task")
+    studio.active_chat_session = session
+    studio.sub_mode = "chat"
+    studio.chat_manager.update_session_status(session.id, "running")
+
+    task_event = threading.Event()
+
+    def long_running_bg_task() -> str:
+        task_event.wait(timeout=2.0)
+        return "Finished long task"
+
+    task = studio.task_manager.submit(
+        name="Long Task",
+        task_type="scout",
+        target_fn=long_running_bg_task,
+        session_id=session.id,
+    )
+
+    # User exits session while task is still running
+    studio.handle_chat_submode_interaction("/back")
+
+    assert studio.sub_mode == "chat_hub"
+    # Sesi harus berstatus detached karena background task masih berjalan
+    refreshed_sess = studio.chat_manager.get_session(session.id)
+    assert refreshed_sess is not None
+    assert refreshed_sess.status == "detached"
+
+    # Allow task to complete
+    task_event.set()
+    time.sleep(0.15)
+
+    # Now that the background task finished, session auto-reaper should have closed the session
+    refreshed_sess_after = studio.chat_manager.get_session(session.id)
+    assert refreshed_sess_after is not None
+    assert refreshed_sess_after.status == "closed"
+

@@ -113,6 +113,7 @@ class StudioChatHubMixin:
             return
 
         while True:
+            self._reconcile_session_lifecycle()
             sessions = self.chat_manager.list_sessions() if self.chat_manager else []
             if not sessions:
                 self.console.print("\n[dim]Belum ada sesi percakapan. Buat sesi baru untuk memulai.\n[/dim]")
@@ -196,6 +197,7 @@ class StudioChatHubMixin:
                 self.sub_mode = "chat"
                 self.run_interactive_chat_session(selected_sess)
                 self.sub_mode = None
+                self._reconcile_session_lifecycle(selected_sess.id)
 
             elif action == "start" and selected_sess:
                 self.chat_manager.update_session_status(selected_sess.id, "running")
@@ -205,6 +207,7 @@ class StudioChatHubMixin:
                 self.sub_mode = "chat"
                 self.run_interactive_chat_session(selected_sess)
                 self.sub_mode = "sessions"
+                self._reconcile_session_lifecycle(selected_sess.id)
 
             elif action == "terminate" and selected_sess:
                 self.chat_manager.update_session_status(selected_sess.id, "closed")
@@ -323,10 +326,14 @@ class StudioChatHubMixin:
                 ).strip()
 
             except (KeyboardInterrupt, EOFError):
-                # Ctrl+C inside chat detaches to sessions menu
-                self.chat_manager.update_session_status(session.id, "detached")
-                session.status = "detached"
-                self.console.print(f"\n[bold cyan]● Sesi '{session.name}' di-detach ke latar belakang.[/bold cyan]\n")
+                # Ctrl+C inside chat exits to sessions menu; auto-reap if no active tasks
+                self.sub_mode = "chat_hub"
+                self._reconcile_session_lifecycle(session.id)
+                running_tasks = self.task_manager.list_active_tasks_for_session(session.id) if hasattr(self, "task_manager") and self.task_manager else []
+                if running_tasks:
+                    self.console.print(f"\n[bold cyan]● Sesi '{session.name}' di-detach ke latar belakang ({len(running_tasks)} background task berjalan).[/bold cyan]\n")
+                else:
+                    self.console.print(f"\n[dim]● Sesi '{session.name}' ditutup otomatis (tidak ada proses latar belakang).[/dim]\n")
                 break
 
             if not raw_input:
@@ -335,9 +342,13 @@ class StudioChatHubMixin:
             clean_lower = raw_input.lower().strip()
 
             if clean_lower in ("/detach", "detach", "/back", "back"):
-                self.chat_manager.update_session_status(session.id, "detached")
-                session.status = "detached"
-                self.console.print(f"\n[bold cyan]● Sesi '{session.name}' di-detach ke latar belakang.[/bold cyan]\n")
+                self.sub_mode = "chat_hub"
+                self._reconcile_session_lifecycle(session.id)
+                running_tasks = self.task_manager.list_active_tasks_for_session(session.id) if hasattr(self, "task_manager") and self.task_manager else []
+                if running_tasks:
+                    self.console.print(f"\n[bold cyan]● Sesi '{session.name}' di-detach ke latar belakang ({len(running_tasks)} background task berjalan).[/bold cyan]\n")
+                else:
+                    self.console.print(f"\n[dim]● Sesi '{session.name}' ditutup otomatis (tidak ada proses latar belakang).[/dim]\n")
                 break
 
             if clean_lower in ("/close", "close", "/terminate", "terminate", "/exit", "exit"):
@@ -426,6 +437,7 @@ class StudioChatHubMixin:
                     idx += 1
                 chat_name = f"session{idx}"
 
+            prev_sess_id = self.active_chat_session.id if self.active_chat_session else None
             session = self.chat_manager.create_session(
                 name=chat_name,
                 active_skill=self.active_skill_name,
@@ -433,6 +445,10 @@ class StudioChatHubMixin:
             self.render_mode_divider()
             self.active_chat_session = session
             self.sub_mode = "chat"
+            self.chat_manager.update_session_status(session.id, "running")
+            session.status = "running"
+            if prev_sess_id:
+                self._reconcile_session_lifecycle(prev_sess_id)
             self.console.print(f"[bold green][✓] Sesi chat baru dibuat:[/bold green] [bold cyan]{session.name}[/bold cyan]")
             self.console.print("[dim]Ketik pertanyaan riset Anda langsung di bawah ini. Gunakan '/' untuk perintah (contoh: /back).[/dim]\n")
             return
@@ -451,12 +467,15 @@ class StudioChatHubMixin:
                 return
             session = self.chat_manager.get_session(target)
             if session:
+                prev_sess_id = self.active_chat_session.id if self.active_chat_session else None
                 if getattr(session, "status", "running") != "running":
                     self.chat_manager.update_session_status(session.id, "running")
                     session.status = "running"
                 self.render_mode_divider()
                 self.active_chat_session = session
                 self.sub_mode = "chat"
+                if prev_sess_id and prev_sess_id != session.id:
+                    self._reconcile_session_lifecycle(prev_sess_id)
                 self.console.print(f"[bold green][✓] Masuk ke sesi percakapan:[/bold green] [bold cyan]{session.name}[/bold cyan] ({session.message_count} pesan)")
 
                 # Display any active or recent background tasks bound to this session
@@ -566,6 +585,7 @@ class StudioChatHubMixin:
         if not self.chat_manager:
             return
 
+        self._reconcile_session_lifecycle()
         self.console.print(f"\n[bold bright_white]Saved Chat Sessions [{self.current_project.name if self.current_project else 'Active'}][/bold bright_white]")
         sessions = self.chat_manager.list_sessions()
         if not sessions:

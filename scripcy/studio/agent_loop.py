@@ -458,41 +458,51 @@ class StudioAgentLoopMixin:
 
             if cmd in ("/detach", "detach"):
                 self.render_mode_divider()
+                old_sess = self.active_chat_session
+                old_sess_id = old_sess.id if old_sess else None
                 running_tasks = (
-                    self.task_manager.list_active_tasks_for_session(self.active_chat_session.id)
-                    if (self.active_chat_session and self.task_manager)
+                    self.task_manager.list_active_tasks_for_session(old_sess_id)
+                    if (old_sess_id and self.task_manager)
                     else []
                 )
-                if running_tasks:
-                    self.console.print(f"[bold yellow]●[/bold yellow] [dim]{len(running_tasks)} proses latar belakang tetap berjalan di background. Anda dapat kembali ke sesi ini kapan saja dengan '/switch' atau 'resume {self.active_chat_session.name}'.[/dim]")
-                if self.active_chat_session and self.chat_manager:
-                    self.chat_manager.update_session_status(self.active_chat_session.id, "detached")
-                    self.active_chat_session.status = "detached"
                 self.sub_mode = None
+                if old_sess_id:
+                    self._reconcile_session_lifecycle(old_sess_id)
+                if running_tasks:
+                    self.console.print(f"[bold yellow]●[/bold yellow] [dim]{len(running_tasks)} proses latar belakang tetap berjalan di background. Anda dapat kembali ke sesi ini kapan saja dengan '/switch' atau 'resume {old_sess.name if old_sess else ''}'.[/dim]")
+                else:
+                    self.console.print(f"[dim]● Sesi '{old_sess.name if old_sess else ''}' ditutup otomatis (tidak ada proses latar belakang).[/dim]")
                 self.console.print(f"[dim]Kembali ke project root: {self.current_project.name if self.current_project else 'project'}>[/dim]\n")
                 return
             elif cmd in ("/back", "back"):
                 self.render_mode_divider()
+                old_sess = self.active_chat_session
+                old_sess_id = old_sess.id if old_sess else None
                 running_tasks = (
-                    self.task_manager.list_active_tasks_for_session(self.active_chat_session.id)
-                    if (self.active_chat_session and self.task_manager)
+                    self.task_manager.list_active_tasks_for_session(old_sess_id)
+                    if (old_sess_id and self.task_manager)
                     else []
                 )
-                if running_tasks:
-                    self.console.print(f"[bold yellow]●[/bold yellow] [dim]{len(running_tasks)} proses latar belakang tetap berjalan di background. Anda dapat kembali ke sesi ini kapan saja dengan '/switch' atau 'resume {self.active_chat_session.name}'.[/dim]")
-                if self.active_chat_session and self.chat_manager:
-                    self.chat_manager.update_session_status(self.active_chat_session.id, "detached")
-                    self.active_chat_session.status = "detached"
                 self.sub_mode = "chat_hub"
+                if old_sess_id:
+                    self._reconcile_session_lifecycle(old_sess_id)
+                if running_tasks:
+                    self.console.print(f"[bold yellow]●[/bold yellow] [dim]{len(running_tasks)} proses latar belakang tetap berjalan di background. Anda dapat kembali ke sesi ini kapan saja dengan '/switch' atau 'resume {old_sess.name if old_sess else ''}'.[/dim]")
+                else:
+                    self.console.print(f"[dim]● Sesi '{old_sess.name if old_sess else ''}' ditutup otomatis (tidak ada proses latar belakang).[/dim]")
                 self.console.print(f"[dim]Kembali ke menu chat: {self.current_project.name if self.current_project else 'project'}/chat>[/dim]\n")
                 return
             elif cmd in ("/close", "close", "/exit", "exit", "/quit", "quit"):
                 self.render_mode_divider()
-                if self.active_chat_session and self.chat_manager:
-                    self.chat_manager.update_session_status(self.active_chat_session.id, "closed")
-                    self.active_chat_session.status = "closed"
+                old_sess = self.active_chat_session
+                old_sess_id = old_sess.id if old_sess else None
+                if old_sess and self.chat_manager:
+                    self.chat_manager.update_session_status(old_sess.id, "closed")
+                    old_sess.status = "closed"
+                    if hasattr(self, "task_manager") and self.task_manager:
+                        self.task_manager.cancel_session_tasks(old_sess.id)
                 self.sub_mode = "chat_hub"
-                self.console.print(f"[dim]Sesi '{self.active_chat_session.name if self.active_chat_session else ''}' ditutup (terminated).[/dim]\n")
+                self.console.print(f"[dim]Sesi '{old_sess.name if old_sess else ''}' ditutup (terminated).[/dim]\n")
                 return
             elif cmd in ("/bg", "/async"):
                 if not arg:
@@ -548,12 +558,18 @@ class StudioAgentLoopMixin:
                         idx += 1
                     chat_name = f"session{idx}"
 
+                prev_sess_id = self.active_chat_session.id if self.active_chat_session else None
                 session = self.chat_manager.create_session(
                     name=chat_name,
                     active_skill=self.active_skill_name,
                 )
                 self.render_mode_divider()
                 self.active_chat_session = session
+                self.sub_mode = "chat"
+                self.chat_manager.update_session_status(session.id, "running")
+                session.status = "running"
+                if prev_sess_id:
+                    self._reconcile_session_lifecycle(prev_sess_id)
                 self.console.print(f"[bold green][✓] Sesi chat baru dibuat:[/bold green] [bold cyan]{session.name}[/bold cyan]")
                 self.console.print("[dim]Ketik pertanyaan riset Anda langsung di bawah ini. Gunakan '/' untuk perintah (contoh: /back).[/dim]\n")
             elif cmd in ("/resume", "/open", "/switch", "/chats", "/sessions"):
@@ -565,7 +581,13 @@ class StudioAgentLoopMixin:
                 session = self.chat_manager.get_session(arg)
                 if session:
                     self.render_mode_divider()
+                    prev_sess_id = self.active_chat_session.id if self.active_chat_session else None
                     self.active_chat_session = session
+                    self.sub_mode = "chat"
+                    self.chat_manager.update_session_status(session.id, "running")
+                    session.status = "running"
+                    if prev_sess_id and prev_sess_id != session.id:
+                        self._reconcile_session_lifecycle(prev_sess_id)
                     self.console.print(f"[bold green][✓] Berpindah ke sesi percakapan:[/bold green] [bold cyan]{session.name}[/bold cyan] ({session.message_count} pesan)\n")
                     self.cmd_chat_history()
                     self.console.print("[dim]Ketik pertanyaan riset Anda langsung di bawah ini. Gunakan '/' untuk perintah (contoh: /back).[/dim]\n")
@@ -2319,9 +2341,9 @@ class StudioAgentLoopMixin:
                 task_id=task.id,
             )
         except SessionDetachSignal:
-            if session and self.chat_manager:
-                self.chat_manager.update_session_status(session.id, "detached")
-                session.status = "detached"
+            self.sub_mode = None
+            if session:
+                self._reconcile_session_lifecycle(session.id)
             self.console.print(f"\n[bold cyan]● Sesi '{session.name if session else ''}' di-detach ke latar belakang.[/bold cyan]")
             self.console.print(f"[dim]● Proses sintesis AI ({task.id}) tetap berjalan di background. Pantau di menu Processing atau buka kembali sesi kapan saja.[/dim]\n")
             raise

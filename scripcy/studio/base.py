@@ -70,6 +70,8 @@ from scripcy.ui.interactive import (
     interactive_token_warning_confirm,
 )
 
+logger = logging.getLogger(__name__)
+
 
 class StudioBase:
     def __init__(
@@ -760,4 +762,67 @@ class StudioBase:
         os.system("cls" if os.name == "nt" else "clear")
         init_windows_terminal()
         self.print_banner()
+
+    def _reconcile_session_lifecycle(self, session_id: str | None = None) -> None:
+        """Automatically reconcile session state between running, detached, and closed.
+
+        Rules:
+        1. Sesi aktif tatap muka (pengguna sedang di dalam sesi pada mode chat): status = 'running'.
+        2. Pengguna di luar sesi + ada background tasks yang masih aktif: status = 'detached'.
+        3. Pengguna di luar sesi + TIDAK ADA background tasks aktif: status = 'closed'.
+        """
+        if not self.chat_manager:
+            return
+
+        target_ids: list[str] = []
+        if session_id:
+            target_ids = [session_id]
+        else:
+            try:
+                sessions = self.chat_manager.list_sessions()
+                target_ids = [s.id for s in sessions if getattr(s, "status", "") in ("running", "detached")]
+            except Exception:
+                return
+
+        for s_id in target_ids:
+            try:
+                session_obj = self.chat_manager.get_session(s_id)
+                if not session_obj:
+                    continue
+
+                is_user_inside = (
+                    self.sub_mode in ("chat", "chat_interactive")
+                    and self.active_chat_session is not None
+                    and self.active_chat_session.id == s_id
+                )
+
+                active_tasks = (
+                    self.task_manager.list_active_tasks_for_session(s_id)
+                    if hasattr(self, "task_manager") and self.task_manager
+                    else []
+                )
+
+                if is_user_inside:
+                    if getattr(session_obj, "status", "") != "running":
+                        self.chat_manager.update_session_status(s_id, "running")
+                        session_obj.status = "running"
+                        if self.active_chat_session and self.active_chat_session.id == s_id:
+                            self.active_chat_session.status = "running"
+                else:
+                    if active_tasks:
+                        if getattr(session_obj, "status", "") != "detached":
+                            self.chat_manager.update_session_status(s_id, "detached")
+                            session_obj.status = "detached"
+                            if self.active_chat_session and self.active_chat_session.id == s_id:
+                                self.active_chat_session.status = "detached"
+                    else:
+                        # User is outside the session and no background tasks are active -> auto-close!
+                        if getattr(session_obj, "status", "") != "closed":
+                            self.chat_manager.update_session_status(s_id, "closed")
+                            session_obj.status = "closed"
+                            if self.active_chat_session and self.active_chat_session.id == s_id:
+                                self.active_chat_session.status = "closed"
+            except Exception as err:
+                logger.debug(f"Failed reconciling session lifecycle for {s_id}: {err}")
+
 
