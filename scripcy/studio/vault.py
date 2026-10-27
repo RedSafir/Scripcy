@@ -694,18 +694,10 @@ class StudioVaultMixin:
                 pass
 
         elif choice == "findpaper":
-            try:
-                self.console.print()
-                query = self.console.input("[bold cyan]Topik atau judul journal ilmiah untuk dicari: [/bold cyan]").strip()
-                if query:
-                    self.cmd_findpaper(query)
-            except (KeyboardInterrupt, EOFError):
-                pass
+            self.run_interactive_vault_find_paper()
 
         elif choice == "findwebsite":
-            self.console.print("\n[bold cyan]Fitur Cari Website[/bold cyan]")
-            self.console.print("[dim]Pencarian dan penelusuran portal web/resmi sedang dipersiapkan.[/dim]\n")
-            time.sleep(1.5)
+            self.run_interactive_vault_find_web()
 
         elif choice == "local":
             try:
@@ -717,6 +709,305 @@ class StudioVaultMixin:
                     self.cmd_vault_update()
             except (KeyboardInterrupt, EOFError):
                 pass
+
+    def run_interactive_vault_find_paper(self, initial_query: str = "") -> None:
+        """Search academic literature and select papers to ingest into the vault via paginated carousel."""
+        if not self.workspace or not getattr(self, "scout", None):
+            self.console.print("[red][x] Buka atau buat project terlebih dahulu sebelum mencari journal.[/red]\n")
+            return
+
+        query = initial_query.strip().strip("'\"")
+        if not query:
+            try:
+                self.console.print()
+                query = self.console.input("[bold cyan]Topik atau judul journal ilmiah untuk dicari: [/bold cyan]").strip()
+            except (KeyboardInterrupt, EOFError):
+                self.console.print("\n[yellow]Pencarian journal dibatalkan.[/yellow]\n")
+                return
+
+        if not query or query.lower() in ("q", "quit", "cancel", "exit", "batal"):
+            self.console.print("[yellow]Pencarian journal dibatalkan.[/yellow]\n")
+            return
+
+        with self.console.status("[cyan]Mengekstrak parameter dan menelusuri OpenAlex, Semantic Scholar & ArXiv...[/cyan]"):
+            try:
+                query_spec = self.scout.extract_search_criteria(query, engine=self.engine)
+                candidates = asyncio.run(self.scout.search_multi_source(query_spec, limit=25))
+            except Exception as exc:
+                self.console.print(f"[bold red][x] Pencarian journal gagal:[/bold red] {exc}\n")
+                return
+
+        if not candidates:
+            self.console.print(f"[yellow][!] Tidak ditemukan journal ilmiah yang sesuai untuk topik '{query}'.[/yellow]\n")
+            return
+
+        columns = [
+            {"name": "#", "justify": "right", "style": "dim", "width": 3},
+            {"name": "Sumber", "justify": "center", "width": 12},
+            {"name": "Judul Journal", "style": "bold white", "width": 36, "overflow": "fold"},
+            {"name": "Penulis", "style": "dim", "width": 18, "overflow": "fold"},
+            {"name": "Tahun", "justify": "center", "width": 6, "style": "dim"},
+            {"name": "Akses", "justify": "center", "width": 13},
+            {"name": "Intisari / Relevansi", "style": "dim", "overflow": "fold"},
+        ]
+
+        rows = []
+        for idx, item in enumerate(candidates, 1):
+            if item.source == "openalex":
+                source_badge = "[bold cyan][OpenAlex][/bold cyan]"
+            elif item.source == "ai_recommended":
+                source_badge = "[bold cyan][Seminal][/bold cyan]"
+            else:
+                source_badge = "[dim][S2/ArXiv][/dim]"
+
+            pdf_status = "[bold cyan][Open Access][/bold cyan]" if item.has_pdf else "[dim][Paywalled][/dim]"
+            authors_str = ", ".join(item.authors[:2]) if item.authors else "Unknown"
+
+            rows.append([
+                str(idx),
+                source_badge,
+                item.title,
+                authors_str,
+                str(item.year or "n.d."),
+                pdf_status,
+                item.relevance_reason or "Sesuai parameter pencarian.",
+            ])
+
+        dl_choice = interactive_carousel_table(
+            title="Katalog Hasil Pencarian Journal",
+            columns=columns,
+            rows=rows,
+            console=self.console,
+            prompt_label="download > ",
+            help_text="Navigasi dengan ↑/↓ lalu tekan space untuk centang, atau ketik nomor (contoh: '1, 3' / 'all', 'q' untuk batal):",
+            item_label="journal",
+        )
+
+        if not dl_choice or dl_choice.lower() in ("q", "quit", "cancel", "n", "no", "batal"):
+            self.console.print("[dim]Pencarian selesai tanpa mengunduh berkas.[/dim]\n")
+            return
+
+        to_download_indices = []
+        if dl_choice.lower() == "all":
+            to_download_indices = list(range(len(candidates)))
+        else:
+            for part in dl_choice.replace(",", " ").split():
+                if part.isdigit():
+                    num = int(part) - 1
+                    if 0 <= num < len(candidates):
+                        to_download_indices.append(num)
+
+        if not to_download_indices:
+            self.console.print("[dim]Tidak ada nomor journal valid yang dipilih.[/dim]\n")
+            return
+
+        selected_papers = [candidates[i] for i in to_download_indices]
+
+        ingested_count = 0
+        failed_count = 0
+        ingested_files: list[str] = []
+
+        with self.console.status(f"[cyan]Mengunduh dan memproses {len(selected_papers)} journal terpilih ke Vault...[/cyan]"):
+            for p in selected_papers:
+                try:
+                    if p.has_pdf and p.pdf_url:
+                        dl_path = asyncio.run(self.scout.download_scout_paper(p))
+                        ingested_files.append(dl_path.name)
+                        ingested_count += 1
+                    elif p.abstract:
+                        self.scout.ingest_abstract_paper(p)
+                        safe_stem = sanitize_filename(p.title)
+                        ingested_files.append(f"{safe_stem}.md")
+                        ingested_count += 1
+                    else:
+                        failed_count += 1
+                except Exception as dl_err:
+                    logger.warning(f"Failed to ingest paper {p.title}: {dl_err}")
+                    failed_count += 1
+
+        if self.vault_manager:
+            self.vault_manager.reload_vault(force=False)
+            if ingested_files:
+                self.vault_manager.record_history(
+                    action="tambah_journal",
+                    description=f"Mengunduh {ingested_count} journal ilmiah dari pencarian '{query}'",
+                    files_affected=ingested_files,
+                    details={"query": query, "selected_count": len(selected_papers)},
+                )
+        self._sync_vault_cache()
+
+        self.console.print()
+        if ingested_count > 0:
+            self.console.print(
+                f"[bold green][✓] Berhasil menambahkan {ingested_count} journal ke Vault.[/bold green]"
+            )
+            for f in ingested_files[:5]:
+                self.console.print(f"  [cyan]•[/cyan] [white]{f}[/white]")
+            if len(ingested_files) > 5:
+                self.console.print(f"  [dim]... dan {len(ingested_files) - 5} berkas lainnya.[/dim]")
+        if failed_count > 0:
+            self.console.print(f"[yellow][!] {failed_count} journal tidak dapat diunduh (paywalled / akses ditolak).[/yellow]")
+        self.console.print()
+
+    def run_interactive_vault_find_web(self, initial_target: str = "") -> None:
+        """Search official web documents and select pages to ingest into the vault via paginated carousel."""
+        if not self.workspace:
+            self.console.print("[red][x] Buka atau buat project terlebih dahulu sebelum mencari website.[/red]\n")
+            return
+
+        target = initial_target.strip().strip("'\"")
+        if not target:
+            try:
+                self.console.print()
+                target = self.console.input("[bold cyan]URL atau kata kunci dokumen web resmi: [/bold cyan]").strip()
+            except (KeyboardInterrupt, EOFError):
+                self.console.print("\n[yellow]Pencarian website dibatalkan.[/yellow]\n")
+                return
+
+        if not target or target.lower() in ("q", "quit", "cancel", "exit", "batal"):
+            self.console.print("[yellow]Pencarian website dibatalkan.[/yellow]\n")
+            return
+
+        from scripcy.core.web_scout import WebScout, OfficialSourceRejectedError, WebScoutError
+        web_scout = getattr(self, "web_scout", None) or WebScout(workspace=self.workspace)
+        vec_vault = self.vault_manager.vector_vault if self.vault_manager else None
+
+        # 1. Direct URL Ingestion
+        if target.startswith("http://") or target.startswith("https://"):
+            self.console.print(f"\n[cyan]Memverifikasi dan memproses sumber resmi:[/cyan] [bold]{target}[/bold]")
+            with self.console.status("[cyan]Mengevaluasi otoritas, mengekstrak visual substantif, dan mengonversi Markdown...[/cyan]"):
+                try:
+                    parsed = asyncio.run(web_scout.ingest_url(target, vector_vault=vec_vault))
+                except OfficialSourceRejectedError as rej_err:
+                    self.console.print(f"\n[bold red][x] Sumber Ditolak:[/bold red] {rej_err}\n")
+                    return
+                except Exception as exc:
+                    self.console.print(f"\n[bold red][x] Gagal memproses URL web:[/bold red] {exc}\n")
+                    return
+
+            if self.vault_manager:
+                self.vault_manager.reload_vault(force=False)
+                self.vault_manager.record_history(
+                    action="tambah_web",
+                    description=f"Menambahkan dokumen web resmi dari URL '{target}'",
+                    files_affected=[str(parsed.file_path.name)],
+                    details={"url": target, "title": parsed.metadata.title},
+                )
+            self._sync_vault_cache()
+
+            self.console.print("\n[bold green][✓] Dokumen web resmi berhasil dimasukkan ke Vault:[/bold green]")
+            t = Table(box=None, show_header=False, padding=(0, 2))
+            t.add_column("Key", style="dim", width=16)
+            t.add_column("Value", style="bright_white")
+            t.add_row("Judul", parsed.metadata.title)
+            t.add_row("Instansi", parsed.metadata.institution or "Resmi")
+            t.add_row("Cite Key", f"[bold cyan][{parsed.metadata.cite_key}][/bold cyan]")
+            t.add_row("Skor Otoritas", f"{parsed.metadata.authority_score or 0.0:.2f} (Tier {parsed.metadata.authority_tier or 1})")
+            t.add_row("Snapshot File", str(parsed.file_path.name))
+            t.add_row("Cache Markdown", str(parsed.cache_path.name if parsed.cache_path else ""))
+            self.console.print(t)
+            self.console.print()
+            return
+
+        # 2. Query Search Flow with Carousel
+        self.console.print(f"\n[cyan]Mencari dokumen web resmi untuk topik:[/cyan] [bold]{target}[/bold]")
+        with self.console.status("[cyan]Menelusuri portal web pemerintah, akademik, dan institusi resmi...[/cyan]"):
+            try:
+                results = asyncio.run(web_scout.search_official_web(target, limit=18, require_official=True))
+            except Exception as exc:
+                self.console.print(f"\n[bold red][x] Pencarian web gagal:[/bold red] {exc}\n")
+                return
+
+        if not results:
+            self.console.print(f"[yellow][!] Tidak ditemukan dokumen web resmi yang memenuhi kriteria otoritas untuk query '{target}'.[/yellow]\n")
+            return
+
+        columns = [
+            {"name": "#", "justify": "right", "style": "dim", "width": 3},
+            {"name": "Instansi / Domain", "style": "green", "width": 24, "overflow": "fold"},
+            {"name": "Judul Dokumen Web", "style": "bold white", "width": 38, "overflow": "fold"},
+            {"name": "Otoritas", "justify": "center", "style": "cyan", "width": 10},
+            {"name": "Snippet / Ringkasan", "style": "dim", "overflow": "fold"},
+        ]
+
+        rows = []
+        for idx, res in enumerate(results, 1):
+            inst_label = res.institution or res.domain
+            tier_label = f"Tier {res.authority_tier}" if getattr(res, "authority_tier", None) else f"{res.authority_score:.2f}"
+            rows.append([
+                str(idx),
+                inst_label,
+                res.title,
+                tier_label,
+                res.snippet or "Sumber portal resmi pemerintah / akademik.",
+            ])
+
+        choice = interactive_carousel_table(
+            title="Katalog Dokumen Web Resmi",
+            columns=columns,
+            rows=rows,
+            console=self.console,
+            prompt_label="ingest > ",
+            help_text="Navigasi dengan ↑/↓ lalu tekan space untuk centang, atau ketik nomor (contoh: '1, 3' / 'all', 'q' untuk batal):",
+            item_label="dokumen web",
+        )
+
+        if not choice or choice.lower() in ("q", "quit", "cancel", "n", "no", "batal"):
+            self.console.print("[dim]Pencarian selesai tanpa menyimpan dokumen web.[/dim]\n")
+            return
+
+        to_ingest_indices = []
+        if choice.lower() == "all":
+            to_ingest_indices = list(range(len(results)))
+        else:
+            for part in choice.replace(",", " ").split():
+                if part.isdigit():
+                    num = int(part) - 1
+                    if 0 <= num < len(results):
+                        to_ingest_indices.append(num)
+
+        if not to_ingest_indices:
+            self.console.print("[dim]Tidak ada nomor dokumen valid yang dipilih.[/dim]\n")
+            return
+
+        selected_web = [results[i] for i in to_ingest_indices]
+        ingested_count = 0
+        failed_count = 0
+        ingested_files: list[str] = []
+
+        with self.console.status(f"[cyan]Mengunduh dan memproses {len(selected_web)} dokumen web resmi ke Vault...[/cyan]"):
+            for item in selected_web:
+                try:
+                    parsed = asyncio.run(web_scout.ingest_url(item.url, vector_vault=vec_vault))
+                    ingested_files.append(str(parsed.file_path.name))
+                    ingested_count += 1
+                except Exception as ing_err:
+                    logger.warning(f"Failed to ingest web document {item.url}: {ing_err}")
+                    failed_count += 1
+
+        if self.vault_manager:
+            self.vault_manager.reload_vault(force=False)
+            if ingested_files:
+                self.vault_manager.record_history(
+                    action="tambah_web",
+                    description=f"Menyimpan {ingested_count} dokumen web resmi dari pencarian '{target}'",
+                    files_affected=ingested_files,
+                    details={"query": target, "selected_count": len(selected_web)},
+                )
+        self._sync_vault_cache()
+
+        self.console.print()
+        if ingested_count > 0:
+            self.console.print(
+                f"[bold green][✓] Berhasil menambahkan {ingested_count} dokumen web resmi ke Vault.[/bold green]"
+            )
+            for f in ingested_files[:5]:
+                self.console.print(f"  [cyan]•[/cyan] [white]{f}[/white]")
+            if len(ingested_files) > 5:
+                self.console.print(f"  [dim]... dan {len(ingested_files) - 5} berkas lainnya.[/dim]")
+        if failed_count > 0:
+            self.console.print(f"[yellow][!] {failed_count} dokumen web gagal diproses.[/yellow]")
+        self.console.print()
 
     def render_vault_landing(self) -> None:
         """Render concise status overview of vault resources per minimalist wireframe."""
@@ -957,7 +1248,9 @@ class StudioVaultMixin:
         elif cmd == "add":
             self.cmd_vault_add(arg)
         elif cmd in ("findpaper", "scout"):
-            self.cmd_findpaper(arg)
+            self.run_interactive_vault_find_paper(arg)
+        elif cmd in ("web", "findweb", "findwebsite"):
+            self.run_interactive_vault_find_web(arg)
         elif cmd == "gdrive":
             self.cmd_vault_gdrive(arg)
         elif cmd in ("remove", "rm"):

@@ -1832,6 +1832,7 @@ def interactive_carousel_table(
             return ""
 
     input_buffer = ""
+    cursor_idx = 0
     prev_lines_drawn = 0
     last_rendered_text = ""
     c.show_cursor(False)
@@ -1849,6 +1850,7 @@ def interactive_carousel_table(
             start_idx = current_slide * effective_page_size
             end_idx = min(total_items, start_idx + effective_page_size)
             slice_rows = rows[start_idx:end_idx]
+            cursor_idx = max(0, min(cursor_idx, len(slice_rows) - 1)) if slice_rows else 0
 
             # 1. Header
             header_text = Text()
@@ -1869,20 +1871,37 @@ def interactive_carousel_table(
                     width=col.get("width"),
                     overflow=col.get("overflow", "ellipsis"),
                 )
-            for r in slice_rows:
-                table.add_row(*r)
+
+            selected_tokens = set(t.strip() for t in input_buffer.replace(",", " ").split() if t.strip())
+            is_all_selected = input_buffer.strip().lower() == "all"
+
+            for r_idx, r in enumerate(slice_rows):
+                global_num = str(start_idx + r_idx + 1)
+                is_cursor = (r_idx == cursor_idx)
+                is_checked = is_all_selected or (global_num in selected_tokens)
+
+                r_copy = list(r)
+                if r_copy:
+                    cursor_prefix = "> " if is_cursor else "  "
+                    check_icon = "[bold cyan]●[/bold cyan] " if is_checked else "[dim]○[/dim] "
+                    r_copy[0] = f"{cursor_prefix}{check_icon}{r_copy[0]}"
+                table.add_row(*r_copy)
 
             # 3. Navigation Controls Bar
             nav_bar = Text()
+            nav_bar.append("↑/↓", style="bold cyan")
+            nav_bar.append(" Kursor · ", style="dim")
+            nav_bar.append("space", style="bold cyan")
+            nav_bar.append(" Centang · ", style="dim")
             if total_slides > 1:
-                nav_bar.append("←", style="bold cyan")
-                nav_bar.append(" Prev Slide   ", style="dim")
-                nav_bar.append("→", style="bold cyan")
-                nav_bar.append(" Next Slide   ", style="dim")
+                nav_bar.append("←/→", style="bold cyan")
+                nav_bar.append(" Slide · ", style="dim")
             nav_bar.append("all", style="bold cyan")
-            nav_bar.append(" Ingest All   ", style="dim")
-            nav_bar.append("esc / q", style="bold yellow")
-            nav_bar.append(" Cancel", style="dim")
+            nav_bar.append(" Semua · ", style="dim")
+            nav_bar.append("enter", style="bold green")
+            nav_bar.append(" Unduh · ", style="dim")
+            nav_bar.append("esc/q", style="bold yellow")
+            nav_bar.append(" Batal", style="dim")
 
             # 4. Help text
             help_t = Text(help_text, style="dim") if help_text else None
@@ -1908,10 +1927,29 @@ def interactive_carousel_table(
             if key == "__RESIZE__":
                 continue
 
-            if key == "LEFT":
+            if key == "UP":
+                if slice_rows:
+                    cursor_idx = (cursor_idx - 1) % len(slice_rows)
+            elif key == "DOWN":
+                if slice_rows:
+                    cursor_idx = (cursor_idx + 1) % len(slice_rows)
+            elif key == "LEFT":
                 current_slide = max(0, current_slide - 1)
+                cursor_idx = 0
             elif key == "RIGHT":
                 current_slide = min(total_slides - 1, current_slide + 1)
+                cursor_idx = 0
+            elif key == " ":
+                if slice_rows:
+                    target_num = str(start_idx + cursor_idx + 1)
+                    toks = [t.strip() for t in input_buffer.replace(",", " ").split() if t.strip()]
+                    if "all" in [t.lower() for t in toks]:
+                        toks = [target_num]
+                    elif target_num in toks:
+                        toks.remove(target_num)
+                    else:
+                        toks.append(target_num)
+                    input_buffer = ", ".join(toks)
             elif key == "ENTER":
                 if prev_lines_drawn > 0:
                     _clear_lines(prev_lines_drawn, c)

@@ -380,14 +380,22 @@ class StudioCommandsMixin:
         self.console.print()
 
     def cmd_findpaper(self, query: str = "") -> None:
-        """Search and scout academic literature on OpenAlex and Semantic Scholar in background."""
+        """Search and scout academic literature on OpenAlex and Semantic Scholar."""
         clean_query = query.strip().strip("'\"")
         if not clean_query:
-            self.cmd_scout()
+            if hasattr(self, "run_interactive_vault_find_paper"):
+                self.run_interactive_vault_find_paper()
+            else:
+                self.cmd_scout()
             return
 
         if not self.workspace or not self.scout:
             self.console.print("[red][x] Please open a project first.[/red]\n")
+            return
+
+        # If running interactively, allow user to browse and select journals via carousel
+        if sys.stdin.isatty() and hasattr(self, "run_interactive_vault_find_paper"):
+            self.run_interactive_vault_find_paper(initial_query=clean_query)
             return
 
         sess_id = self.active_chat_session.id if (self.sub_mode == "chat" and self.active_chat_session) else None
@@ -1424,8 +1432,12 @@ class StudioCommandsMixin:
         webbrowser.open(f"http://{host}:{port}")
         self.console.print(f"[bold green][✓] Web Studio launched in background at:[/bold green] [bold cyan]http://{host}:{port}[/bold cyan]\n")
 
-    def cmd_web_scout(self, arg: str) -> None:
+    def cmd_web_scout(self, arg: str = "") -> None:
         """Search or ingest official web documents, statistics, and reports."""
+        if hasattr(self, "run_interactive_vault_find_web"):
+            self.run_interactive_vault_find_web(initial_target=arg)
+            return
+
         if not self.workspace:
             self.console.print("[red][x] Buka atau buat project terlebih dahulu sebelum menggunakan web scout.[/red]\n")
             return
