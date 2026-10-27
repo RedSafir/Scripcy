@@ -148,3 +148,17 @@ class TestVaultManager:
         assert health_dup["status"] == "warning"
         assert health_dup["duplicate_count"] >= 1
         assert "duplikat" in health_dup["warning_details"][0]
+
+        # Verify VaultItem is_duplicate flag
+        active_items = test_vault_manager.list_active_files()
+        dup_items = [it for it in active_items if it.is_duplicate]
+        assert len(dup_items) >= 1
+        assert dup_items[0].is_duplicate is True
+
+        # 3. Test has_error flag on invalid file
+        bad_file2 = test_vault_manager.papers_dir / "unsupported.bin"
+        bad_file2.write_bytes(b"invalid binary")
+        items_with_err = test_vault_manager.list_active_files()
+        err_items = [it for it in items_with_err if it.has_error]
+        assert len(err_items) >= 1
+        assert err_items[0].has_error is True

@@ -249,3 +249,34 @@ def test_vault_search_keyword_input_with_default(test_vault_workspace: Workspace
         assert kw.get("default") == "" or kw.get("initial_buffer") == ""
 
 
+def test_vault_view_duplicate_and_error_highlighting(test_vault_workspace: WorkspaceManager, tmp_path: Path) -> None:
+    console = Console(file=io.StringIO(), force_terminal=True, color_system=None)
+    pm = ProjectManager(registry_file=tmp_path / "reg2.json")
+    proj = pm.create_project("test_proj_highlight", test_vault_workspace.root_dir)
+    cfg = ScripcyConfig(workspace_path=str(test_vault_workspace.root_dir))
+
+    vm = VaultManager(workspace=test_vault_workspace)
+    # 1. Normal file
+    (vm.papers_dir / "paper_alpha.txt").write_text("Alpha content", encoding="utf-8")
+    # 2. Duplicate file (same name/stem in local/)
+    (vm.local_dir / "paper_alpha.txt").write_text("Alpha duplicate", encoding="utf-8")
+    # 3. Error file (unsupported format)
+    (vm.papers_dir / "corrupted.bin").write_bytes(b"bad binary")
+
+    vm.reload_vault(force=False)
+
+    studio = CLIStudio(
+        workspace=test_vault_workspace,
+        config=cfg,
+        console=console,
+        project_manager=pm,
+    )
+    studio.open_project(proj)
+    studio.render_vault_view()
+
+    output = console.file.getvalue()
+    assert "Duplikat" in output
+    assert "Error" in output
+
+
+

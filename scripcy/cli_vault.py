@@ -135,15 +135,21 @@ def vault_list(
     for idx, it in enumerate(items, 1):
         if it.has_error:
             status_badge = "[bold red]Error[/bold red]"
+            title_styled = f"[bold red]{(it.title or it.stem)[:36]}[/bold red]"
+        elif getattr(it, "is_duplicate", False):
+            status_badge = "[bold yellow]Duplikat[/bold yellow]"
+            title_styled = f"[bold yellow]{(it.title or it.stem)[:36]}[/bold yellow]"
         elif not it.is_cached:
             status_badge = "[bold cyan]Perlu Update[/bold cyan]"
+            title_styled = (it.title or it.stem)[:36]
         else:
             status_badge = "[bold green]Siap[/bold green]"
+            title_styled = (it.title or it.stem)[:36]
 
         ctx_badge = it.context if it.context else "-"
         table.add_row(
             str(idx),
-            (it.title or it.stem)[:36],
+            title_styled,
             it.category.title(),
             ctx_badge[:14],
             status_badge,

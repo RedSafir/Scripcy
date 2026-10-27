@@ -365,15 +365,21 @@ class StudioVaultMixin:
 
                 if item.has_error:
                     status_badge = "[bold red][Error][/bold red]"
+                    item_style = "bold red"
+                elif getattr(item, "is_duplicate", False):
+                    status_badge = "[bold yellow][Duplikat][/bold yellow]"
+                    item_style = "bold yellow"
                 elif not item.is_cached:
                     status_badge = "[bold cyan][Perlu Update][/bold cyan]"
+                    item_style = "bold bright_white" if is_selected else "white"
                 else:
                     status_badge = "[bold green][Siap][/bold green]"
+                    item_style = "bold bright_white" if is_selected else "white"
 
                 arrow = "> " if is_selected else "  "
                 title_text = Text()
                 title_text.append(arrow, style="bold cyan" if is_selected else "dim")
-                title_text.append((item.title or item.stem)[:36], style="bold bright_white" if is_selected else "white")
+                title_text.append((item.title or item.stem)[:36], style=item_style)
 
                 return [
                     str(idx + 1),
@@ -530,15 +536,21 @@ class StudioVaultMixin:
 
                 if item.has_error:
                     status_badge = "[bold red][Error][/bold red]"
+                    item_style = "bold red"
+                elif getattr(item, "is_duplicate", False):
+                    status_badge = "[bold yellow][Duplikat][/bold yellow]"
+                    item_style = "bold yellow"
                 elif not item.is_cached:
                     status_badge = "[bold cyan][Perlu Update][/bold cyan]"
+                    item_style = "bold bright_white" if is_selected else "white"
                 else:
                     status_badge = "[bold green][Siap][/bold green]"
+                    item_style = "bold bright_white" if is_selected else "white"
 
                 arrow = "> " if is_selected else "  "
                 title_text = Text()
                 title_text.append(arrow, style="bold cyan" if is_selected else "dim")
-                title_text.append((item.title or item.stem)[:34], style="bold bright_white" if is_selected else "white")
+                title_text.append((item.title or item.stem)[:34], style=item_style)
 
                 cat_badge = item.category.title()
 
@@ -1061,14 +1073,30 @@ class StudioVaultMixin:
         p_table.add_column("Cite Key / Title", style="cyan")
 
         for idx, item in enumerate(items, 1):
-            md_status = "[bold cyan][Ready / Cached][/bold cyan]" if item.is_cached else "[dim][Needs Reload][/dim]"
+            if item.has_error:
+                fn_str = f"[bold red]{item.filename}[/bold red]"
+                title_str = f"[bold red]{item.title or item.cite_key}[/bold red]"
+                md_status = "[bold red][Error / Gagal][/bold red]"
+            elif getattr(item, "is_duplicate", False):
+                fn_str = f"[bold yellow]{item.filename}[/bold yellow]"
+                title_str = f"[bold yellow]{item.title or item.cite_key}[/bold yellow]"
+                md_status = "[bold yellow][Duplikat][/bold yellow]"
+            elif item.is_cached:
+                fn_str = f"[bold white]{item.filename}[/bold white]"
+                title_str = item.title or item.cite_key
+                md_status = "[bold cyan][Ready / Cached][/bold cyan]"
+            else:
+                fn_str = f"[white]{item.filename}[/white]"
+                title_str = item.title or item.cite_key
+                md_status = "[dim][Needs Reload][/dim]"
+
             p_table.add_row(
                 str(idx),
-                item.filename,
+                fn_str,
                 item.extension.upper().lstrip("."),
                 item.readable_size,
                 md_status,
-                item.title or item.cite_key,
+                title_str,
             )
         self.console.print(p_table)
 

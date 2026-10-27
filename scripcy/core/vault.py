@@ -48,6 +48,7 @@ class VaultItem(BaseModel):
     category: str = "papers"
     is_supported: bool = True
     has_error: bool = False
+    is_duplicate: bool = False
     error_message: str = ""
     updated_at: str = ""
     tables_count: int = 0
@@ -421,6 +422,17 @@ class VaultManager:
                         year=year_val,
                         doi=doi_val,
                     ))
+
+        # Detect and flag duplicate items by cite_key or stem
+        seen_keys: dict[str, list[VaultItem]] = {}
+        for it in items:
+            key = (it.cite_key or it.stem).lower().strip()
+            seen_keys.setdefault(key, []).append(it)
+
+        for group in seen_keys.values():
+            if len(group) > 1:
+                for it in group[1:]:
+                    it.is_duplicate = True
 
         if category and category != "all":
             return [it for it in items if it.category == category]
