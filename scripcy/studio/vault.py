@@ -43,6 +43,8 @@ from scripcy.core.vault import VaultItem, VaultManager
 from scripcy.core.verifier import FactChecker, VerificationReport
 from scripcy.core.workspace import WorkspaceManager
 
+logger = logging.getLogger(__name__)
+
 from scripcy.studio.signals import (
     SCRIPCY_LOGO,
     SCRIPCY_VERSION,
