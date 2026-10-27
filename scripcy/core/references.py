@@ -12,6 +12,7 @@ from typing import Any
 from pathlib import Path
 
 from scripcy.core.engine import EvidenceChunk
+from scripcy.core.highlighter import EvidenceHighlighter
 from scripcy.core.mcp_client import (
     CitationItem,
     format_reference_entry_apa,
@@ -309,9 +310,11 @@ def append_vault_bibliography(
         # Find matching evidence chunk to extract page number and quote snippet
         page_str = ""
         quote_str = ""
+        matching_ev = None
         if evidence:
             for ev in evidence:
                 if str(ev.source).lower() in filename.lower() or filename.lower().startswith(str(ev.source).lower()):
+                    matching_ev = ev
                     if ev.page_num:
                         page_str = f" • Halaman {ev.page_num}"
                     if ev.quote_snippet:
@@ -320,12 +323,48 @@ def append_vault_bibliography(
                     break
 
         file_link_str = f"`[File: {filename}{page_str}]`"
-        if raw_path and Path(raw_path).exists():
-            clean_fp = Path(raw_path).resolve().as_posix()
+        p_obj = Path(raw_path) if raw_path else None
+
+        # Check if source is PDF and can be annotated with permanent yellow stabilo
+        if p_obj and p_obj.exists() and p_obj.suffix.lower() == ".pdf" and matching_ev and matching_ev.quote_snippet:
+            base_vault_dir = getattr(vault_manager, "vault_dir", None) or Path("vault")
+            annotated_dir = Path(base_vault_dir) / "annotated"
+            annotated_pdf = EvidenceHighlighter.highlight_pdf_passage(
+                pdf_path=p_obj,
+                page_num=matching_ev.page_num,
+                quote_snippet=matching_ev.quote_snippet,
+                output_dir=annotated_dir,
+                prefix_id=f"ev{idx}",
+            )
+            target_file = annotated_pdf if annotated_pdf and annotated_pdf.exists() else p_obj
+            clean_fp = target_file.resolve().as_posix()
             if not clean_fp.startswith("/"):
                 clean_fp = f"/{clean_fp}"
-            page_param = f"#page={ev.page_num}" if (page_str and hasattr(ev, "page_num")) else ""
-            file_link_str = f"[`{filename}{page_str}`](file://{clean_fp}{page_param})"
+            page_param = f"#page={matching_ev.page_num}"
+            file_link_str = f"[`{filename}{page_str} (Tersorot Stabilo)`](file://{clean_fp}{page_param})"
+        elif p_obj and p_obj.exists():
+            # Check if source is Web document with URL
+            url_target = None
+            if p_obj.suffix.lower() == ".md" and p_obj.read_text(encoding="utf-8", errors="ignore").startswith("---"):
+                try:
+                    import yaml
+                    content_str = p_obj.read_text(encoding="utf-8", errors="ignore")
+                    m = re.match(r"^---\n(.*?)\n---", content_str, re.DOTALL)
+                    if m:
+                        meta_yaml = yaml.safe_load(m.group(1)) or {}
+                        url_target = meta_yaml.get("url") or meta_yaml.get("source_url")
+                except Exception:
+                    pass
+
+            if url_target and matching_ev and matching_ev.quote_snippet:
+                frag_url = EvidenceHighlighter.generate_web_highlight_url(url_target, matching_ev.quote_snippet)
+                file_link_str = f"[`{filename} (Tersorot di Web)`]({frag_url})"
+            else:
+                clean_fp = p_obj.resolve().as_posix()
+                if not clean_fp.startswith("/"):
+                    clean_fp = f"/{clean_fp}"
+                page_param = f"#page={matching_ev.page_num}" if (matching_ev and matching_ev.page_num) else ""
+                file_link_str = f"[`{filename}{page_str}`](file://{clean_fp}{page_param})"
 
         if norm_style == "IEEE":
             lines.append(f"{ref_text}  \n   {file_link_str}{quote_str}")
