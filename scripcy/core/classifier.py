@@ -324,17 +324,21 @@ class VisualClassifier:
             stat_std = math.sqrt(stat_var)
 
         # Decision metrics
-        if edge_density > 0.16 or (edge_density > 0.12 and stat_std > 30):
-            score_complex += 4
-            reasons.append(f"high_edge_density({edge_density:.2f}, std={stat_std:.1f})")
+        # Scientific plots & heatmaps have high edge standard deviation (sharp grid lines & axes)
+        if edge_density > 0.12 or (edge_density > 0.07 and stat_std >= 55.0):
+            score_complex += 5
+            reasons.append(f"sharp_axes_and_high_edge_contrast(density={edge_density:.2f}, std={stat_std:.1f})")
+        elif edge_density < 0.05:
+            score_simple += 4
+            reasons.append(f"low_edge_density_flowchart({edge_density:.2f})")
 
         if unique_colors > 450:
             score_complex += 3
             reasons.append(f"rich_color_palette({unique_colors}_colors)")
 
-        if edge_density < 0.08 and unique_colors < 150:
+        if edge_density < 0.06 and unique_colors < 350:
             score_simple += 4
-            reasons.append(f"low_edge_density_solid_palette({edge_density:.2f}, {unique_colors}_colors)")
+            reasons.append(f"solid_palette_clean_flowchart({edge_density:.2f}, {unique_colors}_colors)")
 
         # Aspect ratio checks (very wide or tall images are often tables or flow sequences)
         if ratio > 3.0 or ratio < 0.3:
