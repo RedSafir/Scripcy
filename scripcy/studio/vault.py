@@ -103,6 +103,7 @@ class StudioVaultMixin:
 
             options = [
                 ("list_berkas", f"List Berkas ({health['total_files']} berkas)"),
+                ("graph", "Lihat Graph Knowledge Network (GraphRAG)"),
                 ("history", "Riwayat Vault (Log Aktivitas & Sinkronisasi)"),
                 ("add", "Tambah Berkas"),
                 ("update", "Update Berkas"),
@@ -113,7 +114,7 @@ class StudioVaultMixin:
                 options=options,
                 header=header_table,
                 console=self.console,
-                footer_hint="↑/↓ Navigasi · enter Pilih · 1-5 Lompat cepat · esc Kembali",
+                footer_hint="↑/↓ Navigasi · enter Pilih · 1-6 Lompat cepat · esc Kembali",
                 allow_back=True,
             )
 
@@ -122,6 +123,8 @@ class StudioVaultMixin:
 
             if choice == "list_berkas":
                 self.run_interactive_vault_categories()
+            elif choice == "graph":
+                self.cmd_vault_graph()
             elif choice == "history":
                 self.run_interactive_vault_history()
             elif choice == "add":
@@ -159,6 +162,7 @@ class StudioVaultMixin:
                 ("web", _build_cat_label("Web (Arsip & Portal Resmi)", web_h["total"], "berkas", web_h["warning"], web_h["error"])),
                 ("tables", _build_cat_label("Tables (Tabel Data Terstruktur)", tables_h["total"], "tabel", tables_h["warning"], tables_h["error"])),
                 ("images", _build_cat_label("Images (Visual, Grafik & Diagram)", images_h["total"], "gambar", images_h["warning"], images_h["error"])),
+                ("graph", "Graph Knowledge Network (Visualisasi Relasi Antar-Dokumen)"),
                 ("search", f"Cari Berkas (Pencarian Cepat Seluruh Pustaka) • {health['total_files']} berkas"),
                 ("back", "Kembali ke Menu Vault"),
             ]
@@ -169,14 +173,16 @@ class StudioVaultMixin:
                 options=options,
                 header=header,
                 console=self.console,
-                footer_hint="↑/↓ Navigasi · enter Pilih · 1-6 Lompat cepat · esc Kembali",
+                footer_hint="↑/↓ Navigasi · enter Pilih · 1-7 Lompat cepat · esc Kembali",
                 allow_back=True,
             )
 
             if choice in ("back", None):
                 return
 
-            if choice == "search":
+            if choice == "graph":
+                self.cmd_vault_graph()
+            elif choice == "search":
                 self.run_interactive_vault_search()
             else:
                 self.run_interactive_vault_view(category=choice)
