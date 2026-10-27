@@ -27,6 +27,7 @@ from scripcy.core.contracts import AdaptiveCriticVerdict, TaskContract, TaskCont
 from scripcy.core.critic import CritiqueReport, DevilsAdvocate
 from scripcy.core.engine import LLMEngine, estimate_tokens
 from scripcy.core.gdrive import GoogleDriveManager, extract_drive_file_id
+from scripcy.core.graph_rag import GraphRAGBuilder
 from scripcy.core.logger import StudioLogger, get_studio_logger
 from scripcy.core.mcp_client import WordCraftClient
 from scripcy.core.models import DocumentMetadata, ParsedDocument
@@ -1293,10 +1294,42 @@ class StudioVaultMixin:
             self.clear_screen()
         elif cmd in ("curate", "kurasi"):
             self._cmd_vault_curate(arg)
+        elif cmd in ("graph", "network", "plot"):
+            self.cmd_vault_graph(arg)
         elif cmd in ("reindex-visuals", "clean-visuals", "reindex_visuals"):
             self.cmd_vault_reindex_visuals()
         else:
             self.console.print(f"[yellow]Unknown vault command: '{clean}'. Type 'help' to see vault commands, or 'back' to return.[/yellow]\n")
+
+    def cmd_vault_graph(self, arg: str = "") -> None:
+        """Render and open interactive GraphRAG knowledge network in default browser."""
+        if not self.workspace:
+            self.console.print("[red][x] Buka atau pilih proyek terlebih dahulu untuk memvisualisasikan graph.[/red]\n")
+            return
+
+        with self.console.status("[cyan]Menganalisis entitas dan menyusun GraphRAG network...[/cyan]"):
+            builder = GraphRAGBuilder(workspace=self.workspace, vault_manager=self.vault_manager)
+            graph_data = builder.build_graph(query=arg.strip())
+            graph_dir = self.workspace.vault_dir / "graphs"
+            graph_dir.mkdir(parents=True, exist_ok=True)
+            output_file = graph_dir / "rag_network.html"
+            builder.render_interactive_html(
+                output_path=output_file,
+                graph_data=graph_data,
+                title=f"Scripcy GraphRAG - {self.current_project.name if self.current_project else 'Vault'}",
+            )
+
+        n_count = len(graph_data.get("nodes", []))
+        e_count = len(graph_data.get("links", []))
+        self.console.print(
+            f"[bold green][\u2713] Berhasil merender GraphRAG Network ({n_count} node, {e_count} relasi):[/bold green]\n"
+            f"[dim]File: {output_file}[/dim]\n"
+        )
+        try:
+            webbrowser.open(output_file.as_uri())
+            self.console.print("[cyan]\u25cf Membuka visualisasi interaktif di browser...[/cyan]\n")
+        except Exception as e:
+            self.console.print(f"[yellow]Tidak dapat membuka browser otomatis: {e}[/yellow]\n")
 
     def _cmd_vault_curate(self, criteria: str) -> None:
         """Dispatch background agentic vault curation loop."""

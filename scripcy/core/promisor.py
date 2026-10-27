@@ -163,6 +163,13 @@ class Promisor:
             r"\b(bersihkan\s+riwayat\s+chat|hapus\s+pesan\s+sesi\s+ini|clear\s+chat|clear\s+messages)\b",
             re.IGNORECASE,
         )
+
+        # 16. Graph RAG / Knowledge Network
+        self.re_vault_graph = re.compile(
+            r"\b(tampilkan|lihat|buka|visualisasikan|plot|show|render)\s*(graph|grafik|network|jaringan|peta|hubungan|relasi)?\s*(rag|knowledge\s+graph|pengetahuan|dokumen|paper)?\s*(di|pada)?\s*(browser|vault)?\b|"
+            r"\b(graph\s+rag|rag\s+graph|knowledge\s+graph|peta\s+relasi)\b",
+            re.IGNORECASE,
+        )
         self.re_chat_new = re.compile(
             r"\b(buka\s+chat\s+baru|buat\s+chat\s+baru|sesi\s+chat\s+baru|new\s+chat\s+session|create\s+new\s+chat)\b",
             re.IGNORECASE,
@@ -304,6 +311,16 @@ class Promisor:
                 display_label="Pemeriksaan Status Kesehatan Vault",
                 command_equivalent="/vault status",
                 reason="Audit kesehatan berkas, tabel, dan metadata vault.",
+            )
+
+        # 11. Vault Graph RAG Network
+        if self.re_vault_graph.search(clean):
+            return PromisorDecision(
+                is_system_tool=True,
+                action="vault.graph",
+                display_label="Buka Visualisasi Interaktif GraphRAG Knowledge Network",
+                command_equivalent="/vault graph",
+                reason="Render force-directed graph hubungan dokumen, entitas, dan visual.",
             )
 
         # 11. Vault Archive
