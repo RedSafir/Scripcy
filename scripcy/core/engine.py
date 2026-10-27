@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 from collections.abc import AsyncGenerator
 import logging
 import math
@@ -508,6 +509,44 @@ class LLMEngine:
                 f"### RESEARCH QUESTION / INSTRUCTION:\n{query}"
             )
 
+        # Inspect if any COMPLEX visual is referenced in evidence chunks for Direct Multimodal Injection
+        multimodal_image_payloads: list[dict[str, Any]] = []
+        if vector_vault is not None and evidence_chunks:
+            complex_vid_matches = []
+            for ech in evidence_chunks:
+                for m in re.finditer(r"\[\[VISUAL:([^:\]]+):COMPLEX\]\]", ech.text):
+                    complex_vid_matches.append(m.group(1).strip())
+
+            # De-duplicate while preserving retrieval order
+            seen_vids = set()
+            for vid in complex_vid_matches:
+                if vid in seen_vids or len(multimodal_image_payloads) >= 2:
+                    continue
+                seen_vids.add(vid)
+                try:
+                    with vector_vault._get_connection() as conn:
+                        cur = conn.cursor()
+                        cur.execute("SELECT file_path FROM images WHERE id = ? LIMIT 1", (vid,))
+                        row = cur.fetchone()
+                        if row and row["file_path"]:
+                            f_path = Path(row["file_path"])
+                            if f_path.exists():
+                                img_bytes = f_path.read_bytes()
+                                ext = f_path.suffix.lstrip(".").lower()
+                                if ext in ("jpg", "jpeg"):
+                                    mime_type = "image/jpeg"
+                                elif ext == "webp":
+                                    mime_type = "image/webp"
+                                else:
+                                    mime_type = "image/png"
+                                b64_str = base64.b64encode(img_bytes).decode("utf-8")
+                                multimodal_image_payloads.append({
+                                    "type": "image_url",
+                                    "image_url": {"url": f"data:{mime_type};base64,{b64_str}"},
+                                })
+                except Exception as img_err:
+                    logger.debug(f"Failed preparing multimodal image payload for {vid}: {img_err}")
+
         if "### SCRPCY ENVIRONMENT & SEAMLESS ACTION PROTOCOL:" not in sys_prompt:
             from scripcy.core.skills import SCRIPCY_AGENTIC_PROTOCOL
             sys_prompt = f"{sys_prompt}\n\n{SCRIPCY_AGENTIC_PROTOCOL}"
@@ -517,7 +556,15 @@ class LLMEngine:
         ]
         if history:
             messages.extend(history)
-        messages.append({"role": "user", "content": user_content})
+
+        # Formulate final user message (text-only or multimodal composite payload)
+        if multimodal_image_payloads:
+            user_msg_content: Any = [{"type": "text", "text": user_content}]
+            user_msg_content.extend(multimodal_image_payloads)
+        else:
+            user_msg_content = user_content
+
+        messages.append({"role": "user", "content": user_msg_content})
 
         kwargs: dict[str, Any] = {
             "model": effective_model,

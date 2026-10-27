@@ -21,6 +21,8 @@ import pymupdf as fitz
 import sqlite_vec
 from pydantic import BaseModel, Field
 
+from scripcy.core.classifier import VisualClassifier, VisualType
+
 logger = logging.getLogger(__name__)
 
 # Global singleton embedder instance to prevent reload overhead
@@ -283,9 +285,21 @@ class ProjectVectorVault:
                     ai_analysis TEXT,
                     width INTEGER,
                     height INTEGER,
+                    visual_type TEXT DEFAULT 'SIMPLE',
+                    classification_reason TEXT,
                     FOREIGN KEY(paper_id) REFERENCES papers(id) ON DELETE CASCADE
                 )
             """)
+
+            # Ensure columns exist if table was created in older schema
+            try:
+                cur.execute("ALTER TABLE images ADD COLUMN visual_type TEXT DEFAULT 'SIMPLE'")
+            except Exception:
+                pass
+            try:
+                cur.execute("ALTER TABLE images ADD COLUMN classification_reason TEXT")
+            except Exception:
+                pass
 
             # Structured tables table
             cur.execute("""
@@ -488,14 +502,30 @@ class ProjectVectorVault:
                     img_file = paper_images_dir / f"{img_stem}.{img_ext}"
                     img_file.write_bytes(base_image["image"])
 
-                    # Optional Multimodal Verification if engine provided
+                    # Visual Complexity Classification (PyMuPDF Vector stream inspection with Raster fallback)
+                    try:
+                        v_res = VisualClassifier.classify_vector_bbox(page, bbox, caption=caption_text)
+                    except Exception:
+                        v_res = VisualClassifier.classify_raster(img_file, caption=caption_text)
+
+                    visual_type_str = v_res.visual_type.value
+                    class_reasons = "; ".join(v_res.reasons[:3])
+
+                    # Optional Multimodal Verification / AI Analysis if engine provided
                     analysis = None
-                    if engine:
-                        analysis = self._analyze_vision_figure(img_file, engine, model_name)
-                        if analysis and "JUNK_IMAGE" in analysis:
-                            if img_file.exists():
-                                img_file.unlink()
-                            continue
+                    if v_res.is_simple:
+                        # For SIMPLE visual (flowchart/architecture), run AI Visual Analysis once ahead-of-time
+                        if engine:
+                            analysis = self._analyze_vision_figure(img_file, engine, model_name)
+                            if analysis and "JUNK_IMAGE" in analysis:
+                                if img_file.exists():
+                                    img_file.unlink()
+                                continue
+                        if not analysis:
+                            analysis = f"Bagan/diagram alir konseptual terindeks: {caption_text}."
+                    else:
+                        # For COMPLEX visual (charts, plots, heatmap, math), keep raw pixels for Direct Multimodal Injection
+                        analysis = f"Visual data kompleks terindeks ({class_reasons}). Tersedia untuk Direct Multimodal Injection."
 
                     # Genuine scientific diagram/chart
                     raw_images.append({
@@ -504,9 +534,11 @@ class ProjectVectorVault:
                         "page_num": page_num,
                         "file_path": str(img_file),
                         "caption": caption_text,
-                        "ai_analysis": analysis or "Visual ilmiah terindeks dari publikasi.",
+                        "ai_analysis": analysis,
                         "width": width,
                         "height": height,
+                        "visual_type": visual_type_str,
+                        "classification_reason": class_reasons,
                     })
             except Exception as img_err:
                 logger.debug(f"Image extraction skipped on p{page_num}: {img_err}")
@@ -587,17 +619,19 @@ class ProjectVectorVault:
 
             # Insert images
             for i_idx, i_info in enumerate(raw_images):
+                v_type = i_info.get("visual_type", "SIMPLE")
                 cur.execute("""
-                    INSERT INTO images (id, paper_id, page_num, file_path, caption, ai_analysis, width, height)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO images (id, paper_id, page_num, file_path, caption, ai_analysis, width, height, visual_type, classification_reason)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     i_info["id"], i_info["paper_id"], i_info["page_num"],
                     i_info["file_path"], i_info["caption"], i_info["ai_analysis"],
-                    i_info["width"], i_info["height"]
+                    i_info["width"], i_info["height"], v_type, i_info.get("classification_reason", "")
                 ))
                 # Register visual image chunk into chunks and vec_chunks for hybrid BM25/dense retrieval
                 img_id = i_info["id"]
-                img_content = f"[[VISUAL:{img_id}]] [Gambar Halaman {i_info['page_num']}: {i_info['caption']}]\nKeterangan/Analisis: {i_info.get('ai_analysis', '')}"
+                visual_tag = f"[[VISUAL:{img_id}:COMPLEX]]" if v_type == "COMPLEX" else f"[[VISUAL:{img_id}]]"
+                img_content = f"{visual_tag} [Gambar Halaman {i_info['page_num']}: {i_info['caption']}]\nKeterangan/Analisis: {i_info.get('ai_analysis', '')}"
                 cur.execute("""
                     INSERT INTO chunks (id, paper_id, page_num, chunk_index, content)
                     VALUES (?, ?, ?, ?, ?)
@@ -688,19 +722,27 @@ class ProjectVectorVault:
 
             raw_images = images or []
             for i_idx, i_info in enumerate(raw_images):
+                img_path_str = i_info.get("file_path", "")
+                cap_str = i_info.get("caption", "") or ""
+                # Classify web raster image
+                v_res = VisualClassifier.classify_raster(img_path_str, caption=cap_str)
+                v_type = v_res.visual_type.value
+                reasons_str = "; ".join(v_res.reasons[:3])
+
                 cur.execute("""
-                    INSERT INTO images (id, paper_id, page_num, file_path, caption, ai_analysis, width, height)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO images (id, paper_id, page_num, file_path, caption, ai_analysis, width, height, visual_type, classification_reason)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     i_info["id"], i_info["paper_id"], i_info.get("page_num", 1),
-                    i_info["file_path"], i_info.get("caption", ""), i_info.get("ai_analysis", "Visual resmi web terindeks."),
-                    i_info.get("width", 0), i_info.get("height", 0)
+                    img_path_str, cap_str, i_info.get("ai_analysis", "Visual resmi web terindeks."),
+                    i_info.get("width", 0), i_info.get("height", 0), v_type, reasons_str
                 ))
                 # Register web image chunk into chunks and vec_chunks for hybrid BM25/dense retrieval
                 img_id = i_info["id"]
-                img_cap = i_info.get("caption", "") or "Bagan Resmi"
+                visual_tag = f"[[VISUAL:{img_id}:COMPLEX]]" if v_type == "COMPLEX" else f"[[VISUAL:{img_id}]]"
+                img_cap = cap_str or "Bagan Resmi"
                 img_desc = i_info.get("ai_analysis", "") or "Visual resmi web terindeks."
-                img_content = f"[[VISUAL:{img_id}]] [Gambar/Infografis Resmi: {img_cap}]\nKeterangan/Analisis: {img_desc}"
+                img_content = f"{visual_tag} [Gambar/Infografis Resmi: {img_cap}]\nKeterangan/Analisis: {img_desc}"
                 cur.execute("""
                     INSERT INTO chunks (id, paper_id, page_num, chunk_index, content)
                     VALUES (?, ?, ?, ?, ?)
@@ -1105,7 +1147,7 @@ class ProjectVectorVault:
                 cur.execute("SELECT id, csv_path, md_path, caption FROM tables WHERE paper_id = ? AND page_num = ?", (p_id, page_n))
                 matched_tables = [dict(t) for t in cur.fetchall()]
 
-                cur.execute("SELECT id, file_path, caption, ai_analysis FROM images WHERE paper_id = ? AND page_num = ?", (p_id, page_n))
+                cur.execute("SELECT id, file_path, caption, ai_analysis, visual_type, classification_reason FROM images WHERE paper_id = ? AND page_num = ?", (p_id, page_n))
                 matched_images = [dict(im) for t in cur.fetchall() for im in [t]]
 
                 results.append(HybridSearchResult(
@@ -1132,7 +1174,7 @@ class ProjectVectorVault:
             cur.execute("SELECT id, paper_id, page_num, md_path, csv_path, caption, is_vision_fallback FROM tables ORDER BY paper_id, page_num")
             tables = [dict(r) for r in cur.fetchall()]
 
-            cur.execute("SELECT id, paper_id, page_num, file_path, caption, ai_analysis, width, height FROM images ORDER BY paper_id, page_num")
+            cur.execute("SELECT id, paper_id, page_num, file_path, caption, ai_analysis, width, height, visual_type, classification_reason FROM images ORDER BY paper_id, page_num")
             images = [dict(r) for r in cur.fetchall()]
 
             return {
@@ -1365,7 +1407,9 @@ class ProjectVectorVault:
         pattern = re.compile(r"\[\[VISUAL:([^\]]+)\]\]", re.IGNORECASE)
 
         def _repl(match: re.Match) -> str:
-            v_id = match.group(1).strip()
+            raw_vid = match.group(1).strip()
+            # Strip optional :COMPLEX suffix if present
+            v_id = raw_vid.split(":")[0].strip()
             with self._get_connection() as conn:
                 cur = conn.cursor()
                 # 1. Lookup in images
