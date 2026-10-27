@@ -619,71 +619,38 @@ class StudioBase:
 
 
             header = Text()
-
             header.append("scripcy", style="bold cyan")
-
             header.append(" • ", style="dim")
-
             header.append(self.current_project.name, style="bold bright_white")
-
             header.append(" • ", style="dim")
-
             header.append(f"{model_label} ({effort})", style="bold cyan")
-
             header.append(" • ", style="dim")
-
-            header.append(f"vault: {cached_count} indexed ({active_count} active)\n", style="dim")
-
-            header.append("[✓] Connected to Master Project: ", style="bold green")
-
+            header.append(f"vault: {cached_count} terindeks ({active_count} aktif)\n", style="dim")
+            header.append("[✓] Terhubung ke Master Proyek: ", style="bold green")
             header.append(f"{self.current_project.name}\n", style="bold cyan")
-
-            header.append("  Location: ", style="bold white")
-
+            header.append("  Lokasi: ", style="bold white")
             header.append(f"{self.current_project.path}\n", style="dim")
-
-            header.append("  Papers in Vault: ", style="bold white")
-
-            header.append(f"{cached_count} indexed ({active_count} active in context)\n", style="dim")
-
-            header.append("  Chat Sessions: ", style="bold white")
-
-            header.append(f"{active_sess} running, {closed_sess} closed\n", style="dim")
-
-            header.append("  Background Tasks: ", style="bold white")
-
-            header.append(f"{running_tasks} running", style="bold cyan" if running_tasks else "dim")
-
-
+            header.append("  Berkas di Vault: ", style="bold white")
+            header.append(f"{cached_count} terindeks ({active_count} aktif dalam konteks)\n", style="dim")
+            header.append("  Sesi Percakapan: ", style="bold white")
+            header.append(f"{active_sess} aktif, {closed_sess} ditutup\n", style="dim")
+            header.append("  Tugas Latar Belakang: ", style="bold white")
+            header.append(f"{running_tasks} berjalan", style="bold cyan" if running_tasks else "dim")
 
             options = [
-
-                ("vault", f"Vault ({cached_count} berkas)"),
-
-                ("sessions", f"Sessions ({active_sess} running, {closed_sess} closed)"),
-
-                ("processing", f"Processing ({running_tasks} proses aktif)"),
-
-                ("settings", f"Settings ({model_label})"),
-
-                ("exit", "Exit / Kembali ke Dashboard"),
-
+                ("vault", f"Vault Berkas ({cached_count} berkas)"),
+                ("sessions", f"Sesi Percakapan ({active_sess} aktif, {closed_sess} ditutup)"),
+                ("processing", f"Manajer Proses ({running_tasks} proses aktif)"),
+                ("settings", f"Pengaturan ({model_label})"),
+                ("exit", "Kembali ke Dashboard"),
             ]
 
-
-
             choice = interactive_menu(
-
                 options=options,
-
                 header=header,
-
                 console=self.console,
-
-                footer_hint="↑/↓ Navigate · enter Select · 1-5 Quick jump · esc Dashboard",
-
+                footer_hint="↑/↓ Navigasi · enter Pilih · 1-5 Lompat cepat · esc Dashboard",
                 allow_back=True,
-
             )
 
 
@@ -754,7 +721,7 @@ class StudioBase:
         self.console.print(
             f" [bold cyan]scripcy[/bold cyan] [dim]•[/dim] [bold bright_white]{self.current_project.name}[/bold bright_white]  "
             f"[dim]•[/dim]  [bold cyan]{model_label}[/bold cyan] [dim]({effort})[/dim]  "
-            f"[dim]•[/dim]  [dim]vault: {cached_count} indexed ({active_count} active)[/dim]"
+            f"[dim]•[/dim]  [dim]vault: {cached_count} terindeks ({active_count} aktif)[/dim]"
         )
 
     def clear_screen(self) -> None:

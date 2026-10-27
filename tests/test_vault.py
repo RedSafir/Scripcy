@@ -107,3 +107,44 @@ class TestVaultManager:
         assert len(archived) == 2
         assert len(test_vault_manager.list_active_files()) == 0
         assert len(test_vault_manager.list_archived_files()) == 2
+
+    def test_local_staging_and_health_check(self, test_vault_manager: VaultManager) -> None:
+        assert test_vault_manager.local_dir.is_dir()
+
+        # Drop a file into local/
+        local_file = test_vault_manager.local_dir / "draft_paper.pdf"
+        local_file.write_bytes(b"%PDF-1.4 simulated pdf")
+
+        health = test_vault_manager.check_vault_health()
+        assert health["total_files"] == 1
+        assert health["status"] == "need_update"
+        assert "belum di-update" in health["warning_details"][0]
+        assert health["category_health"]["papers"]["total"] == 1
+
+        # Re-index / convert
+        test_vault_manager.reload_vault()
+        health_after = test_vault_manager.check_vault_health()
+        assert health_after["status"] == "active"
+        assert len(health_after["warning_details"]) == 0
+
+    def test_duplicate_and_unsupported_file_detection(self, test_vault_manager: VaultManager) -> None:
+        # 1. Unsupported file
+        bad_file = test_vault_manager.local_dir / "script.exe"
+        bad_file.write_bytes(b"MZbinary")
+
+        health = test_vault_manager.check_vault_health()
+        assert health["status"] == "error"
+        assert health["error_count"] >= 1
+        assert "tidak didukung" in health["error_details"][0]
+
+        bad_file.unlink()
+
+        # 2. Duplicate file
+        (test_vault_manager.papers_dir / "sample.txt").write_text("Test content", encoding="utf-8")
+        (test_vault_manager.local_dir / "sample.txt").write_text("Test duplicate content", encoding="utf-8")
+        test_vault_manager.reload_vault()
+
+        health_dup = test_vault_manager.check_vault_health()
+        assert health_dup["status"] == "warning"
+        assert health_dup["duplicate_count"] >= 1
+        assert "duplikat" in health_dup["warning_details"][0]

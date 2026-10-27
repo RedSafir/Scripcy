@@ -185,10 +185,10 @@ def test_chat_submode_routing_for_modern_ux() -> None:
     app.handle_chat_submode_interaction("/switch")
     app.run_interactive_sessions_list.assert_called_once()
 
-    # /detach inside chat sets sub_mode to None (returns to project root)
+    # /detach inside chat sets sub_mode to None (returns to project root, auto-closing session if no background tasks)
     app.handle_chat_submode_interaction("/detach")
     assert app.sub_mode is None
-    app.chat_manager.update_session_status.assert_called_with("sess_1", "detached")
+    app.chat_manager.update_session_status.assert_called_with("sess_1", "closed")
 
 
 def test_render_diff_inplace_margin_wrap_clamping() -> None:

@@ -1191,47 +1191,47 @@ def interactive_token_warning_confirm(
 # =============================================================================
 
 SLASH_COMMANDS_DASHBOARD: list[tuple[str, str]] = [
-    ("/projects", "List registered research projects (alias: /list)"),
-    ("/new", "Create and connect a master project folder (/new <name>)"),
-    ("/open", "Open an existing project folder (/open <#|name>)"),
-    ("/delete", "Remove project from Scripcy (/delete <#|name>)"),
-    ("/models", "Manage LLM models, API keys, 9Router, and tokens"),
-    ("/settings", "Manage workspace and citation preferences"),
-    ("/clear", "Clear terminal screen"),
-    ("/help", "Open interactive help and keyboard shortcuts"),
-    ("/exit", "Exit Scripcy research studio"),
+    ("/projects", "Lihat daftar proyek riset terdaftar (alias: /list)"),
+    ("/new", "Buat dan hubungkan folder proyek master baru (/new <nama>)"),
+    ("/open", "Buka folder proyek yang sudah ada (/open <#|nama>)"),
+    ("/delete", "Hapus registrasi proyek dari Scripcy (/delete <#|nama>)"),
+    ("/models", "Kelola model LLM, API key, 9Router, dan token"),
+    ("/settings", "Kelola preferensi workspace dan format sitasi"),
+    ("/clear", "Bersihkan tampilan layar terminal"),
+    ("/help", "Buka panduan bantuan interaktif dan pintasan tombol"),
+    ("/exit", "Keluar dari studio riset Scripcy"),
 ]
 
 SLASH_COMMANDS_PROJECT: list[tuple[str, str]] = [
-    ("/search", "Search literature on Semantic Scholar, ArXiv, OpenAlex"),
-    ("/findpaper", "Search & scout literature on OpenAlex/S2"),
-    ("/scout", "Intelligent literature scout pipeline & AI curation"),
-    ("/vault", "Manage vault documents and soft-archive"),
-    ("/docx", "Compile synthesized research into Microsoft Word (.docx)"),
-    ("/chat", "Manage multi-session conversation history (/chat new|list)"),
+    ("/search", "Cari literatur di Semantic Scholar, ArXiv, OpenAlex"),
+    ("/findpaper", "Cari journal ilmiah di OpenAlex/S2 (alias: /scout)"),
+    ("/scout", "Pipeline pencarian literatur cerdas & kurasi AI"),
+    ("/vault", "Kelola berkas vault, status pembaruan, dan arsip"),
+    ("/docx", "Kompilasi hasil riset ke format Microsoft Word (.docx)"),
+    ("/chat", "Kelola sesi percakapan AI Co-Pilot (/chat new|list)"),
     ("/chats", "Daftar dan switcher sesi percakapan interaktif (alias: /sessions)"),
     ("/sessions", "Manajemen sesi percakapan interaktif (TMUX-style)"),
-    ("/models", "Manage LLM models, API keys, 9Router, and tokens"),
-    ("/processing", "View and track background tasks and downloads (alias: /process)"),
-    ("/process", "View and track background tasks and downloads (alias: /tasks)"),
-    ("/tasks", "View and track background tasks and downloads"),
-    ("/gdrive", "Ingest research paper directly from Google Drive"),
-    ("/active", "Toggle active context papers for AI queries"),
-    ("/rename", "Rename the current project (/rename <new_name>)"),
-    ("/tokens", "Inspect project token usage statistics"),
+    ("/models", "Kelola model LLM, API key, 9Router, dan token"),
+    ("/processing", "Pantau dan kelola proses latar belakang (alias: /process)"),
+    ("/process", "Pantau dan kelola proses latar belakang (alias: /tasks)"),
+    ("/tasks", "Pantau dan kelola proses latar belakang"),
+    ("/gdrive", "Unduh berkas riset langsung dari Google Drive"),
+    ("/active", "Pilih berkas aktif untuk konteks sitasi AI"),
+    ("/rename", "Ganti nama proyek saat ini (/rename <nama_baru>)"),
+    ("/tokens", "Periksa statistik penggunaan token proyek"),
     ("/status", "Lihat model aktif dan konsumsi token proyek saat ini"),
-    ("/settings", "Manage workspace and citation settings"),
+    ("/settings", "Kelola pengaturan workspace dan format sitasi"),
     ("/turns", "Atur batas iterasi loop AI agent (1-50 turn)"),
-    ("/web", "Launch 3-panel Web Studio in browser"),
-    ("/dashboard", "Return to Dashboard mode (alias: /close, /back)"),
-    ("/clear", "Clear terminal screen"),
-    ("/help", "Open interactive help and keyboard shortcuts"),
-    ("/exit", "Exit Scripcy research studio"),
+    ("/web", "Buka Web Studio 3-panel di peramban browser"),
+    ("/dashboard", "Kembali ke mode Dashboard (alias: /close, /back)"),
+    ("/clear", "Bersihkan tampilan layar terminal"),
+    ("/help", "Buka panduan bantuan interaktif dan pintasan tombol"),
+    ("/exit", "Keluar dari studio riset Scripcy"),
 ]
 
 SLASH_COMMANDS_CHAT: list[tuple[str, str]] = [
     ("/back", "Kembali ke menu daftar chat (skripsi/chat>)"),
-    ("/detach", "Lepas sesi ke background (tmux detach, tugas tetap berjalan)"),
+    ("/detach", "Lepas sesi ke background (tugas latar belakang tetap berjalan)"),
     ("/switch", "Pindah sesi chat via dialog interaktif (alias: /chats, /sessions)"),
     ("/chats", "Daftar dan switcher sesi percakapan interaktif"),
     ("/sessions", "Manajemen sesi percakapan interaktif (TMUX-style)"),
@@ -1260,10 +1260,11 @@ SLASH_COMMANDS_CHAT_HUB: list[tuple[str, str]] = [
 
 SLASH_COMMANDS_VAULT: list[tuple[str, str]] = [
     ("/list", "Tampilkan seluruh daftar berkas di vault & status markdown (alias: /ls)"),
-    ("/reload", "Pindai folder & konversi semua file baru/diedit ke Markdown"),
+    ("/update", "Pindai folder & perbarui berkas baru/diedit ke Markdown"),
+    ("/reload", "Pindai folder & perbarui berkas baru/diedit ke Markdown (alias: /update)"),
     ("/add", "Salin dokumen dari komputer ke vault dan langsung dikonversi"),
-    ("/findpaper", "Cari, kurasi & unduh paper akademis (OpenAlex & S2)"),
-    ("/gdrive", "Unduh file Google Drive langsung ke vault via link"),
+    ("/findpaper", "Cari journal ilmiah akademis (OpenAlex & S2)"),
+    ("/gdrive", "Unduh berkas Google Drive langsung ke vault via tautan"),
     ("/remove", "Arsipkan berkas dari project aktif ke .archive/"),
     ("/archived", "Lihat daftar berkas yang sedang diarsipkan di .archive/"),
     ("/restore", "Kembalikan berkas arsip ke vault aktif"),
@@ -1286,17 +1287,17 @@ SLASH_COMMANDS_PROCESSING: list[tuple[str, str]] = [
 
 SUBCOMMAND_SUGGESTIONS: dict[str, list[tuple[str, str]]] = {
     "/vault": [
-        ("/vault list", "List all documents and cached papers in vault"),
-        ("/vault add", "Add local paper or document to vault (/vault add <file>)"),
-        ("/vault view", "Read paper summary or text (/vault view <#>)"),
-        ("/vault archive", "Move paper to archive (/vault archive <#>)"),
+        ("/vault list", "Daftar seluruh berkas dan naskah terindeks di vault"),
+        ("/vault add", "Tambah berkas lokal ke vault (/vault add <file>)"),
+        ("/vault view", "Baca ringkasan atau teks berkas (/vault view <#>)"),
+        ("/vault archive", "Pindahkan berkas ke arsip (/vault archive <#>)"),
     ],
     "/models": [
-        ("/models list", "List configured models, API keys, and providers"),
-        ("/models use", "Switch active LLM model (/models use <model>)"),
-        ("/models 9router", "Configure 9Router local gateway proxy"),
-        ("/models tokens", "Inspect global and project token consumption"),
-        ("/models set-key", "Store API key per-provider (/models set-key <provider> <key>)"),
+        ("/models list", "Daftar model terkonfigurasi, API key, dan provider"),
+        ("/models use", "Ganti model LLM aktif (/models use <model>)"),
+        ("/models 9router", "Konfigurasi proxy gateway lokal 9Router"),
+        ("/models tokens", "Periksa konsumsi token global dan proyek"),
+        ("/models set-key", "Simpan API key per provider (/models set-key <provider> <key>)"),
     ],
     "/chat": [
         ("/chat", "Buka menu hub sesi chat riset (skripsi/chat>)"),
@@ -1306,8 +1307,8 @@ SUBCOMMAND_SUGGESTIONS: dict[str, list[tuple[str, str]]] = {
         ("/chat delete", "Hapus satu atau banyak sesi percakapan (contoh: 1, 2 atau all)"),
     ],
     "/settings": [
-        ("/settings show", "Show current workspace and citation settings"),
-        ("/settings set-citation", "Change citation style preference (apa | ieee)"),
+        ("/settings show", "Lihat pengaturan workspace dan sitasi saat ini"),
+        ("/settings set-citation", "Ubah format sitasi (apa | ieee)"),
     ],
 }
 
@@ -1326,25 +1327,25 @@ def interactive_help_view(
 
     if mode == "vault":
         commands_list = SLASH_COMMANDS_VAULT
-        title = f"Available Commands [{context_label or 'Vault'}]"
+        title = f"Perintah Tersedia [{context_label or 'Vault'}]"
     elif mode == "processing":
         commands_list = SLASH_COMMANDS_PROCESSING
-        title = f"Available Commands [{context_label or 'Processing'}]"
+        title = f"Perintah Tersedia [{context_label or 'Processing'}]"
     elif mode == "chat_hub":
         commands_list = SLASH_COMMANDS_CHAT_HUB
-        title = f"Available Commands [{context_label or 'Chat'}]"
+        title = f"Perintah Tersedia [{context_label or 'Chat'}]"
     elif mode == "chat" or (mode is None and is_chat_mode):
         commands_list = SLASH_COMMANDS_CHAT
-        title = f"Available Commands [{context_label or 'Chat Session'}]"
+        title = f"Perintah Tersedia [{context_label or 'Sesi Chat'}]"
     elif mode == "dashboard":
         commands_list = SLASH_COMMANDS_DASHBOARD
-        title = f"Available Commands [{context_label or 'Dashboard'}]"
+        title = f"Perintah Tersedia [{context_label or 'Dashboard'}]"
     elif mode == "project" or (mode is None and is_project_mode):
         commands_list = SLASH_COMMANDS_PROJECT
-        title = f"Available Commands [{context_label or 'Project'}]"
+        title = f"Perintah Tersedia [{context_label or 'Proyek'}]"
     else:
         commands_list = SLASH_COMMANDS_DASHBOARD
-        title = "Available Commands [Dashboard]"
+        title = "Perintah Tersedia [Dashboard]"
 
     if not sys.stdin.isatty():
         c.print(f"\n[bold bright_white]{escape(title)}[/bold bright_white]")
@@ -1388,7 +1389,7 @@ def interactive_help_view(
             lines.append(Text(""))
 
             # Footer
-            footer = Text("↑/↓ Navigate · esc Close", style="dim")
+            footer = Text("↑/↓ Navigasi · esc Tutup", style="dim")
             m_label = _format_model_display_name(current_model)
             right_status = f"{m_label} · {current_effort}"
             padding_len = max(2, width - len(footer.plain) - len(right_status) - 2)
@@ -1429,8 +1430,16 @@ def interactive_input_prompt(
     on_idle: Callable[[Callable[[], None]], bool] | None = None,
     status_line_callback: Callable[[], str | None] | None = None,
     initial_buffer: str = "",
+    default: str | None = None,
+    **kwargs: Any,
 ) -> str:
     """Prompt user with live slash command autocomplete and interactive help."""
+    if isinstance(console, str):
+        prompt_label = console
+        console = kwargs.get("console")
+    if default is not None and not initial_buffer:
+        initial_buffer = default
+
     c = console or Console(force_terminal=True)
 
     # Non-interactive fallback (tests, pipes, CI)
@@ -1591,14 +1600,14 @@ def interactive_input_prompt(
                 right_st = f"{m_label} • {current_effort}"
 
             if suggestions:
-                left_full = "↑/↓ Navigate · enter Select · tab Complete · esc Cancel · ? for shortcuts"
+                left_full = "↑/↓ Navigasi · enter Pilih · tab Lengkapi · esc Batal · ? Bantuan"
                 left_compact = "↑/↓ · enter · tab · esc"
             elif mode == "chat" or (mode is None and is_chat_mode):
-                left_full = "? for shortcuts · /detach to background · /close to terminate"
-                left_compact = "? shortcuts · /detach · /close"
+                left_full = "? Bantuan Pintasan · /detach Latar Belakang · /close Tutup Sesi"
+                left_compact = "? Bantuan · /detach · /close"
             else:
-                left_full = "? for shortcuts"
-                left_compact = "? shortcuts"
+                left_full = "? Bantuan Pintasan"
+                left_compact = "? Bantuan"
 
             if len(left_full) + len(right_st) + 3 <= max_line_w:
                 left_chosen = left_full
@@ -1610,7 +1619,7 @@ def interactive_input_prompt(
                 left_chosen = left_compact
                 right_chosen = m_label
             else:
-                left_chosen = "? shortcuts"
+                left_chosen = "? Bantuan"
                 avail_r = max(0, max_line_w - len(left_chosen) - 3)
                 right_chosen = m_label[:avail_r] if avail_r > 4 else ""
 
@@ -1969,7 +1978,7 @@ def interactive_menu(
     header: Any | None = None,
     cursor_idx: int = 0,
     console: Console | None = None,
-    footer_hint: str = "↑/↓ Navigate · enter Select · 1-N Quick jump · esc Back",
+    footer_hint: str = "↑/↓ Navigasi · enter Pilih · 1-N Lompat cepat · esc Kembali",
     allow_back: bool = True,
 ) -> str | None:
     """Antigravity-style in-place interactive menu selector without terminal stacking."""
@@ -2184,8 +2193,8 @@ def interactive_item_browser(
             action_bar = Text()
             if total_slides > 1:
                 action_bar.append(f"[Slide {current_slide + 1}/{total_slides}] ", style="bold cyan")
-                action_bar.append("←/→ Page · ", style="dim")
-            action_bar.append("↑/↓ Navigate · ", style="dim")
+                action_bar.append("←/→ Halaman · ", style="dim")
+            action_bar.append("↑/↓ Navigasi · ", style="dim")
 
             for a_key, a_label, a_key_hint in actions:
                 action_bar.append(f"[{a_key_hint}] ", style="bold cyan")

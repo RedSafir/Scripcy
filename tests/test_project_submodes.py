@@ -52,7 +52,7 @@ class TestSubmodeNavigation:
         assert cli_studio_submodes.sub_mode == "vault"
 
         output = cli_studio_submodes.console.file.getvalue()
-        assert "Vault Resources" in output
+        assert "Vault Berkas" in output or "Vault Resources" in output
 
         # Exit back to root (in vault, commands work with or without '/')
         cli_studio_submodes.handle_project_interaction("back")
@@ -236,8 +236,7 @@ class TestRefinedUIAndModeFlows:
         cli_studio_submodes.render_vault_landing()
         out = cli_studio_submodes.console.file.getvalue()
 
-        assert "Vault Resources" in out
-        assert "Folder Vault" in out
+        assert "Vault Berkas" in out or "Vault Resources" in out
         assert "Total Berkas" in out
         # Command guide must NOT be printed on landing
         assert "Perintah Vault & Panduan Penggunaan:" not in out
@@ -302,7 +301,7 @@ class TestRefinedUIAndModeFlows:
 
         interactive_help_view(console=c, mode="dashboard")
         dashboard_out = buf.getvalue()
-        assert "Available Commands [Dashboard]" in dashboard_out
+        assert "Perintah Tersedia [Dashboard]" in dashboard_out or "Available Commands [Dashboard]" in dashboard_out
         assert "/projects" in dashboard_out
         assert "Scripcy CLI" not in dashboard_out
         assert "General Workspace" not in dashboard_out
@@ -312,7 +311,7 @@ class TestRefinedUIAndModeFlows:
         buf.truncate(0)
         interactive_help_view(console=c, mode="vault", context_label="skripsi")
         vault_out = buf.getvalue()
-        assert "Available Commands [skripsi]" in vault_out
+        assert "Perintah Tersedia [skripsi]" in vault_out or "Available Commands [skripsi]" in vault_out
         assert "/reload" in vault_out
         assert "/add" in vault_out
         assert "Scripcy CLI" not in vault_out

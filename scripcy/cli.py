@@ -12,6 +12,7 @@ from rich.console import Console
 from rich.table import Table
 import typer
 
+from scripcy.cli_vault import vault_app
 from scripcy.core.config import ConfigManager, ScripcyConfig, detect_9router_key, fetch_9router_models
 from scripcy.core.parser import DocumentParser
 from scripcy.core.project import ProjectManager
@@ -41,6 +42,8 @@ settings_app = typer.Typer(
     no_args_is_help=True,
 )
 app.add_typer(settings_app, name="settings")
+
+app.add_typer(vault_app, name="vault")
 
 
 # =============================================================================

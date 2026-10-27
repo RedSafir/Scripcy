@@ -84,47 +84,26 @@ class StudioDashboardMixin:
 
 
             header = Text()
-
             header.append("scripcy", style="bold cyan")
-
             header.append(" • ", style="dim")
-
-            header.append(f"dashboard ({p_count} registered projects)", style="dim")
-
-
+            header.append(f"dashboard ({p_count} proyek terdaftar)", style="dim")
 
             options = [
-
-                ("projects", f"Projects ({p_count} terdaftar)"),
-
-                ("settings", "Settings & Models"),
-
-                ("exit", "Exit"),
-
+                ("projects", f"Proyek ({p_count} terdaftar)"),
+                ("settings", "Pengaturan & Model"),
+                ("exit", "Keluar"),
             ]
 
-
-
             choice = interactive_menu(
-
                 options=options,
-
                 header=header,
-
                 console=self.console,
-
-                footer_hint="↑/↓ Navigate · enter Select · 1-3 Quick jump · esc Exit",
-
+                footer_hint="↑/↓ Navigasi · enter Pilih · 1-3 Lompat cepat · esc Keluar",
                 allow_back=True,
-
             )
 
-
-
             if choice in ("exit", None):
-
-                self.console.print("\n[bold cyan]Closing scripcy research studio. Goodbye![/bold cyan]")
-
+                self.console.print("\n[bold cyan]Menutup studio riset Scripcy. Sampai jumpa![/bold cyan]")
                 return "exit"
 
 
@@ -180,82 +159,44 @@ class StudioDashboardMixin:
                     {"name": "Location", "style": "dim", "width": 38},
 
                     {"name": "Model", "style": "cyan", "width": 26},
-
-                    {"name": "Last Opened", "style": "dim", "width": 16},
-
+                    {"name": "Terakhir Dibuka", "style": "dim", "width": 16},
                 ]
-
-
 
                 def _row_builder(idx: int, p: ProjectInfo, is_selected: bool) -> list[Any]:
-
                     m_label = _format_model_display_name(p.model or self.config.default_model)
-
                     last_str = p.last_opened[:16].replace("T", " ") if p.last_opened else ""
-
                     arrow = "> " if is_selected else "  "
-
                     p_name_text = Text()
-
                     p_name_text.append(arrow, style="bold cyan" if is_selected else "dim")
-
                     p_name_text.append(p.name, style="bold bright_white" if is_selected else "white")
-
                     return [
-
                         str(idx + 1),
-
                         p_name_text,
-
                         str(p.path)[:36],
-
                         m_label[:24],
-
                         last_str,
-
                     ]
 
-
-
                 header = Text()
-
-                header.append("Daftar Master Projects", style="bold bright_white")
-
-                header.append(f" ({len(projects)} projects)", style="dim")
-
-
+                header.append("Daftar Master Proyek", style="bold bright_white")
+                header.append(f" ({len(projects)} proyek)", style="dim")
 
                 actions = [
-
-                    ("open", "Open Project", "enter"),
-
-                    ("new", "New Project", "n"),
-
-                    ("delete", "Delete Project", "d"),
-
-                    ("back", "Back", "esc"),
-
+                    ("open", "Buka Proyek", "enter"),
+                    ("new", "Proyek Baru", "n"),
+                    ("delete", "Hapus Proyek", "d"),
+                    ("back", "Kembali", "esc"),
                 ]
-
-
 
                 import scripcy.cli_studio as _cli_studio
                 action, idx, selected_p = _cli_studio.interactive_item_browser(
-
                     title=header,
-
                     columns=columns,
-
                     items=projects,
-
                     row_builder=_row_builder,
-
                     actions=actions,
-
                     console=self.console,
-
-                    empty_message="Belum ada project.",
-
+                    empty_message="Belum ada proyek.",
                 )
 
 
@@ -332,23 +273,23 @@ class StudioDashboardMixin:
             header = Text()
             header.append("scripcy", style="bold cyan")
             header.append(" • ", style="dim")
-            header.append("Settings & Configuration\n", style="bold bright_white")
-            header.append(f"Model: {cur_m} ({cur_eff}) · Citation: {cur_cit} · Search: OpenAlex (Primary)", style="dim")
+            header.append("Pengaturan & Konfigurasi\n", style="bold bright_white")
+            header.append(f"Model: {cur_m} ({cur_eff}) · Sitasi: {cur_cit} · Pencarian: OpenAlex (Utama)", style="dim")
 
             opts = [
-                ("model", f"Model & AI Reasoning ({cur_m} · {cur_eff} effort)"),
-                ("federation", "Academic Search & Providers (OpenAlex, S2, CrossRef, Unpaywall)"),
-                ("citation", f"Citation & Bibliography ({cur_cit})"),
-                ("agent", f"Agent Loop & Research Limits (Turns: {getattr(self.config, 'max_agent_turns', 15)}, Tokens: {getattr(self.config, 'max_output_tokens', 8192)})"),
-                ("keys", "API Keys Management (BYOK Credentials)"),
-                ("back", "Back to " + (f"Project '{self.current_project.name}'" if self.current_project else "Dashboard")),
+                ("model", f"Model & Penalaran AI ({cur_m} · upaya {cur_eff})"),
+                ("federation", "Pencarian Akademik & Provider (OpenAlex, S2, CrossRef, Unpaywall)"),
+                ("citation", f"Format Sitasi & Bibliografi ({cur_cit})"),
+                ("agent", f"Batas Putaran Riset & Token (Turn: {getattr(self.config, 'max_agent_turns', 15)}, Token: {getattr(self.config, 'max_output_tokens', 8192)})"),
+                ("keys", "Manajemen API Key (Kredensial BYOK)"),
+                ("back", "Kembali ke " + (f"Proyek '{self.current_project.name}'" if self.current_project else "Dashboard")),
             ]
 
             ch = interactive_menu(
                 opts,
                 header=header,
                 console=self.console,
-                footer_hint="↑/↓ Navigate · enter Select · 1-6 Quick jump · esc Back",
+                footer_hint="↑/↓ Navigasi · enter Pilih · 1-6 Lompat cepat · esc Kembali",
                 allow_back=True,
             )
 
@@ -377,16 +318,16 @@ class StudioDashboardMixin:
             cur_eff = self.get_active_project_effort() if self.current_project else "high"
 
             header = Text()
-            header.append("Model & AI Reasoning Settings\n", style="bold bright_white")
-            header.append(f"Current Model: {cur_m_label} · Reasoning Effort: {cur_eff}", style="dim")
+            header.append("Pengaturan Model & Penalaran AI\n", style="bold bright_white")
+            header.append(f"Model Aktif: {cur_m_label} · Tingkat Penalaran: {cur_eff}", style="dim")
 
             opts = [
-                ("switch", f"Switch Model (Currently: {cur_m_label})"),
-                ("effort", f"Change Reasoning Effort (Currently: {cur_eff})"),
-                ("back", "Back to Settings"),
+                ("switch", f"Ganti Model (Saat ini: {cur_m_label})"),
+                ("effort", f"Ubah Upaya Penalaran (Saat ini: {cur_eff})"),
+                ("back", "Kembali ke Pengaturan"),
             ]
 
-            ch = interactive_menu(opts, header=header, console=self.console, allow_back=True)
+            ch = interactive_menu(opts, header=header, console=self.console, footer_hint="↑/↓ Navigasi · enter Pilih · 1-3 Lompat cepat · esc Kembali", allow_back=True)
             if ch in ("back", None):
                 return
 
@@ -710,7 +651,7 @@ class StudioDashboardMixin:
 
         table.add_row("Project Name", f"[bold bright_white]{target_project.name}[/bold bright_white]")
         table.add_row("Master Path", str(target_project.path))
-        table.add_row("Vault Papers", f"{vault_count} documents in vault")
+        table.add_row("Vault Resources", f"{vault_count} documents in vault")
         proj_model = target_project.model or f"[dim]Not assigned (default: {self.config.default_model})[/dim]"
         table.add_row("Project Model", f"[bold cyan]{proj_model}[/bold cyan]")
         table.add_row("Citation Style", self.config.citation.style.upper())
@@ -839,7 +780,7 @@ class StudioDashboardMixin:
         cached_count = len(self._get_cached_stems())
         self.console.print(f"[bold green][✓] Connected to Master Project:[/bold green] [bold cyan]{proj.name}[/bold cyan]")
         self.console.print(f"    Location: [dim]{proj.path}[/dim]")
-        self.console.print(f"    Papers in Vault: [white]{cached_count} indexed[/white]\n")
+        self.console.print(f"    Resources in Vault: [white]{cached_count} indexed[/white]\n")
 
     def dashboard_delete_project(self, args: list[str]) -> None:
         """Remove a project from the Scripcy registry without deleting physical files."""

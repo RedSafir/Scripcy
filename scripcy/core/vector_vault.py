@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import csv
 import io
 import json
 import logging
 import math
 import re
+import shutil
 import sqlite3
 import struct
 from dataclasses import dataclass, field
@@ -722,6 +724,185 @@ class ProjectVectorVault:
             "chunks": len(raw_chunks),
             "tables": 0,
             "images": len(raw_images),
+        }
+
+    def ingest_standalone_table(
+        self,
+        table_path: Path,
+        caption: str = "",
+        context: str = "",
+        target_dir: Path | None = None,
+    ) -> dict[str, Any]:
+        """Ingest a standalone user-uploaded table (.csv, .tsv, .xlsx, .md) into SQLite vector vault."""
+        embedder = get_shared_embedder()
+        dest_dir = target_dir or (self.tables_dir / "user")
+        dest_dir.mkdir(parents=True, exist_ok=True)
+
+        stem = table_path.stem
+        paper_id = "[Unggahan Mandiri]"
+        with self._get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute("""
+                INSERT OR IGNORE INTO papers (id, title, filename, path)
+                VALUES (?, ?, ?, ?)
+            """, (paper_id, "Unggahan Mandiri", "standalone", ""))
+            conn.commit()
+
+        dest_csv = dest_dir / f"{stem}.csv"
+        dest_md = dest_dir / f"{stem}.md"
+
+        md_content = ""
+        csv_content = ""
+        ext = table_path.suffix.lower()
+
+        if ext in (".csv", ".tsv"):
+            try:
+                raw_text = table_path.read_text(encoding="utf-8", errors="replace")
+                delimiter = "\t" if ext == ".tsv" else ("," if "," in raw_text[:500] else ";")
+                reader = csv.reader(raw_text.splitlines(), delimiter=delimiter)
+                rows = list(reader)
+                if rows:
+                    headers = [str(c or "").strip() for c in rows[0]]
+                    md_lines = ["| " + " | ".join(headers) + " |"]
+                    md_lines.append("| " + " | ".join(["---"] * len(headers)) + " |")
+                    for r in rows[1:]:
+                        r_padded = r + [""] * (len(headers) - len(r))
+                        md_lines.append("| " + " | ".join(str(c or "").strip() for c in r_padded[:len(headers)]) + " |")
+                    md_content = "\n".join(md_lines)
+                    csv_content = raw_text
+            except Exception:
+                pass
+        elif ext in (".xlsx", ".xls"):
+            try:
+                import pandas as pd
+                df = pd.read_excel(table_path)
+                csv_content = df.to_csv(index=False)
+                md_content = df.to_markdown(index=False)
+            except Exception:
+                pass
+
+        if not md_content:
+            try:
+                md_content = table_path.read_text(encoding="utf-8", errors="replace")
+                csv_content = md_content
+            except Exception:
+                md_content = f"# Tabel Mandiri: {table_path.name}"
+                csv_content = md_content
+
+        dest_md.write_text(md_content, encoding="utf-8")
+        dest_csv.write_text(csv_content, encoding="utf-8")
+
+        tbl_id = f"user_tbl_{stem}"
+        tbl_caption = caption or f"Tabel Mandiri {stem}"
+        if context:
+            tbl_caption = f"{tbl_caption} ({context})"
+
+        with self._get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute("""
+                INSERT OR REPLACE INTO tables (id, paper_id, page_num, csv_path, md_path, caption, is_vision_fallback)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (tbl_id, paper_id, 1, str(dest_csv), str(dest_md), tbl_caption, 0))
+
+            tbl_chunk_content = f"[[VISUAL:{tbl_id}]] [Tabel Mandiri: {tbl_caption}]\n{md_content[:800]}"
+            cur.execute("""
+                INSERT INTO chunks (id, paper_id, page_num, chunk_index, content)
+                VALUES (?, ?, ?, ?, ?)
+            """, (f"tbl_chunk_{tbl_id}", paper_id, 1, 9900, tbl_chunk_content))
+            rowid = cur.lastrowid
+            if embedder is not None:
+                try:
+                    t_emb = list(embedder.embed([tbl_chunk_content]))[0]
+                    cur.execute("INSERT INTO vec_chunks (chunk_rowid, embedding) VALUES (?, ?)", (rowid, serialize_f32(list(t_emb))))
+                except Exception:
+                    pass
+
+            try:
+                cur.execute("INSERT INTO fts_chunks(fts_chunks) VALUES('rebuild')")
+            except Exception:
+                pass
+            conn.commit()
+
+        return {
+            "id": tbl_id,
+            "md_path": str(dest_md),
+            "csv_path": str(dest_csv),
+            "caption": tbl_caption,
+        }
+
+    def ingest_standalone_image(
+        self,
+        image_path: Path,
+        caption: str = "",
+        context: str = "",
+        ai_analysis: str = "",
+        target_dir: Path | None = None,
+    ) -> dict[str, Any]:
+        """Ingest a standalone user-uploaded image (.png, .jpg, .svg, etc.) into SQLite vector vault."""
+        embedder = get_shared_embedder()
+        dest_dir = target_dir or (self.images_dir / "user")
+        dest_dir.mkdir(parents=True, exist_ok=True)
+
+        stem = image_path.stem
+        paper_id = "[Unggahan Mandiri]"
+        with self._get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute("""
+                INSERT OR IGNORE INTO papers (id, title, filename, path)
+                VALUES (?, ?, ?, ?)
+            """, (paper_id, "Unggahan Mandiri", "standalone", ""))
+            conn.commit()
+
+        dest_img = dest_dir / image_path.name
+        if image_path.resolve() != dest_img.resolve():
+            shutil.copy2(str(image_path), str(dest_img))
+
+        width = 0
+        height = 0
+        try:
+            with Image.open(dest_img) as img:
+                width, height = img.size
+        except Exception:
+            pass
+
+        img_id = f"user_img_{stem}"
+        img_caption = caption or f"Visual Mandiri {stem}"
+        if context:
+            img_caption = f"{img_caption} ({context})"
+        desc = ai_analysis or context or "Visual mandiri terindeks pengguna."
+
+        with self._get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute("""
+                INSERT OR REPLACE INTO images (id, paper_id, page_num, file_path, caption, ai_analysis, width, height)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, (img_id, paper_id, 1, str(dest_img), img_caption, desc, width, height))
+
+            img_chunk_content = f"[[VISUAL:{img_id}]] [Visual Mandiri: {img_caption}]\nKeterangan/Analisis: {desc}"
+            cur.execute("""
+                INSERT INTO chunks (id, paper_id, page_num, chunk_index, content)
+                VALUES (?, ?, ?, ?, ?)
+            """, (f"img_chunk_{img_id}", paper_id, 1, 9950, img_chunk_content))
+            rowid = cur.lastrowid
+            if embedder is not None:
+                try:
+                    i_emb = list(embedder.embed([img_chunk_content]))[0]
+                    cur.execute("INSERT INTO vec_chunks (chunk_rowid, embedding) VALUES (?, ?)", (rowid, serialize_f32(list(i_emb))))
+                except Exception:
+                    pass
+
+            try:
+                cur.execute("INSERT INTO fts_chunks(fts_chunks) VALUES('rebuild')")
+            except Exception:
+                pass
+            conn.commit()
+
+        return {
+            "id": img_id,
+            "file_path": str(dest_img),
+            "caption": img_caption,
+            "width": width,
+            "height": height,
         }
 
     def _analyze_vision_table(self, img_path: Path, engine: Any, model_name: str | None) -> str | None:

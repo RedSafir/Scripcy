@@ -65,6 +65,10 @@ class DocumentMetadata(BaseModel):
         default=None,
         description="Authority tier (1=Government/IGO/Academic, 2=Standards, 3=News, 4=Unverified).",
     )
+    context: str = Field(
+        default="",
+        description="User-defined or folder-derived experiment/research context.",
+    )
 
     @field_validator("title", mode="before")
     @classmethod

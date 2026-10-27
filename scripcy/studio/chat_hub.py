@@ -78,23 +78,23 @@ class StudioChatHubMixin:
             total_cnt = active_cnt + closed_cnt
 
             header_table = Table(box=None, padding=(0, 2), show_header=False)
-            header_table.add_column("Property", style="dim", width=20)
-            header_table.add_column("Value", style="white")
-            header_table.add_row("Active / Running", f"[bold cyan]{active_cnt}[/bold cyan] sessions")
-            header_table.add_row("Closed / Terminated", f"[dim]{closed_cnt} sessions[/dim]")
-            header_table.add_row("Total Sessions", f"{total_cnt} sessions")
+            header_table.add_column("Properti", style="dim", width=20)
+            header_table.add_column("Nilai", style="white")
+            header_table.add_row("Aktif / Berjalan", f"[bold cyan]{active_cnt}[/bold cyan] sesi")
+            header_table.add_row("Ditutup / Selesai", f"[dim]{closed_cnt} sesi[/dim]")
+            header_table.add_row("Total Sesi", f"{total_cnt} sesi")
 
             options = [
-                ("list", f"List Sessions ({total_cnt} total)"),
-                ("new", "New Session"),
-                ("back", "Back to Project"),
+                ("list", f"Daftar Sesi ({total_cnt} total)"),
+                ("new", "Sesi Baru"),
+                ("back", "Kembali ke Proyek"),
             ]
 
             choice = interactive_menu(
                 options=options,
                 header=header_table,
                 console=self.console,
-                footer_hint="↑/↓ Navigate · enter Select · 1-3 Quick jump · esc Back",
+                footer_hint="↑/↓ Navigasi · enter Pilih · 1-3 Lompat cepat · esc Kembali",
                 allow_back=True,
             )
 
@@ -122,10 +122,10 @@ class StudioChatHubMixin:
 
             columns = [
                 {"name": "#", "justify": "right", "width": 3, "style": "dim"},
-                {"name": "Session Name", "style": "bold white", "width": 30},
+                {"name": "Nama Sesi", "style": "bold white", "width": 30},
                 {"name": "Status", "justify": "center", "width": 16},
-                {"name": "Exchanges", "justify": "center", "width": 12, "style": "dim"},
-                {"name": "Last Updated", "style": "dim", "width": 18},
+                {"name": "Pesan", "justify": "center", "width": 12, "style": "dim"},
+                {"name": "Terakhir Diperbarui", "style": "dim", "width": 18},
             ]
 
             def _row_builder(idx: int, s: Any, is_selected: bool) -> list[Any]:
@@ -136,11 +136,11 @@ class StudioChatHubMixin:
                     else []
                 )
                 if st == "running":
-                    st_badge = f"[bold cyan][Running • {len(active_tasks)}][/bold cyan]" if active_tasks else "[bold cyan][Running][/bold cyan]"
+                    st_badge = f"[bold cyan][Aktif • {len(active_tasks)}][/bold cyan]" if active_tasks else "[bold cyan][Aktif][/bold cyan]"
                 elif st == "detached":
-                    st_badge = f"[bold yellow][Detached • {len(active_tasks)}][/bold yellow]" if active_tasks else "[dim cyan][Detached][/dim cyan]"
+                    st_badge = f"[bold yellow][Latar Belakang • {len(active_tasks)}][/bold yellow]" if active_tasks else "[dim cyan][Latar Belakang][/dim cyan]"
                 else:
-                    st_badge = "[dim][Closed][/dim]"
+                    st_badge = "[dim][Ditutup][/dim]"
 
                 is_curr = self.active_chat_session and s.id == self.active_chat_session.id
                 arrow = "> " if is_selected else "  "
@@ -148,27 +148,27 @@ class StudioChatHubMixin:
                 name_text.append(arrow, style="bold cyan" if is_selected else "dim")
                 name_text.append(s.name[:20], style="bold bright_white" if is_selected else "white")
                 if is_curr:
-                    name_text.append(" (current)", style="dim cyan")
+                    name_text.append(" (saat ini)", style="dim cyan")
 
                 last_str = s.updated_at[:16].replace("T", " ") if s.updated_at else ""
                 return [
                     str(idx + 1),
                     name_text,
                     st_badge,
-                    f"{s.message_count} msgs",
+                    f"{s.message_count} pesan",
                     last_str,
                 ]
 
             header = Text()
-            header.append(f"Saved Chat Sessions [{self.current_project.name}]", style="bold bright_white")
-            header.append(f" • {len(sessions)} sessions", style="dim")
+            header.append(f"Daftar Sesi Percakapan [{self.current_project.name}]", style="bold bright_white")
+            header.append(f" • {len(sessions)} sesi", style="dim")
 
             actions = [
-                ("attach", "Attach / Open", "enter"),
-                ("new", "New Session", "n"),
-                ("terminate", "Close / Terminate", "x"),
-                ("delete", "Delete Session", "d"),
-                ("back", "Back", "esc/q"),
+                ("attach", "Buka Sesi", "enter"),
+                ("new", "Sesi Baru", "n"),
+                ("terminate", "Tutup Sesi", "x"),
+                ("delete", "Hapus Sesi", "d"),
+                ("back", "Kembali", "esc/q"),
             ]
 
             action, idx, selected_sess = interactive_item_browser(

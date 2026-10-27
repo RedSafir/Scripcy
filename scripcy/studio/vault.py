@@ -72,231 +72,392 @@ from scripcy.ui.interactive import (
 
 class StudioVaultMixin:
     def run_interactive_vault(self) -> None:
-
         """Vault resources interactive overview and options without typing."""
-
         while self.sub_mode == "vault" and self.current_project:
-
-            active_items = self.vault_manager.list_active_files() if self.vault_manager else []
-
-            cached_count = sum(1 for it in active_items if it.is_cached)
-
-            needs_reload = len(active_items) - cached_count
-
-            archived_count = len(self.vault_manager.list_archived_files()) if self.vault_manager else 0
-
-            vault_path = (self.workspace.root_dir / "vault") if self.workspace else ""
-
-
+            health = self.vault_manager.check_vault_health() if self.vault_manager else {
+                "status": "active",
+                "status_display": "[bold green]Aktif[/bold green]",
+                "total_files": 0,
+                "warning_details": [],
+                "error_details": [],
+                "category_health": {},
+            }
 
             header_table = Table(box=None, padding=(0, 2), show_header=False)
-
             header_table.add_column("Label", style="dim", width=18)
-
             header_table.add_column("Value", style="white")
 
-            header_table.add_row("Status", "[bold cyan]Aktif[/bold cyan]")
+            header_table.add_row("Status", health["status_display"])
+            header_table.add_row("Total Berkas", str(health["total_files"]))
+            header_table.add_row("Terakhir Update", str(health.get("last_updated", "-")))
 
-            header_table.add_row("Folder Vault", str(vault_path))
-
-            header_table.add_row("Total Berkas", f"{len(active_items)} berkas aktif ({cached_count} terindeks Markdown, {needs_reload} perlu reload)")
-
-            header_table.add_row("Diarsipkan", f"{archived_count} berkas di .archive/ (tidak aktif di konteks AI)")
-
-            header_table.add_row("Format Dokumen", "[dim]PDF, DOCX, PPTX, XLSX, TXT, HTML, MD (didukung Microsoft MarkItDown)[/dim]")
-
-
+            if health.get("warning_details"):
+                warn_text = "\n".join(health["warning_details"])
+                header_table.add_row("Peringatan", f"[yellow]{warn_text}[/yellow]")
+            if health.get("error_details"):
+                err_text = "\n".join(health["error_details"])
+                header_table.add_row("Error", f"[red]{err_text}[/red]")
 
             options = [
-
-                ("view", f"View Papers ({len(active_items)} berkas)"),
-
-                ("add", "Add Paper (Google Drive / Find Paper / File)"),
-
-                ("back", "Back to Project"),
-
+                ("list_berkas", f"List Berkas ({health['total_files']} berkas)"),
+                ("history", "Riwayat Vault (Log Aktivitas & Sinkronisasi)"),
+                ("add", "Tambah Berkas"),
+                ("update", "Update Berkas"),
+                ("back", "Kembali ke Proyek"),
             ]
-
-
 
             choice = interactive_menu(
-
                 options=options,
-
                 header=header_table,
-
                 console=self.console,
-
-                footer_hint="↑/↓ Navigate · enter Select · 1-3 Quick jump · esc Back",
-
+                footer_hint="↑/↓ Navigasi · enter Pilih · 1-5 Lompat cepat · esc Kembali",
                 allow_back=True,
-
             )
-
-
 
             if choice in ("back", None):
-
                 return
 
-
-
-            if choice == "view":
-
-                self.run_interactive_vault_view()
-
+            if choice == "list_berkas":
+                self.run_interactive_vault_categories()
+            elif choice == "history":
+                self.run_interactive_vault_history()
             elif choice == "add":
-
                 self.run_interactive_vault_add()
+            elif choice == "update":
+                self.cmd_vault_update()
 
-    def run_interactive_vault_view(self) -> None:
+    def run_interactive_vault_categories(self) -> None:
+        """Browse categorized vault sections with category-specific issue indicators."""
+        while self.sub_mode == "vault" and self.current_project:
+            health = self.vault_manager.check_vault_health() if self.vault_manager else {
+                "total_files": 0,
+                "category_health": {},
+            }
 
-        """Browse vault items table carousel per DESIGN.md."""
+            cat_health = health.get("category_health", {})
+            papers_h = cat_health.get("papers", {"total": 0, "warning": 0, "error": 0})
+            web_h = cat_health.get("web", {"total": 0, "warning": 0, "error": 0})
+            tables_h = cat_health.get("tables", {"total": 0, "warning": 0, "error": 0})
+            images_h = cat_health.get("images", {"total": 0, "warning": 0, "error": 0})
 
-        while True:
+            def _build_cat_label(name: str, count: int, unit: str, warn: int, err: int) -> str:
+                lbl = f"{name:<38} • {count} {unit}"
+                sub_lines = []
+                if warn > 0:
+                    sub_lines.append(f"    [yellow]peringatan[/yellow]                               {warn} berkas")
+                if err > 0:
+                    sub_lines.append(f"    [red]error[/red]                                    {err} berkas")
+                if sub_lines:
+                    lbl += "\n" + "\n".join(sub_lines)
+                return lbl
 
-            active_items = self.vault_manager.list_active_files() if self.vault_manager else []
-
-            if not active_items:
-
-                self.console.print("\n[dim]Vault masih kosong (0 berkas aktif).\n[/dim]")
-
-                time.sleep(1.2)
-
-                return
-
-
-
-            columns = [
-
-                {"name": "#", "justify": "right", "width": 3, "style": "dim"},
-
-                {"name": "Filename", "style": "bold white", "width": 34},
-
-                {"name": "Format", "justify": "center", "width": 8, "style": "dim"},
-
-                {"name": "Size", "justify": "right", "width": 10, "style": "dim"},
-
-                {"name": "Context Status", "justify": "center", "width": 16},
-
-                {"name": "Cite Key / Title", "style": "cyan"},
-
+            options = [
+                ("papers", _build_cat_label("Papers (Naskah & Jurnal Ilmiah)", papers_h["total"], "berkas", papers_h["warning"], papers_h["error"])),
+                ("web", _build_cat_label("Web (Arsip & Portal Resmi)", web_h["total"], "berkas", web_h["warning"], web_h["error"])),
+                ("tables", _build_cat_label("Tables (Tabel Data Terstruktur)", tables_h["total"], "tabel", tables_h["warning"], tables_h["error"])),
+                ("images", _build_cat_label("Images (Visual, Grafik & Diagram)", images_h["total"], "gambar", images_h["warning"], images_h["error"])),
+                ("search", f"Cari Berkas (Pencarian Cepat Seluruh Pustaka) • {health['total_files']} berkas"),
+                ("back", "Kembali ke Menu Vault"),
             ]
 
+            header = Text(f"Kategori Berkas Vault [{self.current_project.name}]:", style="bold bright_white")
 
-
-            def _row_builder(idx: int, item: Any, is_selected: bool) -> list[Any]:
-
-                is_active = item.stem in self.active_documents
-
-                ctx_badge = "[bold cyan][Active][/bold cyan]" if is_active else "[dim][Inactive][/dim]"
-
-                arrow = "> " if is_selected else "  "
-
-                fname_text = Text()
-
-                fname_text.append(arrow, style="bold cyan" if is_selected else "dim")
-
-                fname_text.append(item.filename[:30], style="bold bright_white" if is_selected else "white")
-
-                return [
-
-                    str(idx + 1),
-
-                    fname_text,
-
-                    item.extension.upper().lstrip("."),
-
-                    item.readable_size,
-
-                    ctx_badge,
-
-                    (item.title or item.cite_key)[:40],
-
-                ]
-
-
-
-            header = Text()
-
-            header.append(f"Daftar Berkas Vault [{self.current_project.name}]", style="bold bright_white")
-
-            header.append(f" • {len(active_items)} berkas", style="dim")
-
-
-
-            actions = [
-
-                ("toggle", "Toggle Active", "enter"),
-
-                ("read", "Read Document", "r"),
-
-                ("archive", "Archive / Remove", "x"),
-
-                ("restore", "Restore", "u"),
-
-                ("refresh", "Refresh", "f"),
-
-                ("back", "Back", "esc"),
-
-            ]
-
-
-
-            action, idx, selected_item = interactive_item_browser(
-
-                title=header,
-
-                columns=columns,
-
-                items=active_items,
-
-                row_builder=_row_builder,
-
-                actions=actions,
-
+            choice = interactive_menu(
+                options=options,
+                header=header,
                 console=self.console,
-
-                empty_message="Vault kosong.",
-
+                footer_hint="↑/↓ Navigasi · enter Pilih · 1-6 Lompat cepat · esc Kembali",
+                allow_back=True,
             )
 
-
-
-            if action in ("back", "esc"):
-
+            if choice in ("back", None):
                 return
 
-            elif action == "toggle" and selected_item:
+            if choice == "search":
+                self.run_interactive_vault_search()
+            else:
+                self.run_interactive_vault_view(category=choice)
 
-                if selected_item.stem in self.active_documents:
+    def run_interactive_vault_view(self, category: str = "papers") -> None:
+        """Browse vault items table carousel per DESIGN.md."""
+        if category == "tables":
+            while True:
+                tables = self.vault_manager.list_tables() if self.vault_manager else []
+                if not tables:
+                    self.console.print("\n[dim]Belum ada tabel terstruktur di vault/tables/.\n[/dim]")
+                    time.sleep(1.2)
+                    return
 
-                    self.active_documents.remove(selected_item.stem)
+                columns = [
+                    {"name": "#", "justify": "right", "width": 3, "style": "dim"},
+                    {"name": "Nama Tabel", "style": "bold white", "width": 30},
+                    {"name": "Naskah Asal", "style": "cyan", "width": 24},
+                    {"name": "Baris", "justify": "right", "width": 8, "style": "dim"},
+                    {"name": "Kolom", "justify": "right", "width": 8, "style": "dim"},
+                    {"name": "Status", "justify": "center", "width": 12},
+                ]
 
-                else:
+                def _table_row_builder(idx: int, item: Any, is_selected: bool) -> list[Any]:
+                    arrow = "> " if is_selected else "  "
+                    t_name = Text()
+                    t_name.append(arrow, style="bold cyan" if is_selected else "dim")
+                    tbl_name = str(item.get("id") or Path(item.get("csv_path", "")).stem or item.get("table_id") or item.get("name") or "tabel")
+                    t_name.append(tbl_name[:26], style="bold bright_white" if is_selected else "white")
+                    return [
+                        str(idx + 1),
+                        t_name,
+                        str(item.get("paper_id") or "")[:22],
+                        str(item.get("rows") or "-"),
+                        str(item.get("cols") or "-"),
+                        "[bold green][Siap][/bold green]",
+                    ]
 
-                    self.active_documents.add(selected_item.stem)
+                header = Text(f"Tabel Terstruktur [{self.current_project.name}] • {len(tables)} tabel", style="bold bright_white")
+                actions = [
+                    ("view", "Lihat Tabel", "enter"),
+                    ("detail", "Detail", "d"),
+                    ("back", "Kembali", "esc"),
+                ]
+                action, idx, selected_item = interactive_item_browser(
+                    title=header,
+                    columns=columns,
+                    items=tables,
+                    row_builder=_table_row_builder,
+                    actions=actions,
+                    console=self.console,
+                    empty_message="Tidak ada tabel.",
+                )
+                if action in ("back", "esc") or not selected_item:
+                    return
+                elif action in ("view", "detail") and selected_item:
+                    content = ""
+                    md_path = selected_item.get("md_path")
+                    csv_path = selected_item.get("csv_path")
+                    if md_path and Path(md_path).exists():
+                        try:
+                            content = Path(md_path).read_text(encoding="utf-8")
+                        except Exception:
+                            pass
+                    elif csv_path and Path(csv_path).exists():
+                        try:
+                            content = Path(csv_path).read_text(encoding="utf-8")
+                        except Exception:
+                            pass
+                    if not content:
+                        content = selected_item.get("markdown") or selected_item.get("csv") or json.dumps(selected_item, indent=2)
 
-            elif action == "read" and selected_item:
-
-                cache_doc = self.workspace.get_cached_document(selected_item.stem) if self.workspace else None
-
-                if cache_doc and cache_doc.exists():
-
-                    lines = cache_doc.read_text(encoding="utf-8", errors="replace").splitlines()
-
+                    tbl_stem = str(selected_item.get("id") or selected_item.get("table_id") or "tabel")
+                    paper_pid = str(selected_item.get("paper_id") or "")
+                    details_header = [
+                        f"ID Tabel        : {tbl_stem}",
+                        f"Naskah Asal     : {paper_pid}",
+                        f"Lokasi CSV      : {csv_path or f'vault/tables/{paper_pid}/'}",
+                        f"Lokasi Markdown : {md_path or f'vault/tables/{paper_pid}/'}",
+                        f"Keterangan      : {selected_item.get('caption') or '-'}",
+                        "",
+                        "--- Pratinjau Konten Tabel ---",
+                    ]
+                    full_lines = details_header + content.splitlines()
                     interactive_detail_viewer(
-
-                        title=f"Membaca Dokumen: {selected_item.filename}",
-
-                        content_lines=lines,
-
-                        actions=[("back", "Back", "esc")],
-
+                        title=f"Pratinjau Tabel: {tbl_stem}",
+                        content_lines=full_lines,
+                        actions=[("back", "Kembali", "esc")],
                         console=self.console,
-
                     )
+            return
 
+        if category == "images":
+            while True:
+                images = self.vault_manager.list_images() if self.vault_manager else []
+                if not images:
+                    self.console.print("\n[dim]Belum ada gambar / diagram visual di vault/images/.\n[/dim]")
+                    time.sleep(1.2)
+                    return
+
+                columns = [
+                    {"name": "#", "justify": "right", "width": 3, "style": "dim"},
+                    {"name": "Nama Berkas / ID", "style": "bold white", "width": 28},
+                    {"name": "Naskah Asal", "style": "cyan", "width": 22},
+                    {"name": "Dimensi", "justify": "center", "width": 12, "style": "dim"},
+                    {"name": "Keterangan / Caption", "style": "white", "width": 34},
+                ]
+
+                def _img_row_builder(idx: int, item: Any, is_selected: bool) -> list[Any]:
+                    arrow = "> " if is_selected else "  "
+                    f_name = Text()
+                    f_name.append(arrow, style="bold cyan" if is_selected else "dim")
+                    img_file = Path(item.get("file_path", "")).name if item.get("file_path") else ""
+                    img_id = str(item.get("id") or item.get("image_id") or img_file or "gambar")
+                    f_name.append(img_id[:24], style="bold bright_white" if is_selected else "white")
+
+                    dim = f"{item.get('width', 0)}x{item.get('height', 0)}" if item.get("width") else "-"
+
+                    return [
+                        str(idx + 1),
+                        f_name,
+                        str(item.get("paper_id") or "")[:20],
+                        dim,
+                        str(item.get("caption") or item.get("description") or "-")[:32],
+                    ]
+
+                header = Text(f"Gambar & Diagram [{self.current_project.name}] • {len(images)} gambar", style="bold bright_white")
+                actions = [
+                    ("view", "Lihat Detail", "enter"),
+                    ("detail", "Detail", "d"),
+                    ("back", "Kembali", "esc"),
+                ]
+                action, idx, selected_item = interactive_item_browser(
+                    title=header,
+                    columns=columns,
+                    items=images,
+                    row_builder=_img_row_builder,
+                    actions=actions,
+                    console=self.console,
+                    empty_message="Tidak ada gambar.",
+                )
+                if action in ("back", "esc") or not selected_item:
+                    return
+                elif action in ("view", "detail") and selected_item:
+                    f_path = selected_item.get("file_path") or selected_item.get("path") or ""
+                    img_id = selected_item.get("id") or selected_item.get("image_id") or Path(f_path).stem
+                    paper_pid = selected_item.get("paper_id") or ""
+                    dim = f"{selected_item.get('width', 0)}x{selected_item.get('height', 0)}" if selected_item.get("width") else "-"
+                    lines = [
+                        f"ID Gambar       : {img_id}",
+                        f"Naskah Asal     : {paper_pid}",
+                        f"Jalur Berkas    : {f_path or f'vault/images/{paper_pid}/'}",
+                        f"Dimensi         : {dim}",
+                        "",
+                        "Caption / Keterangan:",
+                        selected_item.get("caption") or selected_item.get("description") or "(Tidak ada keterangan)",
+                        "",
+                        "Analisis Visual AI:",
+                        selected_item.get("ai_analysis") or "(Belum ada analisis visual)",
+                    ]
+                    interactive_detail_viewer(
+                        title=f"Detail Visual: {img_id}",
+                        content_lines=lines,
+                        actions=[("back", "Kembali", "esc")],
+                        console=self.console,
+                    )
+            return
+
+        cat_title = "Papers" if category == "papers" else ("Web" if category == "web" else "Semua Berkas")
+        while True:
+            active_items = self.vault_manager.list_active_files(category=category if category != "all" else None) if self.vault_manager else []
+            if not active_items:
+                self.console.print(f"\n[dim]Kategori {cat_title} masih kosong (0 berkas aktif).\n[/dim]")
+                time.sleep(1.2)
+                return
+
+            columns = [
+                {"name": "#", "justify": "right", "width": 3, "style": "dim"},
+                {"name": "Judul", "style": "bold white", "width": 38},
+                {"name": "Konteks", "justify": "center", "width": 14},
+                {"name": "Status", "justify": "center", "width": 16},
+                {"name": "Tabel", "justify": "right", "width": 7, "style": "dim"},
+                {"name": "Visual", "justify": "right", "width": 7, "style": "dim"},
+            ]
+
+            def _row_builder(idx: int, item: Any, is_selected: bool) -> list[Any]:
+                is_active = item.stem in self.active_documents
+                ctx_badge = "[bold cyan][Aktif][/bold cyan]" if is_active else "[dim][Nonaktif][/dim]"
+
+                if item.has_error:
+                    status_badge = "[bold red][Error][/bold red]"
+                elif not item.is_cached:
+                    status_badge = "[bold cyan][Perlu Update][/bold cyan]"
+                else:
+                    status_badge = "[bold green][Siap][/bold green]"
+
+                arrow = "> " if is_selected else "  "
+                title_text = Text()
+                title_text.append(arrow, style="bold cyan" if is_selected else "dim")
+                title_text.append((item.title or item.stem)[:36], style="bold bright_white" if is_selected else "white")
+
+                return [
+                    str(idx + 1),
+                    title_text,
+                    ctx_badge,
+                    status_badge,
+                    str(item.tables_count),
+                    str(item.visuals_count),
+                ]
+
+            header = Text()
+            header.append(f"Daftar Berkas {cat_title} [{self.current_project.name}]", style="bold bright_white")
+            header.append(f" • {len(active_items)} berkas", style="dim")
+
+            actions = [
+                ("toggle", "Ganti Aktif", "enter"),
+                ("detail", "Detail Metadata", "d"),
+                ("archive", "Arsipkan", "x"),
+                ("restore", "Pulihkan", "u"),
+                ("refresh", "Muat Ulang", "f"),
+                ("back", "Kembali", "esc"),
+            ]
+
+            action, idx, selected_item = interactive_item_browser(
+                title=header,
+                columns=columns,
+                items=active_items,
+                row_builder=_row_builder,
+                actions=actions,
+                console=self.console,
+                empty_message=f"Kategori {cat_title} kosong.",
+            )
+
+            if action in ("back", "esc"):
+                return
+            elif action == "toggle" and selected_item:
+                if selected_item.stem in self.active_documents:
+                    self.active_documents.remove(selected_item.stem)
+                else:
+                    self.active_documents.add(selected_item.stem)
+            elif action == "detail" and selected_item:
+                paper_stem = selected_item.stem
+                tbl_folder = f"vault/tables/{paper_stem}/"
+                img_folder = f"vault/images/{paper_stem}/"
+
+                try:
+                    rel_orig = selected_item.path.relative_to(self.workspace.root_dir)
+                    orig_loc = str(rel_orig).replace("\\", "/")
+                except Exception:
+                    orig_loc = str(selected_item.path).replace("\\", "/")
+
+                cache_file = self.workspace.get_cache_path(f"{selected_item.stem}.md") if self.workspace else None
+                if cache_file and cache_file.exists():
+                    try:
+                        rel_cache = cache_file.relative_to(self.workspace.root_dir)
+                        md_loc = str(rel_cache).replace("\\", "/")
+                    except Exception:
+                        md_loc = str(cache_file).replace("\\", "/")
+                    md_display = f"{md_loc} (Terindeks)"
+                else:
+                    md_loc = f"cache/{selected_item.stem}.md"
+                    md_display = f"{md_loc} (Belum terindeks)"
+
+                lines = [
+                    f"Judul             : {selected_item.title or selected_item.stem}",
+                    f"Penulis           : {', '.join(selected_item.authors) if selected_item.authors else '-'}",
+                    f"Tahun             : {selected_item.year or '-'}",
+                    f"Cite Key          : {selected_item.cite_key or '-'}",
+                    f"DOI / URL         : {selected_item.doi or selected_item.url or '-'}",
+                    f"Kategori          : {'Papers (Naskah & Jurnal Ilmiah)' if selected_item.category == 'papers' else 'Web (Arsip & Portal Resmi)'}",
+                    f"Nama Berkas       : {selected_item.filename}",
+                    f"Ukuran            : {selected_item.readable_size} ({selected_item.size_bytes:,} bytes)",
+                    f"Terakhir Update   : {selected_item.updated_at or '-'}",
+                    f"Lokasi Berkas Asli: {orig_loc}",
+                    f"Lokasi Berkas MD  : {md_display}",
+                    f"Tabel Terindeks   : {selected_item.tables_count} tabel ({tbl_folder})",
+                    f"Visual Terindeks  : {selected_item.visuals_count} gambar / diagram ({img_folder})",
+                ]
+                interactive_detail_viewer(
+                    title=f"Metadata Berkas: {selected_item.filename}",
+                    content_lines=lines,
+                    actions=[("back", "Kembali", "esc")],
+                    console=self.console,
+                )
             elif action == "archive" and selected_item:
                 confirmed = interactive_confirm(
                     f"Arsipkan '{selected_item.filename}' ke .archive/?",
@@ -309,137 +470,280 @@ class StudioVaultMixin:
                     self.vault_manager.archive_file(selected_item.filename)
                     if selected_item.stem in self.active_documents:
                         self.active_documents.remove(selected_item.stem)
-                    self.console.print(f"[bold green][✓] File '{selected_item.filename}' berhasil diarsipkan ke .archive/.[/bold green]\n")
+                    self.console.print(f"[bold green][✓] Berkas '{selected_item.filename}' berhasil diarsipkan ke .archive/.[/bold green]\n")
 
             elif action == "restore":
-
                 archived = self.vault_manager.list_archived_files()
-
                 if not archived:
-
                     self.console.print("\n[dim]Tidak ada berkas di .archive/.\n[/dim]")
-
                     time.sleep(1.0)
-
                 else:
-
-                    arch_opts = [(f.filename, f.filename) for f in archived] + [("back", "Back")]
-
-                    ch = interactive_menu(arch_opts, header="Pilih berkas untuk di-restore:", console=self.console)
-
+                    arch_opts = [(f.filename, f.filename) for f in archived] + [("back", "Kembali")]
+                    ch = interactive_menu(arch_opts, header="Pilih berkas untuk dipulihkan:", console=self.console)
                     if ch and ch != "back":
-
                         self.vault_manager.restore_file(ch)
-
                         self.active_documents.add(Path(ch).stem)
-
                         self._sync_vault_cache()
 
             elif action == "refresh":
+                self.cmd_vault_update()
 
-                self._sync_vault_cache()
+    def run_interactive_vault_search(self) -> None:
+        """Search and browse all vault items across all categories with interactive filter."""
+        all_items = self.vault_manager.list_active_files() if self.vault_manager else []
+        if not all_items:
+            self.console.print("\n[dim]Belum ada berkas di dalam Vault untuk dicari.\n[/dim]")
+            time.sleep(1.2)
+            return
+
+        query = ""
+        current_category = "all"
+        while self.sub_mode == "vault" and self.current_project:
+            # Filter items by category and query
+            filtered = all_items
+            if current_category != "all":
+                filtered = [it for it in filtered if it.category == current_category]
+            if query.strip():
+                q_low = query.strip().lower()
+                filtered = [
+                    it for it in filtered
+                    if q_low in it.title.lower()
+                    or q_low in it.stem.lower()
+                    or q_low in it.filename.lower()
+                    or q_low in it.cite_key.lower()
+                    or any(q_low in a.lower() for a in it.authors)
+                ]
+
+            columns = [
+                {"name": "#", "justify": "right", "width": 3, "style": "dim"},
+                {"name": "Judul", "style": "bold white", "width": 36},
+                {"name": "Kategori", "justify": "center", "width": 10, "style": "cyan"},
+                {"name": "Konteks", "justify": "center", "width": 12},
+                {"name": "Status", "justify": "center", "width": 14},
+                {"name": "Tabel", "justify": "right", "width": 7, "style": "dim"},
+                {"name": "Visual", "justify": "right", "width": 7, "style": "dim"},
+            ]
+
+            def _search_row_builder(idx: int, item: Any, is_selected: bool) -> list[Any]:
+                is_active = item.stem in self.active_documents
+                ctx_badge = "[bold cyan][Aktif][/bold cyan]" if is_active else "[dim][Nonaktif][/dim]"
+
+                if item.has_error:
+                    status_badge = "[bold red][Error][/bold red]"
+                elif not item.is_cached:
+                    status_badge = "[bold cyan][Perlu Update][/bold cyan]"
+                else:
+                    status_badge = "[bold green][Siap][/bold green]"
+
+                arrow = "> " if is_selected else "  "
+                title_text = Text()
+                title_text.append(arrow, style="bold cyan" if is_selected else "dim")
+                title_text.append((item.title or item.stem)[:34], style="bold bright_white" if is_selected else "white")
+
+                cat_badge = item.category.title()
+
+                return [
+                    str(idx + 1),
+                    title_text,
+                    cat_badge,
+                    ctx_badge,
+                    status_badge,
+                    str(item.tables_count),
+                    str(item.visuals_count),
+                ]
+
+            cat_pills = []
+            categories = [("all", "Semua"), ("papers", "Papers"), ("web", "Web"), ("tables", "Tables"), ("images", "Images")]
+            for cat_key, cat_name in categories:
+                if current_category == cat_key:
+                    cat_pills.append(f"[bold cyan][● {cat_name}][/bold cyan]")
+                else:
+                    cat_pills.append(f"[dim][○ {cat_name}][/dim]")
+            pills_str = "  ".join(cat_pills)
+
+            header = Table(box=None, padding=(0, 0), show_header=False)
+            header.add_column("Col")
+            header.add_row(Text(f"Cari Berkas Vault [{self.current_project.name}] • {len(filtered)} berkas", style="bold bright_white"))
+            header.add_row(Text.from_markup(f"Filter Kategori : {pills_str}"))
+            header.add_row(Text.from_markup(f"Kata Kunci      : [bold white]{query}[/bold white][bold cyan]_[/bold cyan]"))
+
+            actions = [
+                ("toggle", "Ganti Aktif", "enter"),
+                ("detail", "Detail Metadata", "d"),
+                ("search", "Ubah Kata Kunci", "s"),
+                ("filter", "Ganti Filter", "f"),
+                ("archive", "Arsipkan", "x"),
+                ("back", "Kembali", "esc"),
+            ]
+
+            action, idx, selected_item = interactive_item_browser(
+                title=header,
+                columns=columns,
+                items=filtered,
+                row_builder=_search_row_builder,
+                actions=actions,
+                console=self.console,
+                empty_message=f"Tidak ada berkas yang cocok dengan filter / kata kunci '{query}'.",
+            )
+
+            if action in ("back", "esc"):
+                return
+            elif action == "filter":
+                cat_keys = ["all", "papers", "web", "tables", "images"]
+                curr_idx = cat_keys.index(current_category) if current_category in cat_keys else 0
+                current_category = cat_keys[(curr_idx + 1) % len(cat_keys)]
+            elif action == "search":
+                new_q = interactive_input_prompt(
+                    console=self.console,
+                    prompt_label="Cari > ",
+                    initial_buffer=query,
+                    default=query,
+                )
+                query = (new_q or "").strip()
+            elif action == "toggle" and selected_item:
+                if selected_item.stem in self.active_documents:
+                    self.active_documents.remove(selected_item.stem)
+                else:
+                    self.active_documents.add(selected_item.stem)
+            elif action == "detail" and selected_item:
+                paper_stem = selected_item.stem
+                tbl_folder = f"vault/tables/{paper_stem}/"
+                img_folder = f"vault/images/{paper_stem}/"
+
+                try:
+                    rel_orig = selected_item.path.relative_to(self.workspace.root_dir)
+                    orig_loc = str(rel_orig).replace("\\", "/")
+                except Exception:
+                    orig_loc = str(selected_item.path).replace("\\", "/")
+
+                cache_file = self.workspace.get_cache_path(f"{selected_item.stem}.md") if self.workspace else None
+                if cache_file and cache_file.exists():
+                    try:
+                        rel_cache = cache_file.relative_to(self.workspace.root_dir)
+                        md_loc = str(rel_cache).replace("\\", "/")
+                    except Exception:
+                        md_loc = str(cache_file).replace("\\", "/")
+                    md_display = f"{md_loc} (Terindeks)"
+                else:
+                    md_loc = f"cache/{selected_item.stem}.md"
+                    md_display = f"{md_loc} (Belum terindeks)"
+
+                lines = [
+                    f"Judul             : {selected_item.title or selected_item.stem}",
+                    f"Penulis           : {', '.join(selected_item.authors) if selected_item.authors else '-'}",
+                    f"Tahun             : {selected_item.year or '-'}",
+                    f"Cite Key          : {selected_item.cite_key or '-'}",
+                    f"DOI / URL         : {selected_item.doi or selected_item.url or '-'}",
+                    f"Kategori          : {'Papers (Naskah & Jurnal Ilmiah)' if selected_item.category == 'papers' else 'Web (Arsip & Portal Resmi)'}",
+                    f"Nama Berkas       : {selected_item.filename}",
+                    f"Ukuran            : {selected_item.readable_size} ({selected_item.size_bytes:,} bytes)",
+                    f"Terakhir Update   : {selected_item.updated_at or '-'}",
+                    f"Lokasi Berkas Asli: {orig_loc}",
+                    f"Lokasi Berkas MD  : {md_display}",
+                    f"Tabel Terindeks   : {selected_item.tables_count} tabel ({tbl_folder})",
+                    f"Visual Terindeks  : {selected_item.visuals_count} gambar / diagram ({img_folder})",
+                ]
+                interactive_detail_viewer(
+                    title=f"Metadata Berkas: {selected_item.filename}",
+                    content_lines=lines,
+                    actions=[("back", "Kembali", "esc")],
+                    console=self.console,
+                )
+            elif action == "archive" and selected_item:
+                confirmed = interactive_confirm(
+                    f"Arsipkan '{selected_item.filename}' ke .archive/?",
+                    default=True,
+                    yes_label="Ya, arsipkan",
+                    no_label="Batal",
+                    console=self.console,
+                )
+                if confirmed:
+                    self.vault_manager.archive_file(selected_item.filename)
+                    if selected_item.stem in self.active_documents:
+                        self.active_documents.remove(selected_item.stem)
+                    all_items = self.vault_manager.list_active_files()
+                    self.console.print(f"[bold green][✓] Berkas '{selected_item.filename}' berhasil diarsipkan ke .archive/.[/bold green]\n")
 
     def run_interactive_vault_add(self) -> None:
-
         """Add document options submenu."""
-
         opts = [
-
-            ("gdrive", "Google Drive Link (URL Google Drive)"),
-
-            ("findpaper", "Find Paper (Literature Discovery & Download)"),
-
-            ("local", "Local File / Path (.pdf, .docx, .txt)"),
-
-            ("back", "Back"),
-
+            ("local", "Berkas Lokal (Folder local/ atau Jalur Berkas)"),
+            ("findpaper", "Cari Journal Ilmiah"),
+            ("findwebsite", "Cari Website"),
+            ("gdrive", "Tambah Dari Google Drive"),
+            ("back", "Kembali"),
         ]
 
-        choice = interactive_menu(opts, header="Tambah Dokumen ke Vault:", console=self.console)
+        choice = interactive_menu(
+            opts,
+            header=Text("Tambah Berkas ke Vault:", style="bold bright_white"),
+            console=self.console,
+            footer_hint="↑/↓ Navigasi · enter Pilih · 1-5 Lompat cepat · esc Kembali",
+        )
 
         if choice in ("back", None):
-
             return
 
         if choice == "gdrive":
-
             try:
-
                 self.console.print()
-
                 url = self.console.input("[bold cyan]Masukkan URL Google Drive: [/bold cyan]").strip()
-
                 if url:
-
                     self.cmd_vault_gdrive(url)
-
             except (KeyboardInterrupt, EOFError):
-
                 pass
 
         elif choice == "findpaper":
-
             try:
-
                 self.console.print()
-
-                query = self.console.input("[bold cyan]Topik atau judul paper untuk dicari: [/bold cyan]").strip()
-
+                query = self.console.input("[bold cyan]Topik atau judul journal ilmiah untuk dicari: [/bold cyan]").strip()
                 if query:
-
                     self.cmd_findpaper(query)
-
             except (KeyboardInterrupt, EOFError):
-
                 pass
 
+        elif choice == "findwebsite":
+            self.console.print("\n[bold cyan]Fitur Cari Website[/bold cyan]")
+            self.console.print("[dim]Pencarian dan penelusuran portal web/resmi sedang dipersiapkan.[/dim]\n")
+            time.sleep(1.5)
+
         elif choice == "local":
-
             try:
-
                 self.console.print()
-
-                path_str = self.console.input("[bold cyan]Path berkas lokal (.pdf, .docx, dll): [/bold cyan]").strip()
-
+                path_str = self.console.input("[bold cyan]Jalur berkas lokal atau tekan Enter untuk scan folder local/: [/bold cyan]").strip()
                 if path_str:
-
                     self.cmd_vault_add(path_str)
-
+                else:
+                    self.cmd_vault_update()
             except (KeyboardInterrupt, EOFError):
-
                 pass
 
     def render_vault_landing(self) -> None:
-        """Render concise status overview of vault resources."""
+        """Render concise status overview of vault resources per minimalist wireframe."""
         if not self.vault_manager or not self.workspace:
             return
 
-        active_items = self.vault_manager.list_active_files()
-        cached_count = sum(1 for it in active_items if it.is_cached)
-        needs_reload = len(active_items) - cached_count
-        archived_count = len(self.vault_manager.list_archived_files())
-        vault_path = self.workspace.root_dir / "vault"
-
-        self.console.print(f"\n[bold bright_white]Vault Resources [{self.current_project.name if self.current_project else 'Active'}][/bold bright_white]")
+        health = self.vault_manager.check_vault_health()
+        self.console.print(f"\n[bold bright_white]Vault Berkas [{self.current_project.name if self.current_project else 'Aktif'}][/bold bright_white]")
         v_table = Table(box=None, padding=(0, 2), show_header=False)
         v_table.add_column("Label", style="dim", width=18)
         v_table.add_column("Value", style="white")
-        tables_count = len(self.vault_manager.list_tables())
-        images_count = len(self.vault_manager.list_images())
 
-        v_table.add_row("Status", "[bold cyan]Aktif[/bold cyan]")
-        v_table.add_row("Folder Vault", str(vault_path))
-        v_table.add_row("Total Berkas", f"{len(active_items)} berkas ({cached_count} terindeks Markdown, {needs_reload} perlu reload)")
-        v_table.add_row("Koleksi Paper", f"{len(active_items)} berkas di vault/papers/ ({cached_count} terindeks Markdown, {needs_reload} perlu reload)")
-        v_table.add_row("Tabel Terstruktur", f"{tables_count} tabel terindeks di vault/tables/")
-        v_table.add_row("Gambar & Grafik", f"{images_count} visual diagram di vault/images/")
-        v_table.add_row("Diarsipkan", f"{archived_count} berkas di .archive/ (tidak aktif di konteks AI)")
-        v_table.add_row("Format Dokumen", "[dim]PDF, DOCX, PPTX, XLSX, TXT, HTML, MD (didukung Microsoft MarkItDown)[/dim]")
+        v_table.add_row("Status", health["status_display"])
+        v_table.add_row("Total Berkas", str(health["total_files"]))
+
+        if health.get("warning_details"):
+            warn_text = "\n".join(health["warning_details"])
+            v_table.add_row("Peringatan", f"[yellow]{warn_text}[/yellow]")
+        if health.get("error_details"):
+            err_text = "\n".join(health["error_details"])
+            v_table.add_row("Error", f"[red]{err_text}[/red]")
+
         self.console.print(v_table)
         self.console.print()
 
     def render_vault_view(self) -> None:
-        """Render active vault items (papers, tables, images) following DESIGN.md."""
+        """Render active vault items (documents, resources, tables, images) following DESIGN.md."""
         if not self.vault_manager:
             return
         items = self.vault_manager.list_active_files()
@@ -447,11 +751,11 @@ class StudioVaultMixin:
         images = self.vault_manager.list_images()
 
         if not items and not tables and not images:
-            self.console.print("\n[dim]Vault masih kosong (0 paper, 0 tabel, 0 gambar).[/dim]")
+            self.console.print("\n[dim]Vault masih kosong (0 resource, 0 tabel, 0 gambar).[/dim]")
             self.console.print("[dim]Gunakan 'add <path>', 'findpaper <topik>', atau 'gdrive' untuk menambahkan berkas.[/dim]\n")
             return
 
-        self.console.print(f"\n[bold bright_white]Koleksi Paper Vault [{self.current_project.name if self.current_project else 'Vault'}][/bold bright_white] [dim](vault/papers/ • {len(items)} paper)[/dim]")
+        self.console.print(f"\n[bold bright_white]Koleksi Resource Vault [{self.current_project.name if self.current_project else 'Vault'}][/bold bright_white] [dim]({len(items)} berkas)[/dim]")
         p_table = Table(
             box=None,
             padding=(0, 2),
@@ -486,7 +790,7 @@ class StudioVaultMixin:
                 header_style="bold cyan",
             )
             t_table.add_column("#", justify="right", style="dim", width=3)
-            t_table.add_column("Paper Sumber", style="bold white")
+            t_table.add_column("Sumber Berkas", style="bold white")
             t_table.add_column("Halaman", justify="center", width=8, style="dim")
             t_table.add_column("Format", justify="center", width=10, style="dim")
             t_table.add_column("Metode", justify="center", width=18)
@@ -516,7 +820,7 @@ class StudioVaultMixin:
             )
             i_table.add_column("#", justify="right", style="dim", width=3)
             i_table.add_column("File Gambar", style="bold white")
-            i_table.add_column("Paper Sumber", style="dim", width=25)
+            i_table.add_column("Sumber Berkas", style="dim", width=25)
             i_table.add_column("Dimensi", justify="center", width=12, style="dim")
             i_table.add_column("Analisis Multimodal AI", style="cyan")
 
@@ -536,7 +840,7 @@ class StudioVaultMixin:
         archived_count = len(self.vault_manager.list_archived_files())
         archive_hint = f" ({archived_count} files in .archive/)" if archived_count else ""
         self.console.print(
-            f"\n[dim]Ketik 'view <#>' untuk baca paper, 'view table <#>' untuk buka tabel, 'remove <#>' untuk arsip, atau 'back' untuk kembali{archive_hint}.[/dim]\n"
+            f"\n[dim]Ketik 'view <#>' untuk baca berkas, 'view table <#>' untuk buka tabel, 'remove <#>' untuk arsip, atau 'back' untuk kembali{archive_hint}.[/dim]\n"
         )
 
     def _cmd_view_table(self, arg: str) -> None:
@@ -779,18 +1083,259 @@ class StudioVaultMixin:
         tm.log(task_id, f"Kurasi selesai: {len(stems)} paper dievaluasi.")
         return f"Selesai mengevaluasi {len(stems)} paper."
 
-    def cmd_vault_reload(self) -> None:
-        """Scan vault folder and convert all new or updated files to markdown using MarkItDown."""
-        if not self.vault_manager or not self.workspace:
-            self.console.print("[red][x] Vault manager is not active.[/red]\n")
+    def resolve_duplicate_item(self, item_info: dict[str, Any]) -> str:
+        """Interactive cursor-driven dialog to resolve a duplicate file adhering to DESIGN.md."""
+        fname = item_info["filename"]
+        match_loc = str(item_info.get("existing_match", "-")).replace("\\", "/")
+        try:
+            rel_match = Path(match_loc).relative_to(self.workspace.root_dir)
+            match_disp = str(rel_match).replace("\\", "/")
+        except Exception:
+            match_disp = match_loc
+
+        header = Table(box=None, padding=(0, 1), show_header=False)
+        header.add_column("Col")
+        header.add_row(Text(f"Peringatan Duplikasi: '{fname}'", style="bold yellow"))
+        header.add_row(Text(f"Berkas serupa sudah ada di: {match_disp}", style="dim"))
+        header.add_row(Text("Pilih tindakan yang diinginkan:", style="bold bright_white"))
+
+        stem = Path(fname).stem
+        ext = Path(fname).suffix
+        dup_opts = [
+            ("keep_both", f"Simpan keduanya (Ganti nama baru: '{stem}_salinan{ext}')"),
+            ("overwrite", f"Timpa berkas lama (Gantikan dengan versi baru dari local/)"),
+            ("discard", f"Abaikan berkas baru (Hapus berkas duplikat dari local/)"),
+        ]
+
+        choice = interactive_menu(
+            options=dup_opts,
+            header=header,
+            console=self.console,
+            footer_hint="↑/↓ Navigasi · enter Pilih · 1-3 Lompat cepat · ctrl+c / esc Batalkan",
+            allow_back=True,
+        )
+        if choice in ("back", None):
+            return "discard"
+        return choice
+
+    def run_interactive_context_questionnaire(
+        self,
+        group_items: list[dict[str, Any]],
+        folder_context: str,
+    ) -> str | None:
+        """Interactive cursor-driven questionnaire to clarify experiment context adhering to DESIGN.md."""
+        file_names = [it["filename"] for it in group_items]
+        clean_ctx = folder_context.replace(" > ", " / ") if folder_context else "Root (Umum)"
+
+        options_text: list[str] = []
+        if folder_context:
+            options_text.append(f"Hasil pengujian parameter: {clean_ctx}")
+            options_text.append(f"Data eksperimen kelompok: {clean_ctx}")
+            options_text.append(f"Sampel kontrol atau baseline: {clean_ctx}")
+        else:
+            options_text.append("Dataset dan dokumentasi pengujian mandiri")
+            options_text.append("Sampel data eksperimental laboratorium")
+
+        # Smart hypothesis generation using LLM engine if active (manifest only, no token leak)
+        if hasattr(self, "engine") and self.engine and getattr(self, "config", None):
+            try:
+                manifest_prompt = (
+                    f"Diberikan daftar berkas penelitian: {', '.join(file_names[:6])} di dalam folder '{clean_ctx}'.\n"
+                    "Buat 2 opsi hipotesis konteks penelitian yang sangat ringkas (maksimal 8 kata per opsi) dalam Bahasa Indonesia.\n"
+                    "Format keluaran hanya 2 baris, tanpa nomor atau bullet."
+                )
+                ai_reply = self.engine.generate_text(manifest_prompt)
+                ai_lines = [l.strip().lstrip("1234567890.- ") for l in (ai_reply or "").splitlines() if l.strip()]
+                if len(ai_lines) >= 2:
+                    options_text = ai_lines[:3]
+            except Exception:
+                pass
+
+        menu_options = [(opt, opt) for opt in options_text]
+        menu_options.append(("custom", "Tuliskan konteks eksperimen sendiri (Input Bebas)..."))
+
+        header = Table(box=None, padding=(0, 1), show_header=False)
+        header.add_column("Col")
+        header.add_row(Text(f"Identifikasi Konteks Berkas ({len(file_names)} berkas di folder '{clean_ctx}'):", style="bold bright_white"))
+        header.add_row(Text(f"Berkas: {', '.join(file_names[:4])}" + (f" (+{len(file_names)-4} lainnya)" if len(file_names) > 4 else ""), style="dim"))
+        header.add_row(Text(""))
+        header.add_row(Text(f'Pertanyaan AI: "Bagaimana berkas pada kelompok \'{clean_ctx}\' ini sebaiknya dikelompokkan?"', style="bold cyan"))
+
+        choice = interactive_menu(
+            options=menu_options,
+            header=header,
+            console=self.console,
+            footer_hint="↑/↓ Navigasi · enter Pilih · 1-4 Lompat cepat · ctrl+c / esc Batalkan",
+            allow_back=True,
+        )
+
+        if choice in ("back", None):
+            return None
+
+        if choice == "custom":
+            try:
+                custom_text = interactive_input_prompt(
+                    console=self.console,
+                    prompt_label="Konteks > ",
+                    initial_buffer=clean_ctx,
+                    default=clean_ctx,
+                )
+                return (custom_text or clean_ctx).strip()
+            except (KeyboardInterrupt, Exception):
+                return None
+
+        return choice
+
+    def run_interactive_vault_history(self) -> None:
+        """Browse vault history and audit log carousel per DESIGN.md."""
+        entries = self.vault_manager.list_history() if self.vault_manager else []
+        if not entries:
+            self.console.print("\n[dim]Belum ada riwayat aktivitas di dalam Vault.\n[/dim]")
+            time.sleep(1.2)
             return
 
-        with self.console.status("[cyan]Scanning vault and converting documents with Microsoft MarkItDown...[/cyan]"):
+        columns = [
+            {"name": "#", "justify": "right", "width": 3, "style": "dim"},
+            {"name": "Waktu", "style": "dim", "width": 19},
+            {"name": "Aktivitas", "style": "bold cyan", "width": 22},
+            {"name": "Keterangan", "style": "white", "width": 36},
+            {"name": "Berkas", "justify": "right", "width": 10, "style": "dim"},
+        ]
+
+        def _history_row_builder(idx: int, item: Any, is_selected: bool) -> list[Any]:
+            arrow = "> " if is_selected else "  "
+            act_text = Text()
+            act_text.append(arrow, style="bold cyan" if is_selected else "dim")
+            act_name = str(item.get("action", "-")).replace("_", " ").title()
+            act_text.append(act_name[:20], style="bold bright_white" if is_selected else "white")
+
+            files_count = len(item.get("files_affected", []))
+            return [
+                str(idx + 1),
+                str(item.get("timestamp", "-")),
+                act_text,
+                str(item.get("description", "-"))[:34],
+                f"{files_count} item",
+            ]
+
+        header = Text(f"Riwayat Aktivitas Vault [{self.current_project.name}] • {len(entries)} catatan", style="bold bright_white")
+        actions = [
+            ("view", "Lihat Rincian", "enter"),
+            ("back", "Kembali", "esc"),
+        ]
+
+        while True:
+            action, idx, selected_item = interactive_item_browser(
+                title=header,
+                columns=columns,
+                items=entries,
+                row_builder=_history_row_builder,
+                actions=actions,
+                console=self.console,
+                empty_message="Tidak ada catatan riwayat.",
+            )
+
+            if action in ("back", "esc") or not selected_item:
+                return
+
+            if action == "view" and selected_item:
+                affected = selected_item.get("files_affected", [])
+                lines = [
+                    f"Waktu Eksekusi : {selected_item.get('timestamp', '-')}",
+                    f"Jenis Aktivitas: {str(selected_item.get('action', '-')).replace('_', ' ').title()}",
+                    f"Keterangan     : {selected_item.get('description', '-')}",
+                    "",
+                    f"Berkas Terdampak ({len(affected)} berkas):",
+                ]
+                for f in affected:
+                    lines.append(f"  • {f}")
+                details = selected_item.get("details", {})
+                if details:
+                    lines.append("")
+                    lines.append("Rincian Tambahan:")
+                    for k, v in details.items():
+                        lines.append(f"  {k}: {v}")
+
+                interactive_detail_viewer(
+                    title=f"Rincian Aktivitas: {selected_item.get('action', 'Riwayat')}",
+                    content_lines=lines,
+                    actions=[("back", "Kembali", "esc")],
+                    console=self.console,
+                )
+
+    def cmd_vault_update(self) -> None:
+        """Scan folder vault dan konversi berkas baru/berubah ke Markdown."""
+        if not self.vault_manager or not self.workspace:
+            self.console.print("[red][x] Manajer vault tidak aktif.[/red]\n")
+            return
+
+        # 1. Check local staging area
+        local_items = self.vault_manager.scan_local_staging()
+        if local_items:
+            self.console.print(f"\n[bold cyan]Ditemukan {len(local_items)} berkas di folder local/.[/bold cyan]")
+
+            # Resolve duplicates first
+            duplicate_actions: dict[str, str] = {}
+            for item in local_items:
+                if item.get("is_duplicate"):
+                    dup_choice = self.resolve_duplicate_item(item)
+                    duplicate_actions[item["rel_path"]] = dup_choice
+
+            # Group items by folder context
+            from collections import defaultdict
+            groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
+            for item in local_items:
+                if duplicate_actions.get(item["rel_path"]) == "discard":
+                    continue
+                groups[item["folder_context"]].append(item)
+
+            # Interactive context questionnaire per group
+            group_contexts: dict[str, str] = {}
+            for f_ctx, g_items in groups.items():
+                ctx_result = self.run_interactive_context_questionnaire(g_items, f_ctx)
+                if ctx_result is None:
+                    self.console.print("\n[dim]Sesi kuesioner dibatalkan. Menggunakan nama folder sebagai konteks.[/dim]\n")
+                    group_contexts[f_ctx] = f_ctx
+                else:
+                    group_contexts[f_ctx] = ctx_result
+
+            # Move and ingest items
+            processed_files: list[str] = []
+            for item in local_items:
+                act = duplicate_actions.get(item["rel_path"], "keep_both")
+                ctx = group_contexts.get(item["folder_context"], item["folder_context"])
+                dest = self.vault_manager.process_local_item(
+                    item_info=item,
+                    action=act,
+                    context_override=ctx,
+                )
+                if dest:
+                    processed_files.append(item["filename"])
+
+            if processed_files:
+                self.vault_manager.record_history(
+                    action="sortir_mandiri",
+                    description=f"Memindahkan & menyortir {len(processed_files)} berkas dari local/ ke Vault",
+                    files_affected=processed_files,
+                    details={"grup_konteks": group_contexts},
+                )
+                self.console.print(f"[bold green][✓] {len(processed_files)} berkas dari local/ berhasil disortir dan dipindahkan ke Vault.[/bold green]\n")
+
+        with self.console.status("[cyan]Memindai vault dan memperbarui berkas dengan MarkItDown...[/cyan]"):
             total, converted = self.vault_manager.reload_vault(force=False)
             self._sync_vault_cache()
 
-        self.console.print(f"[bold green][✓] Vault reload completed:[/bold green] {total} total resource(s), [bold cyan]{converted} converted/refreshed[/bold cyan] into Markdown cache.")
-        self.console.print(f"[dim]Active citation context updated ({len(self.active_documents)} items active).[/dim]\n")
+        self.vault_manager.record_history(
+            action="update_berkas",
+            description=f"Sinkronisasi vault: {total} total berkas, {converted} diperbarui",
+            files_affected=[],
+            details={"total": total, "converted": converted},
+        )
+
+        self.console.print(f"[bold green][✓] Pembaruan berkas selesai:[/bold green] {total} total berkas, [bold cyan]{converted} berkas diperbarui[/bold cyan] ke cache Markdown.")
+        self.console.print(f"[dim]Konteks sitasi aktif diperbarui ({len(self.active_documents)} berkas aktif).[/dim]\n")
+
+    cmd_vault_reload = cmd_vault_update
 
     def _background_vault_add_worker(self, task_id: str, path_str: str) -> str:
         """Background worker ingesting local document and converting to Markdown."""
@@ -1078,10 +1623,10 @@ class StudioVaultMixin:
 
         stems = self._get_cached_stems()
         if not stems:
-            self.console.print("[dim]Project vault is currently empty. Use [bold cyan]/search[/bold cyan] or [bold cyan]/parse <file.pdf>[/bold cyan] to add papers.[/dim]\n")
+            self.console.print("[dim]Project vault is currently empty. Use [bold cyan]/search[/bold cyan] or [bold cyan]/parse <file>[/bold cyan] to add resources.[/dim]\n")
             return
 
-        self.console.print(f"\n[bold bright_white]Indexed Research Papers ({len(stems)} total, {len(self.active_documents)} active)[/bold bright_white]")
+        self.console.print(f"\n[bold bright_white]Indexed Documents & Resources ({len(stems)} total, {len(self.active_documents)} active)[/bold bright_white]")
         table = Table(
             box=None,
             padding=(0, 2),
@@ -1108,5 +1653,5 @@ class StudioVaultMixin:
             table.add_row(str(idx), active_marker, meta.cite_key or stem, title, year, authors_str)
 
         self.console.print(table)
-        self.console.print("[dim]Use [bold cyan]/active <#|stem>[/bold cyan] to toggle papers in/out of context.[/dim]\n")
+        self.console.print("[dim]Use [bold cyan]/active <#|stem>[/bold cyan] to toggle documents in/out of context.[/dim]\n")
 

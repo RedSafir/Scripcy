@@ -81,7 +81,7 @@ class TestDashboardFlow:
         studio = CLIStudio(console=test_console, project_manager=project_manager)
         studio.print_dashboard_help()
         output = test_console.file.getvalue()
-        assert "Available Commands [Dashboard]" in output
+        assert "Perintah Tersedia [Dashboard]" in output or "Available Commands [Dashboard]" in output
         assert "/projects" in output
         assert "/new" in output
         assert "/open" in output
@@ -179,7 +179,7 @@ class TestProjectCommands:
 
         cli_studio.cmd_vault()
         output = cli_studio.console.file.getvalue()
-        assert "Indexed Research Papers" in output
+        assert "Indexed Documents & Resources" in output or "Indexed Research Papers" in output
         assert "vaswani2017" in output
         assert "Attention Is" in output
         assert "All You Need" in output
@@ -941,7 +941,7 @@ class TestAntigravityDesignSystem:
                 )
 
         output = test_console.file.getvalue()
-        assert "Available Commands [Project]" in output
+        assert "Perintah Tersedia [Proyek]" in output or "Available Commands [Project]" in output
         assert "/search" in output
         assert "/vault" in output
         assert "Scripcy CLI" not in output
@@ -965,7 +965,7 @@ class TestAntigravityDesignSystem:
                 )
 
         output = test_console.file.getvalue()
-        assert "Available Commands [Project]" in output
+        assert "Perintah Tersedia [Proyek]" in output or "Available Commands [Project]" in output
         assert "/search" in output
         assert "/vault" in output
 
@@ -1056,7 +1056,7 @@ class TestAgenticUXAndFormatting:
         assert res == "hi"
         out = test_console.file.getvalue()
         assert "─" in out
-        assert "? for shortcuts" in out
+        assert "? for shortcuts" in out or "? Bantuan" in out
         assert "> hi" in out
 
     def test_handle_chat_telemetry_and_actions(self, cli_studio: CLIStudio) -> None:

@@ -84,24 +84,24 @@ class StudioProcessingMixin:
             cancelled_tasks = [t for t in tasks if t.status == "cancelled"]
 
             header_table = Table(box=None, padding=(0, 2), show_header=False)
-            header_table.add_column("Property", style="dim", width=18)
-            header_table.add_column("Value", style="white")
-            header_table.add_row("Status", "[bold cyan]Active Processing[/bold cyan]" if running_tasks else "[dim]Idle[/dim]")
-            header_table.add_row("Running Tasks", f"[bold cyan]{len(running_tasks)}[/bold cyan] proses" if running_tasks else "0 proses")
-            header_table.add_row("Completed Tasks", f"{len(completed_tasks)} selesai")
-            header_table.add_row("Failed / Cancelled", f"{len(failed_tasks)} gagal, {len(cancelled_tasks)} dibatalkan")
-            header_table.add_row("Total Riwayat", f"{len(tasks)} tasks terdaftar")
+            header_table.add_column("Properti", style="dim", width=18)
+            header_table.add_column("Nilai", style="white")
+            header_table.add_row("Status", "[bold cyan]Pemrosesan Aktif[/bold cyan]" if running_tasks else "[dim]Siaga[/dim]")
+            header_table.add_row("Tugas Berjalan", f"[bold cyan]{len(running_tasks)}[/bold cyan] proses" if running_tasks else "0 proses")
+            header_table.add_row("Tugas Selesai", f"{len(completed_tasks)} selesai")
+            header_table.add_row("Gagal / Batal", f"{len(failed_tasks)} gagal, {len(cancelled_tasks)} dibatalkan")
+            header_table.add_row("Total Riwayat", f"{len(tasks)} tugas terdaftar")
 
             options = [
-                ("view", f"View Task List ({len(tasks)} tasks)"),
-                ("back", "Back to Project"),
+                ("view", f"Daftar Tugas ({len(tasks)} tugas)"),
+                ("back", "Kembali ke Proyek"),
             ]
 
             choice = interactive_menu(
                 options=options,
                 header=header_table,
                 console=self.console,
-                footer_hint="↑/↓ Navigate · enter Select · 1-2 Quick jump · esc Back",
+                footer_hint="↑/↓ Navigasi · enter Pilih · 1-2 Lompat cepat · esc Kembali",
                 allow_back=True,
             )
 
@@ -144,28 +144,28 @@ class StudioProcessingMixin:
 
             columns = [
                 {"name": "#", "justify": "right", "width": 3, "style": "dim"},
-                {"name": "Task ID", "style": "bold cyan", "width": 10},
-                {"name": "Type", "justify": "center", "style": "dim", "width": 8},
-                {"name": "Task Name / Description", "style": "bold white", "width": 28},
-                {"name": "Origin Session", "style": "dim cyan", "width": 16},
-                {"name": "Status", "justify": "center", "width": 16},
-                {"name": "Tokens", "justify": "right", "style": "dim yellow", "width": 11},
-                {"name": "Duration", "justify": "right", "style": "dim", "width": 9},
+                {"name": "ID Tugas", "style": "bold cyan", "width": 10},
+                {"name": "Tipe", "justify": "center", "style": "dim", "width": 8},
+                {"name": "Nama Tugas / Deskripsi", "style": "bold white", "width": 28},
+                {"name": "Sesi Asal", "style": "dim cyan", "width": 16},
+                {"name": "Status", "justify": "center", "width": 18},
+                {"name": "Token", "justify": "right", "style": "dim yellow", "width": 11},
+                {"name": "Durasi", "justify": "right", "style": "dim", "width": 9},
             ]
 
             def _row_builder(idx: int, t: Any, is_selected: bool) -> list[Any]:
                 if t.status in ("need_action", "waiting", "need user action") or getattr(t, "needs_action", False):
-                    st_badge = "[bold yellow][Need User Action][/bold yellow]"
+                    st_badge = "[bold yellow][Perlu Respon][/bold yellow]"
                 elif t.status == "waiting_deps":
-                    st_badge = "[bold yellow][Waiting Deps][/bold yellow]"
+                    st_badge = "[bold yellow][Menunggu Dependensi][/bold yellow]"
                 elif t.status == "running":
-                    st_badge = "[bold cyan][Progress][/bold cyan]"
+                    st_badge = "[bold cyan][Berjalan][/bold cyan]"
                 elif t.status == "completed":
-                    st_badge = "[bold green][Finish][/bold green]"
+                    st_badge = "[bold green][Selesai][/bold green]"
                 elif t.status == "cancelled":
-                    st_badge = "[dim][Cancelled][/dim]"
+                    st_badge = "[dim][Dibatalkan][/dim]"
                 else:
-                    st_badge = "[bold red][Failed][/bold red]"
+                    st_badge = "[bold red][Gagal][/bold red]"
 
                 sess_name = None
                 if t.session_id:
@@ -202,16 +202,16 @@ class StudioProcessingMixin:
                 ]
 
             header = Text()
-            header.append(f"Background Processing Tasks [{self.current_project.name}]", style="bold bright_white")
-            header.append(f" • {len(tasks)} tasks", style="dim")
+            header.append(f"Tugas Pemrosesan Latar Belakang [{self.current_project.name}]", style="bold bright_white")
+            header.append(f" • {len(tasks)} tugas", style="dim")
 
             actions = [
-                ("detail", "Detail & Logs", "enter"),
-                ("cancel", "Cancel Task", "c/x"),
-                ("open", "Open Session", "o"),
-                ("retry", "Retry Failed", "r"),
-                ("clear", "Clear Finished", "d"),
-                ("back", "Back", "esc/q"),
+                ("detail", "Detail & Log", "enter"),
+                ("cancel", "Batalkan Tugas", "c/x"),
+                ("open", "Buka Sesi", "o"),
+                ("retry", "Ulangi Gagal", "r"),
+                ("clear", "Hapus Selesai", "d"),
+                ("back", "Kembali", "esc/q"),
             ]
 
             action, idx, selected_task = interactive_item_browser(

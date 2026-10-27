@@ -41,6 +41,7 @@ class WorkspaceManager:
         self.web_dir = self.vault_dir / "web"
         self.images_dir = self.vault_dir / "images"
         self.tables_dir = self.vault_dir / "tables"
+        self.local_dir = self.vault_dir / "local"
 
         if auto_create:
             self.ensure_directories()
@@ -55,6 +56,7 @@ class WorkspaceManager:
             self.web_dir.mkdir(parents=True, exist_ok=True)
             self.images_dir.mkdir(parents=True, exist_ok=True)
             self.tables_dir.mkdir(parents=True, exist_ok=True)
+            self.local_dir.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
             raise WorkspaceError(
                 f"Failed to create workspace directories at '{self.root_dir}': {exc}"
@@ -122,6 +124,17 @@ class WorkspaceManager:
     def cache_exists(self, filename: str | Path) -> bool:
         """Check whether a specific file exists in the cache."""
         return self.get_cache_path(filename).is_file()
+
+    def get_cached_document(self, filename_or_stem: str | Path) -> Path | None:
+        """Return Path to cached markdown document if it exists, checking both direct name and .md stem."""
+        p = Path(filename_or_stem)
+        candidate1 = self.get_cache_path(p.name)
+        if candidate1.is_file():
+            return candidate1
+        candidate2 = self.get_cache_path(f"{p.stem}.md")
+        if candidate2.is_file():
+            return candidate2
+        return candidate2
 
     def list_cached_documents(self, pattern: str = "*.md") -> list[Path]:
         """List cached document paths matching a given glob pattern."""
