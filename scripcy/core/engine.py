@@ -47,6 +47,9 @@ class EvidenceChunk(BaseModel):
     text: str = Field(description="Textual content of the passage.")
     score: float = Field(default=0.0, description="Relevance score to user query.")
     token_estimate: int = Field(default=0, description="Estimated token count.")
+    page_num: int = Field(default=1, description="Page number where evidence appears.")
+    parent_text: str = Field(default="", description="Surrounding parent context block.")
+    quote_snippet: str = Field(default="", description="Verbatim quote snippet for fine-grained citation.")
 
 
 class SynthesisResult(BaseModel):
@@ -129,7 +132,36 @@ class EvidenceSynthesizer:
 
         return chunks
 
-    def score_chunk(self, query_terms: list[str], full_query: str, chunk_text: str) -> float:
+    def expand_query(self, query: str) -> list[str]:
+        """Generate academic synonyms and English technical terminology expansions for cross-lingual hit rate."""
+        clean = query.strip()
+        expansions = [clean]
+        lower_q = clean.lower()
+
+        # Indonesian -> English Technical / Academic Mapping
+        translations = [
+            (r"\b(kebakaran\s+hutan|karhutla)\b", "wildfire forest fire hotspot detection"),
+            (r"\b(cuaca|iklim)\b", "weather climate meteorology"),
+            (r"\b(akurasi|ketelitian)\b", "accuracy precision benchmark evaluation"),
+            (r"\b(metode|algoritma)\b", "method algorithm model architecture"),
+            (r"\b(overfit|overfitting)\b", "regularization dropout weight decay generalization"),
+            (r"\b(klasifikasi)\b", "classification categorical cross entropy"),
+            (r"\b(prediksi|ramalan)\b", "prediction forecasting estimation"),
+            (r"\b(kesehatan\s+mental)\b", "mental health psychological well-being depression"),
+            (r"\b(citra|gambar|visual)\b", "image visual computer vision segmentation"),
+        ]
+
+        addon_terms = []
+        for pat, trans in translations:
+            if re.search(pat, lower_q):
+                addon_terms.append(trans)
+
+        if addon_terms:
+            expansions.append(" ".join(addon_terms))
+            # Synthesize compact HyDE-like query representation
+            expansions.append(f"{clean} {' '.join(addon_terms)}")
+
+        return expansions
         """Compute relevance score for a passage based on term frequency and phrase match."""
         if not query_terms:
             return 0.0
@@ -208,10 +240,18 @@ class EvidenceSynthesizer:
             limit_chunks = max_chunks or self.default_max_chunks
             limit_tokens = token_budget or self.default_token_budget
 
-        # 1. High-Performance Hybrid Search (FTS5 BM25 + sqlite-vec dense embeddings)
+        # 1. High-Performance Hybrid Search with Multi-Query Expansion & Reranking
         if vector_vault is not None:
             try:
-                hybrid_res = vector_vault.hybrid_search_rrf(query, top_k=limit_chunks)
+                expanded_queries = self.expand_query(query)
+                all_hybrid_matches: dict[str, Any] = {}
+                for eq in expanded_queries:
+                    res_q = vector_vault.hybrid_search_rrf(eq, top_k=limit_chunks)
+                    for r in res_q:
+                        if r.chunk_id not in all_hybrid_matches:
+                            all_hybrid_matches[r.chunk_id] = r
+
+                hybrid_res = list(all_hybrid_matches.values())
                 if hybrid_res:
                     active_stems = set()
                     for d in documents:
@@ -225,10 +265,21 @@ class EvidenceSynthesizer:
                             active_stems.add(Path(d).stem)
 
                     matched_chunks = []
+                    # Track seen parents to merge and prevent token explosion
+                    seen_parents: set[str] = set()
+
                     for h in hybrid_res:
                         if active_stems and h.paper_id not in active_stems:
                             continue
-                        chunk_text = h.content
+                        
+                        # Parent-child hierarchical selection: use parent context if not already covered
+                        parent_key = f"{h.paper_id}_p{h.page_num}_{h.parent_content[:60]}"
+                        if h.parent_content and parent_key not in seen_parents:
+                            chunk_text = h.parent_content
+                            seen_parents.add(parent_key)
+                        else:
+                            chunk_text = h.content
+
                         if h.tables:
                             for tbl in h.tables:
                                 md_p = tbl.get("md_path")
@@ -246,12 +297,21 @@ class EvidenceSynthesizer:
                                 if ai_desc and "JUNK_IMAGE" not in ai_desc:
                                     chunk_text += f"\n\n[[VISUAL:{img_id}]] [Analisis Visual Gambar Halaman {h.page_num}: {img.get('caption', 'Gambar')}]:\n{ai_desc}"
 
+                        # Extract first complete sentence as verbatim quote snippet
+                        quote_snip = ""
+                        sentences = re.split(r"(?<=[.!?])\s+", h.content.strip())
+                        if sentences:
+                            quote_snip = sentences[0][:140]
+
                         matched_chunks.append(EvidenceChunk(
                             chunk_id=h.chunk_id,
                             source=h.paper_id,
                             text=chunk_text,
                             token_estimate=estimate_tokens(chunk_text),
-                            score=h.rrf_score,
+                            score=h.rerank_score if h.rerank_score is not None else h.rrf_score,
+                            page_num=h.page_num,
+                            parent_text=h.parent_content,
+                            quote_snippet=quote_snip,
                         ))
                     if matched_chunks:
                         return matched_chunks[:limit_chunks]
@@ -392,11 +452,21 @@ class EvidenceSynthesizer:
         for idx, chunk in enumerate(chunks, 1):
             compact_text = MarkdownMinifier.minify(chunk.text)
             total_compact += len(compact_text)
+            page_info = f", Halaman {chunk.page_num}" if chunk.page_num else ""
+            quote_info = f"\nKutipan Kunci: \"{chunk.quote_snippet}\"" if chunk.quote_snippet else ""
             block = (
-                f"[Evidence {idx}] (Source ID: {chunk.source}, Relevance Score: {chunk.score:.2f}):\n"
+                f"[Evidence {idx}] (Source ID: {chunk.source}{page_info}, Score: {chunk.score:.2f}):{quote_info}\n"
                 f"\"\"\"\n{compact_text}\n\"\"\""
             )
             formatted_blocks.append(block)
+
+        # Footnote Citation Guidance
+        formatted_blocks.append(
+            "[PETUNJUK CITATION FOOTNOTE DIRECT MAPPING]:\n"
+            "- Gunakan sitasi bernomor footnote [^1], [^2], dst. setiap kali Anda menyatakan fakta penting.\n"
+            "- Nomor footnote harus berkorespondensi dengan nomor [Evidence 1], [Evidence 2] di atas.\n"
+            "- Di akhir jawaban, Scripcy akan otomatis menyusun daftar rujukan kutipan dan link berkas halaman PDF."
+        )
 
         has_visuals = any("[[VISUAL:" in c.text for c in chunks)
         if has_visuals:

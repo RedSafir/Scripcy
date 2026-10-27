@@ -27,6 +27,7 @@ logger = logging.getLogger(__name__)
 
 # Global singleton embedder instance to prevent reload overhead
 _GLOBAL_EMBEDDER: Any | None = None
+_GLOBAL_RERANKER: Any | None = None
 
 FIGURE_CAPTION_RE = re.compile(
     r"^(?:Figure|Fig\.|FIG\.|Gambar|Grafik|Diagram|Chart)\s*(\d+[a-zA-Z]?|[IVXLCDM]+)[\s.:—–-]+(.*)",
@@ -166,6 +167,19 @@ def get_shared_embedder() -> Any:
     return _GLOBAL_EMBEDDER
 
 
+def get_shared_reranker() -> Any:
+    """Return shared FastEmbed TextCrossEncoder instance (dim: 80MB, MiniLM-L-6-v2 ONNX)."""
+    global _GLOBAL_RERANKER
+    if _GLOBAL_RERANKER is None:
+        try:
+            from fastembed.rerank.cross_encoder import TextCrossEncoder
+            _GLOBAL_RERANKER = TextCrossEncoder(model_name="Xenova/ms-marco-MiniLM-L-6-v2")
+        except Exception as e:
+            logger.debug(f"Failed loading cross encoder reranker: {e}")
+            _GLOBAL_RERANKER = None
+    return _GLOBAL_RERANKER
+
+
 def serialize_f32(vector: list[float]) -> bytes:
     """Serialize float32 vector into raw binary buffer for sqlite-vec."""
     return struct.pack(f"{len(vector)}f", *vector)
@@ -173,13 +187,15 @@ def serialize_f32(vector: list[float]) -> bytes:
 
 @dataclass
 class HybridSearchResult:
-    """Result item returned by RRF hybrid search."""
+    """Result item returned by RRF hybrid search and cross-encoder re-ranking."""
 
     chunk_id: str
     paper_id: str
     page_num: int
     content: str
     rrf_score: float
+    parent_content: str = ""
+    rerank_score: float | None = None
     bm25_rank: int | None = None
     vec_rank: int | None = None
     tables: list[dict[str, Any]] = field(default_factory=list)
@@ -227,7 +243,7 @@ class ProjectVectorVault:
                 )
             """)
 
-            # Chunks table
+            # Chunks table (with parent-child hierarchy support)
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS chunks (
                     id TEXT PRIMARY KEY,
@@ -235,9 +251,21 @@ class ProjectVectorVault:
                     page_num INTEGER NOT NULL,
                     chunk_index INTEGER NOT NULL,
                     content TEXT NOT NULL,
+                    parent_content TEXT,
+                    section_title TEXT,
                     FOREIGN KEY(paper_id) REFERENCES papers(id) ON DELETE CASCADE
                 )
             """)
+
+            # Ensure parent_content column exists if table was created in older schema
+            try:
+                cur.execute("ALTER TABLE chunks ADD COLUMN parent_content TEXT")
+            except Exception:
+                pass
+            try:
+                cur.execute("ALTER TABLE chunks ADD COLUMN section_title TEXT")
+            except Exception:
+                pass
 
             # FTS5 full-text search table for BM25
             cur.execute("""
@@ -361,14 +389,22 @@ class ProjectVectorVault:
             page_num = page_idx + 1
             rect_page = page.rect
 
-            # 1. Text Extraction & Chunking (250 words per chunk with 40-word overlap)
+            # 1. Text Extraction & Parent-Child Chunking
+            # Child Chunk (~100-120 words for sharp vector match), Parent Context (~350-450 words)
             page_text = page.get_text("text").strip()
             if page_text:
                 words = page_text.split()
-                step = max(1, 250 - 40)
-                for start in range(0, len(words), step):
-                    chunk_words = words[start : start + 250]
+                # Determine parent window (~400 words)
+                parent_content = " ".join(words[:450]) if words else ""
+                child_step = max(1, 110 - 25)
+                for start in range(0, len(words), child_step):
+                    chunk_words = words[start : start + 110]
                     chunk_str = " ".join(chunk_words)
+                    # Dynamic surrounding parent context (±150 words around child)
+                    p_start = max(0, start - 80)
+                    p_end = min(len(words), start + 110 + 80)
+                    dynamic_parent = " ".join(words[p_start:p_end])
+
                     if len(chunk_str.strip()) >= 20:
                         raw_chunks.append({
                             "id": f"{paper_id}_p{page_num}_c{chunk_counter}",
@@ -376,9 +412,10 @@ class ProjectVectorVault:
                             "page_num": page_num,
                             "chunk_index": chunk_counter,
                             "content": chunk_str,
+                            "parent_content": dynamic_parent or parent_content,
                         })
                         chunk_counter += 1
-                    if start + 250 >= len(words):
+                    if start + 110 >= len(words):
                         break
 
             # 2. Structured Table Extraction via PyMuPDF find_tables()
@@ -574,9 +611,12 @@ class ProjectVectorVault:
             # Insert chunks & vectors
             for c_info, emb in zip(raw_chunks, embeddings):
                 cur.execute("""
-                    INSERT INTO chunks (id, paper_id, page_num, chunk_index, content)
-                    VALUES (?, ?, ?, ?, ?)
-                """, (c_info["id"], c_info["paper_id"], c_info["page_num"], c_info["chunk_index"], c_info["content"]))
+                    INSERT INTO chunks (id, paper_id, page_num, chunk_index, content, parent_content)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                """, (
+                    c_info["id"], c_info["paper_id"], c_info["page_num"],
+                    c_info["chunk_index"], c_info["content"], c_info.get("parent_content", c_info["content"])
+                ))
                 rowid = cur.lastrowid
 
                 # Insert vector into vec_chunks
@@ -672,10 +712,14 @@ class ProjectVectorVault:
         chunk_counter = 0
 
         words = markdown_text.split()
-        step = max(1, 250 - 40)
-        for start in range(0, len(words), step):
-            chunk_words = words[start : start + 250]
+        child_step = max(1, 110 - 25)
+        for start in range(0, len(words), child_step):
+            chunk_words = words[start : start + 110]
             chunk_str = " ".join(chunk_words)
+            p_start = max(0, start - 80)
+            p_end = min(len(words), start + 110 + 80)
+            dynamic_parent = " ".join(words[p_start:p_end])
+
             if len(chunk_str.strip()) >= 20:
                 raw_chunks.append({
                     "id": f"{paper_id}_w1_c{chunk_counter}",
@@ -683,9 +727,10 @@ class ProjectVectorVault:
                     "page_num": 1,
                     "chunk_index": chunk_counter,
                     "content": chunk_str,
+                    "parent_content": dynamic_parent or chunk_str,
                 })
                 chunk_counter += 1
-            if start + 250 >= len(words):
+            if start + 110 >= len(words):
                 break
 
         if raw_chunks:
@@ -710,9 +755,12 @@ class ProjectVectorVault:
 
             for c_info, emb in zip(raw_chunks, embeddings):
                 cur.execute("""
-                    INSERT INTO chunks (id, paper_id, page_num, chunk_index, content)
-                    VALUES (?, ?, ?, ?, ?)
-                """, (c_info["id"], c_info["paper_id"], c_info["page_num"], c_info["chunk_index"], c_info["content"]))
+                    INSERT INTO chunks (id, paper_id, page_num, chunk_index, content, parent_content)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                """, (
+                    c_info["id"], c_info["paper_id"], c_info["page_num"],
+                    c_info["chunk_index"], c_info["content"], c_info.get("parent_content", c_info["content"])
+                ))
                 rowid = cur.lastrowid
                 blob = serialize_f32(list(emb))
                 cur.execute("""
@@ -1130,11 +1178,13 @@ class ProjectVectorVault:
                 except Exception:
                     pass
 
-            sorted_ids = sorted(rrf_scores.keys(), key=lambda cid: rrf_scores[cid], reverse=True)[:top_k]
+            # First stage candidates: take top 15 for cross-encoder reranking
+            candidate_limit = max(top_k, 15)
+            sorted_ids = sorted(rrf_scores.keys(), key=lambda cid: rrf_scores[cid], reverse=True)[:candidate_limit]
 
-            results: list[HybridSearchResult] = []
+            candidates: list[HybridSearchResult] = []
             for cid in sorted_ids:
-                cur.execute("SELECT paper_id, page_num, content FROM chunks WHERE id = ?", (cid,))
+                cur.execute("SELECT paper_id, page_num, content, parent_content FROM chunks WHERE id = ?", (cid,))
                 r = cur.fetchone()
                 if not r:
                     continue
@@ -1142,6 +1192,7 @@ class ProjectVectorVault:
                 p_id = r["paper_id"]
                 page_n = r["page_num"]
                 text_content = r["content"]
+                parent_text = r["parent_content"] or text_content
 
                 # Pull any accompanying tables and figures on this page
                 cur.execute("SELECT id, csv_path, md_path, caption FROM tables WHERE paper_id = ? AND page_num = ?", (p_id, page_n))
@@ -1150,11 +1201,12 @@ class ProjectVectorVault:
                 cur.execute("SELECT id, file_path, caption, ai_analysis, visual_type, classification_reason FROM images WHERE paper_id = ? AND page_num = ?", (p_id, page_n))
                 matched_images = [dict(im) for t in cur.fetchall() for im in [t]]
 
-                results.append(HybridSearchResult(
+                candidates.append(HybridSearchResult(
                     chunk_id=cid,
                     paper_id=p_id,
                     page_num=page_n,
                     content=text_content,
+                    parent_content=parent_text,
                     rrf_score=round(rrf_scores[cid], 4),
                     bm25_rank=bm25_rank_map.get(cid),
                     vec_rank=vec_rank_map.get(cid),
@@ -1162,7 +1214,20 @@ class ProjectVectorVault:
                     images=matched_images,
                 ))
 
-            return results
+            # Second stage: Cross-Encoder Reranking
+            reranker = get_shared_reranker()
+            if reranker is not None and candidates:
+                try:
+                    doc_texts = [c.content for c in candidates]
+                    rerank_scores = list(reranker.rerank(clean_query, doc_texts))
+                    for c, r_score in zip(candidates, rerank_scores):
+                        c.rerank_score = float(r_score)
+                    # Sort primarily by cross-encoder score
+                    candidates.sort(key=lambda x: x.rerank_score if x.rerank_score is not None else -999.0, reverse=True)
+                except Exception as r_err:
+                    logger.debug(f"Cross-encoder reranking failed, falling back to RRF: {r_err}")
+
+            return candidates[:top_k]
 
     def list_inventory(self) -> dict[str, list[dict[str, Any]]]:
         """Return categorized lists of indexed papers, tables, and images in this vault."""

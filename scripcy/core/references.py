@@ -304,9 +304,32 @@ def append_vault_bibliography(
         key = entry["key"]
         ref_text = entry["formatted_entry"]
         filename = entry["filename"]
+        raw_path = entry.get("path")
+
+        # Find matching evidence chunk to extract page number and quote snippet
+        page_str = ""
+        quote_str = ""
+        if evidence:
+            for ev in evidence:
+                if str(ev.source).lower() in filename.lower() or filename.lower().startswith(str(ev.source).lower()):
+                    if ev.page_num:
+                        page_str = f" • Halaman {ev.page_num}"
+                    if ev.quote_snippet:
+                        clean_quote = ev.quote_snippet.strip().replace("\n", " ")
+                        quote_str = f"  \n   > _\"{clean_quote}\"_"
+                    break
+
+        file_link_str = f"`[File: {filename}{page_str}]`"
+        if raw_path and Path(raw_path).exists():
+            clean_fp = Path(raw_path).resolve().as_posix()
+            if not clean_fp.startswith("/"):
+                clean_fp = f"/{clean_fp}"
+            page_param = f"#page={ev.page_num}" if (page_str and hasattr(ev, "page_num")) else ""
+            file_link_str = f"[`{filename}{page_str}`](file://{clean_fp}{page_param})"
+
         if norm_style == "IEEE":
-            lines.append(f"{ref_text}  \n   `[File: {filename}]`")
+            lines.append(f"{ref_text}  \n   {file_link_str}{quote_str}")
         else:
-            lines.append(f"{idx}. **{key}** {ref_text}  \n   `[File: {filename}]`")
+            lines.append(f"{idx}. **{key}** {ref_text}  \n   {file_link_str}{quote_str}")
 
     return cleaned_text.rstrip() + "\n" + "\n".join(lines) + "\n"
