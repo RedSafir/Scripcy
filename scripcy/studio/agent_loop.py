@@ -37,6 +37,7 @@ from scripcy.core.models import DocumentMetadata, ParsedDocument
 from scripcy.core.parser import DocumentParser
 from scripcy.core.polisher import AcademicPolisher, PolishResult
 from scripcy.core.project import ProjectInfo, ProjectManager
+from scripcy.core.promisor import Promisor, PromisorDecision
 from scripcy.core.references import append_vault_bibliography
 from scripcy.core.scout import LiteratureScout, ScoutQuery, ScoutResult
 from scripcy.core.search import PaperSearcher, SearchResult, sanitize_filename
@@ -606,6 +607,17 @@ class StudioAgentLoopMixin:
                 self.handle_project_command(clean)
             return
 
+        # Promisor: Heuristic Intent & Action Routing
+        # Determine whether input is an administrative/system tool action (zero token cost)
+        # or an AI conversational question before proceeding to TaskContract & AI synthesis.
+        promisor: Promisor = getattr(self, "promisor", None) or Promisor()
+        sess_id = self.active_chat_session.id if self.active_chat_session else None
+        decision = promisor.evaluate(clean, session_id=sess_id)
+        if decision.is_system_tool:
+            handled = self._dispatch_promisor_action(decision, original_prompt=clean)
+            if handled:
+                return
+
         # Serialized Turn Lane Coordination:
         # If another synthesis turn (lane == "turn") is already running in this session,
         # queue this prompt onto the session's serialized turn lane (depends_on) instead of dropping it.
@@ -620,6 +632,357 @@ class StudioAgentLoopMixin:
 
         # Any input without leading "/" in chat mode is strictly treated as an AI conversation prompt
         self.handle_chat(clean)
+
+    def _dispatch_promisor_action(self, decision: PromisorDecision, original_prompt: str) -> bool:
+        """Handle a system/tool action identified by Promisor with short interactive confirmation.
+
+        Returns:
+            True if the tool was dispatched/handled.
+            False if the user cancelled (routing the prompt forward to AI Chat).
+        """
+        prompt_text = f"Terdeteksi perintah sistem: [bold white]{decision.display_label}[/bold white]\nJalankan aksi ini sekarang?"
+        confirmed = interactive_confirm(
+            prompt_text,
+            default=True,
+            yes_label="Jalankan Tool",
+            no_label="Batal (Lanjut Chat AI)",
+            console=self.console,
+        )
+        if not confirmed:
+            self.console.print("[dim]Aksi dibatalkan. Mengalihkan ke Chat AI...[/dim]\n")
+            return False
+
+        self.console.print(
+            f"[bold cyan]✦ Promisor Dispatch:[/bold cyan] [bold white]{decision.display_label}[/bold white] [dim]({decision.command_equivalent})[/dim]\n"
+        )
+
+        action = decision.action
+        args = decision.args
+
+        try:
+            if action == "vault.errors":
+                self._handle_promisor_vault_errors()
+            elif action == "vault.images":
+                self._handle_promisor_vault_images(paper_filter=args.get("paper"))
+            elif action == "vault.tables":
+                self._handle_promisor_vault_tables(paper_filter=args.get("paper"))
+            elif action == "models.tokens":
+                self._handle_promisor_tokens(scope=args.get("scope", "session"))
+            elif action == "vault.update":
+                self.cmd_vault_update()
+            elif action == "vault.health":
+                self.cmd_vault("health")
+            elif action == "vault.history":
+                self.run_interactive_vault_history()
+            elif action == "vault.list":
+                self.run_interactive_vault_search()
+            elif action == "vault.archive":
+                target = args.get("target", "")
+                self.cmd_vault_remove(target)
+            elif action == "vault.restore":
+                target = args.get("target", "")
+                self.cmd_vault_restore(target)
+            elif action == "models.use":
+                model_name = args.get("model", "")
+                self.cmd_models(f"use {model_name}")
+            elif action == "models.list":
+                self.cmd_models("list")
+            elif action == "models.9router":
+                self.cmd_models("9router")
+            elif action == "settings.citation":
+                self.run_interactive_citation_settings()
+            elif action == "scout.paper":
+                query = args.get("query", "")
+                self.cmd_scout(initial_query=query)
+            elif action == "scout.web":
+                query = args.get("query", "")
+                self.cmd_web_scout(query)
+            elif action == "chat.clear":
+                if self.active_chat_session and self.chat_manager:
+                    self.chat_manager.clear_messages(self.active_chat_session.id)
+                self.console.print("[dim][✓] Riwayat pesan untuk sesi ini telah dibersihkan.[/dim]\n")
+            elif action == "chat.new":
+                self._handle_promisor_chat_new(title=args.get("title"))
+            elif action == "processing.tasks":
+                self.run_interactive_processing_view()
+            else:
+                self.console.print(f"[yellow]Aksi '{action}' belum didukung secara spesifik.[/yellow]\n")
+        except Exception as exc:
+            self.console.print(f"[bold red][x] Gagal menjalankan aksi '{action}':[/bold red] {exc}\n")
+
+        return True
+
+    def _handle_promisor_vault_errors(self) -> None:
+        """Inspect and display Vault items that encountered errors during parsing or caching."""
+        if not self.vault_manager:
+            self.console.print("[yellow]Vault manager belum aktif atau belum ada project terbuka.[/yellow]\n")
+            return
+
+        self.vault_manager.reload_vault(force=False)
+        active_items = self.vault_manager.list_active_files()
+        error_items = [it for it in active_items if it.has_error or it.error_message]
+
+        if not error_items:
+            self.console.print(
+                "[bold green][✓] Seluruh berkas di Vault aktif dalam kondisi sehat (0 berkas error).[/bold green]\n"
+            )
+            return
+
+        table = Table(
+            title=f"Daftar Berkas Bermasalah di Vault ({len(error_items)} berkas)",
+            box=None,
+            padding=(0, 2),
+            header_style="bold bright_cyan",
+        )
+        table.add_column("Nama Berkas", style="bold white")
+        table.add_column("Kategori", style="dim cyan")
+        table.add_column("Ukuran", justify="right", style="dim")
+        table.add_column("Pesan Error / Kendala", style="red")
+
+        for it in error_items:
+            size_kb = f"{it.size_bytes / 1024:.1f} KB" if it.size_bytes else "-"
+            err_msg = it.error_message or "Gagal memproses parsing atau caching berkas"
+            table.add_row(it.filename, it.category, size_kb, err_msg)
+
+        self.console.print(table)
+        self.console.print("\n[dim]Gunakan '/vault update' untuk memicu parsing ulang terhadap berkas tersebut.[/dim]\n")
+
+    def _handle_promisor_vault_images(self, paper_filter: str | None = None) -> None:
+        """Display extracted visual figures/images from vault, optionally filtered by paper."""
+        if not self.vault_manager:
+            self.console.print("[yellow]Vault manager belum aktif atau belum ada project terbuka.[/yellow]\n")
+            return
+
+        images = self.vault_manager.list_images()
+        if not images:
+            self.console.print("[dim]Belum ada gambar/visual yang diekstraksi di Vault.[/dim]\n")
+            return
+
+        paper_lookup: dict[Any, dict[str, Any]] = {}
+        if getattr(self.vault_manager, "vector_vault", None):
+            try:
+                inv = self.vault_manager.vector_vault.list_inventory()
+                for p in inv.get("papers", []):
+                    paper_lookup[p.get("id")] = p
+            except Exception:
+                pass
+
+        if paper_filter:
+            pf = paper_filter.lower().strip()
+
+            def _matches(img: dict[str, Any]) -> bool:
+                pid = str(img.get("paper_id", "")).lower()
+                cap = str(img.get("caption", "")).lower()
+                ai_desc = str(img.get("ai_analysis", "")).lower()
+                path_str = str(img.get("file_path", "")).lower()
+                p_meta = paper_lookup.get(img.get("paper_id"), {})
+                p_title = str(p_meta.get("title", "")).lower()
+                p_file = str(p_meta.get("filename", "")).lower()
+                return (
+                    pf in pid
+                    or pf in cap
+                    or pf in ai_desc
+                    or pf in path_str
+                    or pf in p_title
+                    or pf in p_file
+                )
+
+            filtered_images = [img for img in images if _matches(img)]
+        else:
+            filtered_images = images
+
+        if not filtered_images:
+            filt_msg = f" untuk paper matching '{paper_filter}'" if paper_filter else ""
+            self.console.print(f"[yellow]Tidak ditemukan gambar/visual{filt_msg} di Vault.[/yellow]\n")
+            return
+
+        title_suffix = f" (Filter: '{paper_filter}')" if paper_filter else ""
+        table = Table(
+            title=f"Katalog Visual & Gambar Vault ({len(filtered_images)} item){title_suffix}",
+            box=None,
+            padding=(0, 2),
+            header_style="bold bright_cyan",
+        )
+        table.add_column("ID", justify="right", style="dim", width=4)
+        table.add_column("Paper Asal", style="bold cyan")
+        table.add_column("Hal", justify="right", style="dim", width=5)
+        table.add_column("Caption / Deskripsi Visual", style="white")
+        table.add_column("Dimensi", style="dim", width=12)
+
+        for img in filtered_images[:50]:
+            pid = img.get("paper_id")
+            p_meta = paper_lookup.get(pid, {})
+            p_name = p_meta.get("filename") or p_meta.get("title") or f"Paper #{pid}"
+            cap = img.get("caption") or img.get("ai_analysis") or "[Tanpa caption]"
+            if len(cap) > 60:
+                cap = cap[:57] + "..."
+            dim = f"{img.get('width', '-')}x{img.get('height', '-')}" if img.get("width") else "-"
+            table.add_row(
+                str(img.get("id", "-")),
+                str(p_name)[:28],
+                str(img.get("page_num", "-")),
+                cap,
+                dim,
+            )
+
+        self.console.print(table)
+        if len(filtered_images) > 50:
+            self.console.print(f"[dim]Menampilkan 50 dari {len(filtered_images)} gambar.[/dim]")
+        self.console.print()
+
+    def _handle_promisor_vault_tables(self, paper_filter: str | None = None) -> None:
+        """Display extracted structured tables from vault, optionally filtered by paper."""
+        if not self.vault_manager:
+            self.console.print("[yellow]Vault manager belum aktif atau belum ada project terbuka.[/yellow]\n")
+            return
+
+        tables = self.vault_manager.list_tables()
+        if not tables:
+            self.console.print("[dim]Belum ada tabel yang diekstraksi di Vault.[/dim]\n")
+            return
+
+        paper_lookup: dict[Any, dict[str, Any]] = {}
+        if getattr(self.vault_manager, "vector_vault", None):
+            try:
+                inv = self.vault_manager.vector_vault.list_inventory()
+                for p in inv.get("papers", []):
+                    paper_lookup[p.get("id")] = p
+            except Exception:
+                pass
+
+        if paper_filter:
+            pf = paper_filter.lower().strip()
+
+            def _matches(tbl: dict[str, Any]) -> bool:
+                pid = str(tbl.get("paper_id", "")).lower()
+                cap = str(tbl.get("caption", "")).lower()
+                m_path = str(tbl.get("md_path", "")).lower()
+                c_path = str(tbl.get("csv_path", "")).lower()
+                p_meta = paper_lookup.get(tbl.get("paper_id"), {})
+                p_title = str(p_meta.get("title", "")).lower()
+                p_file = str(p_meta.get("filename", "")).lower()
+                return (
+                    pf in pid
+                    or pf in cap
+                    or pf in m_path
+                    or pf in c_path
+                    or pf in p_title
+                    or pf in p_file
+                )
+
+            filtered_tables = [tbl for tbl in tables if _matches(tbl)]
+        else:
+            filtered_tables = tables
+
+        if not filtered_tables:
+            filt_msg = f" untuk paper matching '{paper_filter}'" if paper_filter else ""
+            self.console.print(f"[yellow]Tidak ditemukan tabel{filt_msg} di Vault.[/yellow]\n")
+            return
+
+        title_suffix = f" (Filter: '{paper_filter}')" if paper_filter else ""
+        table = Table(
+            title=f"Katalog Tabel Terstruktur Vault ({len(filtered_tables)} item){title_suffix}",
+            box=None,
+            padding=(0, 2),
+            header_style="bold bright_cyan",
+        )
+        table.add_column("ID", justify="right", style="dim", width=4)
+        table.add_column("Paper Asal", style="bold cyan")
+        table.add_column("Hal", justify="right", style="dim", width=5)
+        table.add_column("Caption / Isi Tabel", style="white")
+        table.add_column("Format Ekspor", style="dim", width=14)
+
+        for tbl in filtered_tables[:50]:
+            pid = tbl.get("paper_id")
+            p_meta = paper_lookup.get(pid, {})
+            p_name = p_meta.get("filename") or p_meta.get("title") or f"Paper #{pid}"
+            cap = tbl.get("caption") or "[Tabel tanpa judul]"
+            if len(cap) > 60:
+                cap = cap[:57] + "..."
+            formats = []
+            if tbl.get("csv_path"):
+                formats.append("CSV")
+            if tbl.get("md_path"):
+                formats.append("MD")
+            fmt_str = "/".join(formats) if formats else "-"
+            table.add_row(
+                str(tbl.get("id", "-")),
+                str(p_name)[:28],
+                str(tbl.get("page_num", "-")),
+                cap,
+                fmt_str,
+            )
+
+        self.console.print(table)
+        if len(filtered_tables) > 50:
+            self.console.print(f"[dim]Menampilkan 50 dari {len(filtered_tables)} tabel.[/dim]")
+        self.console.print()
+
+    def _handle_promisor_tokens(self, scope: str = "session") -> None:
+        """Display token statistics for the active chat session or global/project scope."""
+        if scope == "session" and self.active_chat_session and self.chat_manager:
+            msgs = self.chat_manager.get_messages(self.active_chat_session.id)
+            user_tokens = sum(estimate_tokens(m.content) for m in msgs if m.role == "user")
+            asst_tokens = sum(estimate_tokens(m.content) for m in msgs if m.role == "assistant")
+            total_session_tokens = user_tokens + asst_tokens
+
+            table = Table(
+                title=f"Statistik Token Sesi Chat: '{self.active_chat_session.name}'",
+                box=None,
+                padding=(0, 2),
+                header_style="bold bright_cyan",
+            )
+            table.add_column("Metrik Sesi", style="bold cyan")
+            table.add_column("Nilai", justify="right", style="bold white")
+            table.add_row("Jumlah Pesan Sesi", f"{len(msgs)} pesan")
+            table.add_row("Input Tokens (User Prompts)", f"{user_tokens:,}")
+            table.add_row("Output Tokens (AI Responses)", f"{asst_tokens:,}")
+            table.add_row("Total Token Sesi (Estimasi)", f"[bold bright_cyan]{total_session_tokens:,}[/bold bright_cyan]")
+
+            if self.workspace:
+                p_tok = TokenTracker.get_project_tokens(self.workspace.root_dir)
+                table.add_row(
+                    "Total Akumulasi Project",
+                    f"{p_tok.total_tokens:,} (In: {p_tok.input_tokens:,}, Out: {p_tok.output_tokens:,})",
+                )
+
+            self.console.print()
+            self.console.print(table)
+            self.console.print("\n[dim]Gunakan '/models tokens' untuk melihat total akumulasi token seluruh project.[/dim]\n")
+            return
+
+        # Project or global tokens fallback
+        self.cmd_models("tokens")
+
+    def _handle_promisor_chat_new(self, title: str | None = None) -> None:
+        """Create a new chat session from Promisor request."""
+        if not self.chat_manager:
+            return
+        chat_name = (title or "").strip()
+        if not chat_name:
+            existing_sessions = self.chat_manager.list_sessions()
+            existing_names = {s.name.lower() for s in existing_sessions}
+            idx = 1
+            while f"session{idx}" in existing_names or f"chat{idx}" in existing_names:
+                idx += 1
+            chat_name = f"session{idx}"
+
+        prev_sess_id = self.active_chat_session.id if self.active_chat_session else None
+        session = self.chat_manager.create_session(
+            name=chat_name,
+            active_skill=self.active_skill_name,
+        )
+        self.render_mode_divider()
+        self.active_chat_session = session
+        self.sub_mode = "chat"
+        self.chat_manager.update_session_status(session.id, "running")
+        session.status = "running"
+        if prev_sess_id:
+            self._reconcile_session_lifecycle(prev_sess_id)
+        self.console.print(f"[bold green][✓] Sesi chat baru dibuat:[/bold green] [bold cyan]{session.name}[/bold cyan]")
+        self.console.print(
+            "[dim]Ketik pertanyaan riset Anda langsung di bawah ini. Gunakan '/' untuk perintah (contoh: /back).[/dim]\n"
+        )
 
     def _detect_internal_tool_call(self, raw_resp: str) -> str | None:
         """Detect internal tool commands emitted during an agent turn."""

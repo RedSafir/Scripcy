@@ -191,7 +191,7 @@ class StudioCommandsMixin:
             self.console.print(f"[yellow]Perintah tidak dikenal: '{clean_cmd}'.[/yellow]")
             self.console.print("[dim]Ketik 'help' untuk melihat daftar perintah, atau 'chat' untuk mulai berdiskusi dengan AI.[/dim]\n")
 
-    def cmd_scout(self) -> None:
+    def cmd_scout(self, initial_query: str = "") -> None:
         """Interactive natural-language literature scout workflow with OpenAlex."""
         if not self.workspace or not self.scout:
             self.console.print("[red][x] Please open a project first to use /scout.[/red]\n")
@@ -206,11 +206,15 @@ class StudioCommandsMixin:
             "[dim]Contoh: 'Paper tentang kesehatan mental remaja tahun 2018-2020 yang open access'[/dim]\n"
         )
 
-        try:
-            user_input = self.console.input("[bold cyan]scout > [/bold cyan]").strip()
-        except (KeyboardInterrupt, EOFError, OSError):
-            self.console.print("\n[yellow]Scout canceled.[/yellow]\n")
-            return
+        if initial_query:
+            user_input = initial_query.strip()
+            self.console.print(f"[bold cyan]scout > [/bold cyan]{user_input}\n")
+        else:
+            try:
+                user_input = self.console.input("[bold cyan]scout > [/bold cyan]").strip()
+            except (KeyboardInterrupt, EOFError, OSError):
+                self.console.print("\n[yellow]Scout canceled.[/yellow]\n")
+                return
 
         if not user_input or user_input.lower() in ("q", "quit", "cancel", "exit"):
             self.console.print("[yellow]Scout canceled.[/yellow]\n")
