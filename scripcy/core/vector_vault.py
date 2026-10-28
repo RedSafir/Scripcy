@@ -159,11 +159,12 @@ def match_table_to_caption(page: fitz.Page, table_rect: fitz.Rect) -> tuple[str,
 
 
 def get_shared_embedder() -> Any:
-    """Return shared FastEmbed BGE-small instance (dim: 384, ~130MB, CPU ONNX)."""
+    """Return shared FastEmbed BGE-small instance with optimized ONNX thread limits."""
     global _GLOBAL_EMBEDDER
     if _GLOBAL_EMBEDDER is None:
         from fastembed import TextEmbedding
-        _GLOBAL_EMBEDDER = TextEmbedding(model_name="BAAI/bge-small-en-v1.5")
+        # Limit internal ONNX threads to 2 to prevent excessive memory arena expansion
+        _GLOBAL_EMBEDDER = TextEmbedding(model_name="BAAI/bge-small-en-v1.5", threads=2)
     return _GLOBAL_EMBEDDER
 
 
@@ -375,19 +376,18 @@ class ProjectVectorVault:
         paper_images_dir.mkdir(parents=True, exist_ok=True)
         paper_tables_dir.mkdir(parents=True, exist_ok=True)
 
-        doc = fitz.open(str(pdf_path))
         embedder = get_shared_embedder()
-
         raw_chunks: list[dict[str, Any]] = []
         raw_tables: list[dict[str, Any]] = []
         raw_images: list[dict[str, Any]] = []
-
         chunk_counter = 0
 
-        for page_idx in range(len(doc)):
-            page = doc[page_idx]
-            page_num = page_idx + 1
-            rect_page = page.rect
+        # Strict resource-managed PDF extraction via context manager
+        with fitz.open(str(pdf_path)) as doc:
+            for page_idx in range(len(doc)):
+                page = doc[page_idx]
+                page_num = page_idx + 1
+                rect_page = page.rect
 
             # 1. Text Extraction & Parent-Child Chunking
             # Child Chunk (~100-120 words for sharp vector match), Parent Context (~350-450 words)
@@ -580,12 +580,10 @@ class ProjectVectorVault:
             except Exception as img_err:
                 logger.debug(f"Image extraction skipped on p{page_num}: {img_err}")
 
-        doc.close()
-
-        # Batch compute dense embeddings for all chunks in this paper
-        if raw_chunks:
+        # Batch compute dense embeddings for all chunks in this paper with streaming batching (batch_size=32)
+        if raw_chunks and embedder is not None:
             chunk_texts = [c["content"] for c in raw_chunks]
-            embeddings = list(embedder.embed(chunk_texts))
+            embeddings = list(embedder.embed(chunk_texts, batch_size=32))
         else:
             embeddings = []
 
@@ -692,6 +690,13 @@ class ProjectVectorVault:
 
             conn.commit()
 
+        # Free temporary chunk arrays and force immediate heap garbage collection
+        raw_chunks.clear()
+        raw_tables.clear()
+        raw_images.clear()
+        import gc
+        gc.collect()
+
         return {
             "chunks": len(raw_chunks),
             "tables": len(raw_tables),
@@ -733,9 +738,9 @@ class ProjectVectorVault:
             if start + 110 >= len(words):
                 break
 
-        if raw_chunks:
+        if raw_chunks and embedder is not None:
             chunk_texts = [c["content"] for c in raw_chunks]
-            embeddings = list(embedder.embed(chunk_texts))
+            embeddings = list(embedder.embed(chunk_texts, batch_size=32))
         else:
             embeddings = []
 
@@ -809,6 +814,13 @@ class ProjectVectorVault:
                 pass
 
             conn.commit()
+
+        # Free temporary chunk arrays and force immediate heap garbage collection
+        raw_chunks.clear()
+        raw_tables.clear()
+        raw_images.clear()
+        import gc
+        gc.collect()
 
         return {
             "chunks": len(raw_chunks),
@@ -913,6 +925,13 @@ class ProjectVectorVault:
                 pass
             conn.commit()
 
+        # Free temporary chunk arrays and force immediate heap garbage collection
+        raw_chunks.clear()
+        raw_tables.clear()
+        raw_images.clear()
+        import gc
+        gc.collect()
+
         return {
             "id": tbl_id,
             "md_path": str(dest_md),
@@ -986,6 +1005,13 @@ class ProjectVectorVault:
             except Exception:
                 pass
             conn.commit()
+
+        # Free temporary chunk arrays and force immediate heap garbage collection
+        raw_chunks.clear()
+        raw_tables.clear()
+        raw_images.clear()
+        import gc
+        gc.collect()
 
         return {
             "id": img_id,
