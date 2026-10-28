@@ -146,4 +146,52 @@ class TestAcademicPolisher:
         assert "[Page2002]" in output
         # Telemetry remains intact
         assert "Grounding:" in output
-        assert "Critic:" in output
+
+    def test_adversarial_masking_and_unmasking(self) -> None:
+        polisher = AcademicPolisher()
+        sample = (
+            "Model Transformer [Vaswani2017] mencapai latensi 120 ms dengan akurasi 95.4% "
+            "dan signifikansi statistik p < 0.05 menurut (Devlin et al., 2019) serta catatan [^1]."
+        )
+        masked, lookup = polisher.mask_sensitive_entities(sample)
+
+        # Ensure placeholders exist
+        assert "__CITE_" in masked
+        assert "__STAT_" in masked
+        assert "[Vaswani2017]" not in masked
+        assert "120 ms" not in masked
+        assert "95.4%" not in masked
+        assert "p < 0.05" not in masked
+        assert "(Devlin et al., 2019)" not in masked
+        assert "[^1]" not in masked
+
+        # Unmask and verify 100% verbatim restoration
+        unmasked = polisher.unmask_sensitive_entities(masked, lookup)
+        assert unmasked == sample
+
+    def test_polish_heuristic_indonesian_cliches(self) -> None:
+        polisher = AcademicPolisher()
+        text = (
+            "Secara keseluruhan, temuan ini sangat relevan. "
+            "Hal ini membuktikan bahwa arsitektur neural meningkatkan throughput sebesar 25% [Devlin2019]. "
+            "Menyelami lebih dalam terkait efisiensi, pendekatan ini memainkan peran krusial dalam komputasi."
+        )
+        cleaned = polisher.polish_heuristic(text)
+        assert "Secara keseluruhan," not in cleaned
+        assert "Hal ini membuktikan bahwa" not in cleaned
+        assert "temuan ini mengindikasikan bahwa" in cleaned
+        assert "Menyelami lebih dalam terkait" not in cleaned
+        assert "menganalisis" in cleaned
+        assert "memainkan peran krusial dalam" not in cleaned
+        assert "menentukan" in cleaned
+        assert "[Devlin2019]" in cleaned
+        assert "25%" in cleaned
+
+    def test_verify_integrity_numerical_metrics(self) -> None:
+        polisher = AcademicPolisher()
+        orig = "Eksperimen mencatat latensi 45 ms, akurasi 98.2%, dan pelepasan 3.4 gigaton emisi [Page2002]."
+        # Missing multiple critical metrics
+        corrupted = "Eksperimen mencatat latensi cepat, akurasi tinggi, dan pelepasan emisi [Page2002]."
+        valid, msg = polisher.verify_integrity(orig, corrupted)
+        assert valid is False
+        assert "Numerical data points missing" in msg

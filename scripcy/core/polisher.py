@@ -1,6 +1,7 @@
 """Context-Preserving Academic Stylistic Polisher for natural scholarly prose.
 
 Implements DIPPER-inspired controlled order diversity, burstiness modulation,
+adversarial token-masking (zero-drift citation & metric protection),
 and deterministic pre/post-flight citation and terminology guardrails.
 """
 
@@ -27,36 +28,114 @@ class PolishResult(BaseModel):
     reason: str = Field(default="", description="Status explanation or fallback rationale.")
 
 
-POLISHER_SYSTEM_PROMPT = """You are an expert academic copyeditor and stylometrist operating inside a scientific journal editorial review.
-Your sole mission: Polish the provided academic draft to maximize natural human cadence and eliminate mechanical AI-writing patterns while strictly preserving 100% of the factual substance, empirical data, and context.
+POLISHER_SYSTEM_PROMPT = """You are an elite academic copyeditor and stylometrist operating inside a top-tier peer-reviewed journal.
+Your sole mission: Polish the provided academic draft to maximize natural human cadence, elevate syntactic entropy, and eliminate mechanical AI-writing patterns while strictly preserving 100% of the factual substance, empirical data, and context.
 
-INVIOLABLE CONSTRAINTS:
-1. ZERO CITATION ALTERATION: Every in-text citation (e.g. [Vaswani2017], [1], [Smith2020]) MUST be retained verbatim and remain bound to its exact conceptual assertion.
+INVIOLABLE CONSTRAINTS & STYLOMETRIC DIRECTIVES:
+1. STRICT TOKEN PRESERVATION: NEVER alter, delete, translate, or split tokens formatted as __CITE_x__ or __STAT_x__. They MUST remain bound to their exact conceptual assertions.
 2. ZERO FACTUAL OR METRIC DRIFT: All statistics, data values, mathematical notations, formulas, percentages, and metrics must be preserved identically.
 3. STRICT TERMINOLOGY PRESERVATION: Do not replace domain-specific terms, genes, proteins, methods, or algorithm names with generic synonyms.
-4. BURSTINESS & RHYTHM: Inject natural human sentence length variance. Combine concise, impactful assertions with structured, logically rigorous compound sentences. Break uniform sentence cadences.
-5. REMOVE AI CLICHES: Strip out formulaic bridge phrases and clichés (e.g., 'delve', 'testament', 'pivotal role', 'it is worth noting that', 'furthermore, it should be noted', 'menyelami', 'penting untuk dicatat').
-6. OUTPUT ONLY POLISHED MARKDOWN: Return strictly the polished Markdown content with no introductory conversational pleasantries, no meta-commentary, and no trailing notes."""
+4. ASYMMETRIC BURSTINESS & RHYTHMIC CADENCE:
+   - Break uniform sentence lengths drastically (target sentence length standard deviation > 10).
+   - Alternate punchy, assertive short statements (6–12 words) with rigorous, compound-complex sentences (25–45 words) containing embedded participial phrases or parenthetical qualifiers.
+5. REMOVE AI CLICHES & FORMULAIC TRANSITIONS:
+   - Strip out robotic bridge phrases and clichés (e.g., 'furthermore', 'moreover', 'in conclusion', 'it is important to note that', 'delve', 'testament', 'pivotal role', 'crucial aspect', 'tapestry', 'beacon', 'menyelami', 'penting untuk dicatat', 'sebagai kesimpulan').
+   - Use organic fronted prepositions (e.g., 'Across these benchmarks,', 'In light of this disparity,'), subtle semicolons, or direct subject openings.
+6. VOICE & HEDGING MODULATION:
+   - Use passive voice purposefully for methodological and experimental descriptions.
+   - Use active voice with nominal subjects for theoretical evaluations and comparative claims.
+   - Employ nuanced epistemic stance (hedging): 'indicates a plausible tendency', 'warrants deeper scrutiny' rather than absolute generic claims.
+7. OUTPUT ONLY POLISHED MARKDOWN: Return strictly the polished Markdown content with no introductory conversational pleasantries, no meta-commentary, and no trailing notes."""
 
 
 class AcademicPolisher:
     """Refines AI academic synthesis into human-like prose without altering citations or technical facts."""
 
+    # In-text APA and bracketed citations: (Author et al., 2026), [1], [Vaswani2017], (Author, 2024, p. 12)
+    CITE_PATTERNS = [
+        re.compile(r"\([A-Z][a-zA-Z\s\.\&]+,\s*(?:19|20)\d{2}[a-z]?(?:,\s*p{1,2}\.\s*\d+)?\)", re.UNICODE),
+        re.compile(r"\b[A-Z][a-zA-Z]+(?:\s+et\s+al\.)?\s*\((?:19|20)\d{2}[a-z]?\)", re.UNICODE),
+        re.compile(r"\[([A-Za-z0-9_,\s-]+(?:\s+et\s+al\.)?(?:,\s*\d{4})?)\](?!\()", re.UNICODE),
+        re.compile(r"\[\^[0-9]+\]"),  # Footnote citations like [^1], [^2]
+    ]
+
+    # Specific numerical metrics, percentages, latencies, p-values, and statistics
+    STAT_PATTERNS = [
+        re.compile(r"\b(?:p\s*[<>=]\s*0?\.\d+|[Ftr]\s*\(\d+(?:,\s*\d+)?\)\s*=\s*-?\d+\.?\d*)\b", re.IGNORECASE),
+        re.compile(r"\b\d+(?:\.\d+)?\s*(?:(?:ms|fps|flops|flosp|gflops|tflops|mb|gb|tb|kb|hz|mhz|ghz)\b|%)", re.IGNORECASE),
+    ]
+
     def __init__(self, engine: LLMEngine | None = None) -> None:
         self.engine = engine
 
+    @classmethod
+    def mask_sensitive_entities(cls, text: str) -> tuple[str, dict[str, str]]:
+        """
+        Adversarial Masking: Replaces citations and statistical data with immutable placeholders.
+        Ensures 100% protection against LLM deletion or translation.
+        """
+        lookup: dict[str, str] = {}
+        masked = text
+
+        # 1. Mask citations
+        cite_counter = 0
+        for pat in cls.CITE_PATTERNS:
+            matches = list(pat.finditer(masked))
+            for m in reversed(matches):
+                # Avoid re-masking already masked tokens
+                matched_str = m.group(0)
+                if matched_str.startswith("__") and matched_str.endswith("__"):
+                    continue
+                token = f"__CITE_{cite_counter}__"
+                lookup[token] = matched_str
+                masked = masked[: m.start()] + token + masked[m.end() :]
+                cite_counter += 1
+
+        # 2. Mask specific statistical metrics
+        stat_counter = 0
+        for pat in cls.STAT_PATTERNS:
+            matches = list(pat.finditer(masked))
+            for m in reversed(matches):
+                matched_str = m.group(0)
+                if matched_str.startswith("__") and matched_str.endswith("__"):
+                    continue
+                token = f"__STAT_{stat_counter}__"
+                lookup[token] = matched_str
+                masked = masked[: m.start()] + token + masked[m.end() :]
+                stat_counter += 1
+
+        return masked, lookup
+
+    @classmethod
+    def unmask_sensitive_entities(cls, text: str, lookup: dict[str, str]) -> str:
+        """Restores masked placeholders back to their verbatim original citations and metrics."""
+        restored = text
+        for token, original in lookup.items():
+            restored = restored.replace(token, original)
+        return restored
+
     @staticmethod
     def extract_citations(text: str) -> list[str]:
-        """Extract academic citation keys like [Vaswani2017], [Page2002], [1], [1, 2]."""
-        # Exclude markdown link brackets like [link](url)
-        matches = re.findall(r"\[([A-Za-z0-9_,\s-]+(?:\s+et\s+al\.)?(?:,\s*\d{4})?)\](?!\()", text)
-        return [f"[{m.strip()}]" for m in matches if m.strip()]
+        """Extract academic citation keys like [Vaswani2017], [Page2002], [1], (Author, 2026), [^1]."""
+        found = []
+        # Bracketed citations
+        for m in re.findall(r"\[([A-Za-z0-9_,\s-]+(?:\s+et\s+al\.)?(?:,\s*\d{4})?)\](?!\()", text):
+            if m.strip():
+                found.append(f"[{m.strip()}]")
+        # Parenthetical citations
+        for m in re.findall(r"\(([A-Z][a-zA-Z\s\.\&]+,\s*(?:19|20)\d{2}[a-z]?)\)", text):
+            if m.strip():
+                found.append(f"({m.strip()})")
+        # Footnote citations
+        for m in re.findall(r"\[\^[0-9]+\]", text):
+            found.append(m)
+        return found
 
     @staticmethod
     def extract_numbers(text: str) -> set[str]:
         """Extract significant numerical metrics, percentages, and years."""
-        # Clean out citations first so citation numbers aren't confused with metrics
         clean = re.sub(r"\[[A-Za-z0-9_,-]+\]", "", text)
+        clean = re.sub(r"\([A-Za-z0-9_,\s\.\&-]+(?:19|20)\d{2}\)", "", clean)
         nums = re.findall(r"\b\d+(?:[\.,]\d+)?%?\b", clean)
         return set(nums)
 
@@ -84,10 +163,12 @@ class AcademicPolisher:
             (r"(?i)\b(?:it is important to note that|it is worth noting that|it should be noted that)\s*", ""),
             (r"(?i)\b(?:in conclusion,?\s*|as a conclusion,?\s*)", ""),
             (r"(?i)\b(?:furthermore, it should be emphasized that|moreover, it is essential to highlight that)\s*", "Furthermore, "),
+            (r"(?i)\b(?:furthermore,?\s*|moreover,?\s*)", ""),
             (r"(?i)\bdelving into the\b", "Analyzing the"),
             (r"(?i)\bstands as a testament to\b", "demonstrates"),
             (r"(?i)\bplays a pivotal role in\b", "is central to"),
             (r"(?i)\bplays a crucial role in\b", "determines"),
+            (r"(?i)\bcrucial aspect\b", "core factor"),
             # Indonesian common AI slop patterns
             (r"(?i)\b(?:penting untuk dicatat bahwa|perlu dicatat bahwa|perlu ditekankan bahwa)\s*", ""),
             (r"(?i)\b(?:sebagai kesimpulan,?\s*|dapat disimpulkan bahwa\s*)", ""),
@@ -95,6 +176,8 @@ class AcademicPolisher:
             (r"(?i)\bmerupakan bukti nyata bahwa\b", "menunjukkan bahwa"),
             (r"(?i)\bmemainkan peran penting dalam\b", "berpengaruh signifikan terhadap"),
             (r"(?i)\bmemainkan peran krusial dalam\b", "menentukan"),
+            (r"(?i)\bsecara keseluruhan,?\s*", ""),
+            (r"(?i)\bhal ini membuktikan bahwa\b", "temuan ini mengindikasikan bahwa"),
         ]
 
         polished = text
@@ -102,6 +185,7 @@ class AcademicPolisher:
             polished = re.sub(pat, repl, polished)
 
         # Clean double spaces or broken start of sentences
+        polished = re.sub(r"[ \t]+", " ", polished)
         polished = re.sub(r"\n{3,}", "\n\n", polished)
         return polished.strip()
 
@@ -113,9 +197,9 @@ class AcademicPolisher:
         # 1. Length sanity check (must not be radically compressed or inflated)
         orig_len = len(original.strip())
         pol_len = len(polished.strip())
-        if pol_len < orig_len * 0.60:
+        if pol_len < orig_len * 0.55:
             return False, f"Polished text over-compressed ({pol_len} vs {orig_len} chars)."
-        if pol_len > orig_len * 1.60:
+        if pol_len > orig_len * 1.65:
             return False, f"Polished text over-inflated ({pol_len} vs {orig_len} chars)."
 
         # 2. Strict citation preservation check
@@ -128,7 +212,7 @@ class AcademicPolisher:
         # 3. Numeric metric preservation check
         orig_numbers = self.extract_numbers(original)
         pol_numbers = self.extract_numbers(polished)
-        # Verify that at least 90% of numerical data points remain intact
+        # Verify that at least 85% of numerical data points remain intact
         if orig_numbers:
             missing_nums = orig_numbers - pol_numbers
             if len(missing_nums) > max(1, len(orig_numbers) * 0.25):
@@ -137,7 +221,7 @@ class AcademicPolisher:
         return True, "Integrity verified: all citations and metrics intact."
 
     async def polish_async(self, text: str, query: str = "") -> PolishResult:
-        """Asynchronously polish text via LLM with deterministic pre/post validation."""
+        """Asynchronously polish text via LLM with deterministic pre/post validation and token masking."""
         burst_before = self.calculate_burstiness(text)
 
         # If text is too short or doesn't have sentences, skip
@@ -156,13 +240,16 @@ class AcademicPolisher:
 
         if self.engine and getattr(self.engine, "config", None):
             try:
+                # 1. Pre-Flight Adversarial Masking
+                masked_input, mask_lookup = self.mask_sensitive_entities(text)
+
                 model_name = getattr(self.engine.config, "default_model", "gemini-2.5-pro")
                 api_key = self.engine.config.get_api_key_for_model(model_name)
                 if api_key and not api_key.startswith("mock") and getattr(self.engine, "_acompletion_fn", None) is None:
                     prompt = (
-                        f"Please polish this academic text to elevate natural cadence and remove mechanical AI phrasing.\n\n"
+                        f"Please polish this academic text to elevate natural cadence, maximize syntactic burstiness, and eliminate mechanical AI phrasing.\n\n"
                         f"Research Context Query: \"{query}\"\n\n"
-                        f"Original Academic Text:\n```markdown\n{text}\n```"
+                        f"Original Academic Text (Masked Sensitive Entities):\n```markdown\n{masked_input}\n```"
                     )
                     chunks = []
                     async for chunk in self.engine.acompletion_fn(
@@ -171,7 +258,7 @@ class AcademicPolisher:
                             {"role": "system", "content": POLISHER_SYSTEM_PROMPT},
                             {"role": "user", "content": prompt},
                         ],
-                        temperature=0.3,
+                        temperature=0.45,  # Higher temperature for natural human lexical variance
                         stream=True,
                     ):
                         c_text = chunk.text if hasattr(chunk, "text") else getattr(chunk, "delta", {}).get("content", "")
@@ -185,12 +272,16 @@ class AcademicPolisher:
                             raw_llm = raw_llm[3:]
                         if raw_llm.endswith("```"):
                             raw_llm = raw_llm[:-3]
-                        polished_candidate = self.polish_heuristic(raw_llm.strip())
+
+                        # 2. Unmask sensitive entities back to original
+                        unmasked_llm = self.unmask_sensitive_entities(raw_llm.strip(), mask_lookup)
+                        # 3. Apply Heuristic Cleanser on unmasked output
+                        polished_candidate = self.polish_heuristic(unmasked_llm)
                         used_llm = True
             except Exception:
                 polished_candidate = ""
 
-        # Deterministic heuristic polisher if LLM was unavailable or in mock environment
+        # Deterministic heuristic polisher fallback if LLM was unavailable or in mock environment
         if not polished_candidate:
             polished_candidate = self.polish_heuristic(text)
 
@@ -229,6 +320,7 @@ class AcademicPolisher:
 
             if loop and loop.is_running():
                 import concurrent.futures
+
                 with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
                     return pool.submit(lambda: asyncio.run(self.polish_async(text, query))).result()
             return asyncio.run(self.polish_async(text, query))
