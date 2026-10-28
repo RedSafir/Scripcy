@@ -126,7 +126,7 @@ class ScripcyConfig(BaseModel):
         description="Margin of error percentage for AI TaskContract token budget (default 0.30 = +-30%).",
     )
     contract_unlimited_tokens: bool = Field(
-        default=False,
+        default=True,
         description="Whether to disable token budget limits (unlimited output tokens for TaskContract and Gatekeeper).",
     )
     max_worker_expansions: int = Field(

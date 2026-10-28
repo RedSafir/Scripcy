@@ -312,11 +312,18 @@ class SubagentOrchestrator:
             )
 
         margin_disp = int(round(contract.token_margin_pct * 100))
-        parts.append(
-            f"[ALOKASI KUOTA TOKEN KONTRAK ABSOLUT]:\n"
-            f"- Target Token Output: ~{contract.target_output_tokens} token "
-            f"(Margin +-{margin_disp}% -> {contract.effective_min_tokens} s/d {contract.effective_max_tokens} token)."
-        )
+        if getattr(contract, "unlimited_tokens", True):
+            parts.append(
+                "[ALOKASI KUOTA TOKEN & KEDALAMAN SUBSTANSI]:\n"
+                "- Mode: BEBAS / UNLIMITED (Tanpa batas kuota token sempit).\n"
+                "- Tuliskan elaborasi mendalam, tuntas, dan komprehensif. DILARANG menyingkat atau memotong rincian metodologi, fakta, dan komparasi penting."
+            )
+        else:
+            parts.append(
+                f"[ALOKASI KUOTA TOKEN KONTRAK ABSOLUT]:\n"
+                f"- Target Token Output: ~{contract.target_output_tokens} token "
+                f"(Margin +-{margin_disp}% -> {contract.effective_min_tokens} s/d {contract.effective_max_tokens} token)."
+            )
 
         if contract.archetype == "DATA_FACTUAL":
             parts.append(

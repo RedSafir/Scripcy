@@ -330,20 +330,21 @@ class DevilsAdvocate:
             eff_min = getattr(contract, "effective_min_words", int(getattr(contract, "min_words", 300) * 0.85))
             eff_max = getattr(contract, "effective_max_words", int(getattr(contract, "max_words", 750) * 1.15))
             is_strict_length = getattr(contract, "min_words", 0) >= 300 or getattr(contract, "is_modular_section_needed", False)
+            is_unlimited = getattr(contract, "unlimited_tokens", True)
 
             if is_strict_length and words < eff_min:
                 contract_conformance = False
-                msg = f"Panjang draf ({words} kata) berada di bawah batas minimum toleransi ({eff_min} kata dari target {getattr(contract, 'min_words', 300)})."
+                msg = f"Panjang draf ({words} kata) berada di bawah batas minimum elaborasi ({eff_min} kata dari target {getattr(contract, 'min_words', 300)}). Uraikan lebih mendalam."
                 conformance_details.append(msg)
                 weaknesses.append(msg)
                 score -= 2
-            elif words > eff_max:
+            elif not is_unlimited and words > eff_max:
                 msg = f"Panjang draf ({words} kata) melebihi batas maksimum toleransi ({eff_max} kata dari batas {getattr(contract, 'max_words', 750)}). Pangkas bagian yang keluar dari substansi pertanyaan."
                 conformance_details.append(msg)
                 weaknesses.append(msg)
                 score -= 1
             else:
-                conformance_details.append(f"Panjang draf ({words} kata) memenuhi rentang toleransi ({eff_min}-{eff_max} kata).")
+                conformance_details.append(f"Panjang draf ({words} kata) memenuhi standar elaborasi komprehensif.")
 
             dods = getattr(contract, "definition_of_done", [])
             for dod in dods:
@@ -506,12 +507,13 @@ class DevilsAdvocate:
                     else ""
                 )
 
+                budget_note = "UNLIMITED / BEBAS (Prioritaskan elaborasi mendalam dan ketuntasan analisis)" if getattr(contract, "unlimited_tokens", True) else f"~{min_w}-{max_w} words"
                 contract_note = (
                     f"\nDYNAMIC TASK CONTRACT & SCOPE GUARD (Archetype: {archetype}):\n"
                     f"- Primary Goal: {p_goal}\n"
                     f"- In-Scope Topics: {in_s}\n"
                     f"- Out-of-Scope (FORBIDDEN DRIFT): {out_s}\n"
-                    f"- Target Format & Word Budget: {fmt_r} (~{min_w}-{max_w} words)\n"
+                    f"- Target Format & Word Budget: {fmt_r} ({budget_note})\n"
                     f"- Definition of Done (DoD) Checklist:\n{dods}\n\n"
                     "EVALUATION INSTRUCTIONS:\n"
                     "1. LENS 1 (CONTRACT & SUBSTANCE): Verify whether the answer directly answers the user question without drifting into unrequested chapters.\n"

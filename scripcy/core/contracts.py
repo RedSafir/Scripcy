@@ -216,7 +216,7 @@ class TaskContract(BaseModel):
         description="Configurable margin of error percentage for output token budget (default 0.30 = +-30%).",
     )
     unlimited_tokens: bool = Field(
-        default=False,
+        default=True,
         description="Whether token budget limits are disabled (unlimited output tokens).",
     )
     required_search_channels: list[str] = Field(
@@ -326,9 +326,9 @@ class TaskContractExtractor:
             return 0.30
 
     def _configured_unlimited(self) -> bool:
-        """Return configured unlimited token setting."""
+        """Return configured unlimited token setting (default True: bebas tanpa limitasi kuota sempit)."""
         cfg = getattr(self.engine, "config", None) if self.engine else None
-        return bool(getattr(cfg, "contract_unlimited_tokens", False))
+        return bool(getattr(cfg, "contract_unlimited_tokens", True))
 
     def is_ambiguous_intent(self, query: str) -> bool:
         """Determine if query contains competing signals across multiple intent categories."""
