@@ -339,9 +339,11 @@ class SubagentOrchestrator:
             )
 
         parts.append(
-            "[INSTRUKSI DRAF AKHIR GOLDEN PASS]:\n"
+            "[INSTRUKSI DRAF AKHIR GOLDEN PASS & ANTI-SLOP]:\n"
+            "- DILARANG menyertakan kalimat pembuka basa-basi, salam, meta-komentar (misal: 'Berdasarkan literatur yang dianalisis...'), dan kalimat penutup generik. Mulai LANGSUNG pada Heading 1 atau kalimat substansi pertama.\n"
+            "- DILARANG menulis ulang daftar pustaka/referensi di akhir teks draf. Cukup cantumkan penanda sitasi di dalam narasi seperti (Penulis et al., Tahun)[^1]. Daftar Pustaka resmi akan dirakit secara otomatis oleh sistem backend.\n"
             "- Seluruh investigasi Worker telah selesai tuntas. DILARANG memanggil perintah alat atau sintaks tool internal (seperti /web, /scout, /read).\n"
-            "- TULISKAN JAWABAN AKHIR LENGKAP secara langsung berdasarkan fakta dari ledger di atas."
+            "- TULISKAN JAWABAN AKHIR LENGKAP berdensitas tinggi secara langsung berdasarkan fakta dari ledger di atas."
         )
 
         return "\n\n".join(parts)

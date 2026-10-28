@@ -28,7 +28,10 @@ from scripcy.core.config import ConfigManager, ScripcyConfig, detect_9router_key
 from scripcy.core.contracts import AdaptiveCriticVerdict, TaskContract, TaskContractExtractor
 from scripcy.core.contractor import ContractDecomposer, CritiqueAdjudication, SubContract
 from scripcy.core.critic import CritiqueReport, DevilsAdvocate
+from scripcy.core.examiner import Examiner
 from scripcy.core.orchestrator import SubagentOrchestrator
+from scripcy.core.manager import SubagentManager
+from scripcy.core.session_context import SessionContextManager
 from scripcy.core.engine import LLMEngine, estimate_tokens
 from scripcy.core.gdrive import GoogleDriveManager, extract_drive_file_id
 from scripcy.core.logger import StudioLogger, get_studio_logger
@@ -1835,14 +1838,37 @@ class StudioAgentLoopMixin:
 
             session_runtime = self.get_session_runtime(session.id if session else None)
 
-            # Gather previous session dialogue history
+            # Session Context Manager integration
+            if not hasattr(self, "_session_context_managers"):
+                self._session_context_managers: dict[str, SessionContextManager] = {}
+            sess_key = session.id if session else "default"
+            if sess_key not in self._session_context_managers:
+                self._session_context_managers[sess_key] = SessionContextManager(session_id=sess_key)
+            scm = self._session_context_managers[sess_key]
+
+            # Gather token-efficient session dialogue history via SessionContextManager
+            scm_context = scm.build_context_directive(query)
             history_msgs: list[dict[str, str]] = []
-            if self.chat_manager and session:
+            if scm_context["has_previous_context"]:
+                # If revision query, supply the clean baseline draft directly
+                if scm_context["is_revision"] and scm_context["baseline_draft"]:
+                    history_msgs.append({
+                        "role": "assistant",
+                        "content": f"[DRAF BASELINE SEBELUMNYA]:\n{scm_context['baseline_draft']}"
+                    })
+                elif scm_context["directive_text"]:
+                    history_msgs.append({
+                        "role": "system",
+                        "content": scm_context["directive_text"]
+                    })
+            elif self.chat_manager and session:
                 raw_history = self.chat_manager.get_messages(session.id)
-                for m in raw_history[-10:]:
+                for m in raw_history[-4:]:  # Tight fallback window (max 4 turns)
                     if m.role == "user" and m.content == query:
                         continue
-                    history_msgs.append({"role": m.role, "content": m.content})
+                    # Strip verbose bibliography from history payload
+                    clean_content = scm.strip_bibliography(m.content) if m.role == "assistant" else m.content
+                    history_msgs.append({"role": m.role, "content": clean_content})
 
             async def _async_synthesis_loop() -> None:
                 nonlocal turn, refinement_turns, locked_supported_claims, best_draft, best_grounding, best_critic, best_composite
@@ -2715,6 +2741,17 @@ class StudioAgentLoopMixin:
                 "query": query,
                 "response": final_response_persisted,
             })
+
+            # Record turn in SessionContextManager for future turns
+            if hasattr(self, "_session_context_managers") and sess_key in self._session_context_managers:
+                sc_summaries = [sc.objective for sc in (orch_res.plan.subcontracts if orch_res and orch_res.plan else [])]
+                v_facts = [f.fact for f in (orch_res.verified_facts if orch_res and orch_res.verified_facts else [])]
+                self._session_context_managers[sess_key].record_turn(
+                    query=query,
+                    full_response=final_response_persisted,
+                    small_contracts=sc_summaries,
+                    verified_facts=v_facts,
+                )
 
             self.task_manager.update_tokens(task_id, total_tokens)
             self.task_manager.log(task_id, f"Token: {input_tokens:,} in · {output_tokens:,} out · {total_tokens:,} total ({model_label}) • {elapsed:.1f}s")
