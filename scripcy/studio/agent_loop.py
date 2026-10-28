@@ -1371,8 +1371,9 @@ class StudioAgentLoopMixin:
         async def _interactive_loop() -> Any:
             t = asyncio.create_task(coro)
             frame_idx = 0
-            last_spin = time.time()
-            hint_str = "[Esc: detach · Ctrl+C: batal]"
+            start_turn_time = time.time()
+            last_spin = start_turn_time
+            last_rendered_line_count = 0
 
             try:
                 while not t.done():
@@ -1441,35 +1442,90 @@ class StudioAgentLoopMixin:
                             ch = msvcrt.getwch()
                             if ch == "\x03":  # Ctrl+C
                                 t.cancel()
+                                if hasattr(self, "task_manager") and self.task_manager and task_id:
+                                    self.task_manager.cancel_task(task_id)
+                                    self.task_manager.log(task_id, "[✗] Worker dibatalkan: Operasi dihentikan oleh pengguna.")
+                                    self.task_manager.update_progress(task_id, "[✗] Worker dibatalkan: Operasi dihentikan oleh pengguna.")
                                 raise asyncio.CancelledError("cancel")
                             elif ch == "\x1b":  # Esc
                                 raise SessionDetachSignal("detach")
                             # User input is disabled during processing per user UX preference
 
-                    cur_desc_val = step_desc() if callable(step_desc) else str(step_desc)
-                    from scripcy.ui.interactive import get_live_terminal_size
-                    term_cols, _ = get_live_terminal_size(self.console)
-                    max_w = max(20, term_cols - 1)
-                    avail_desc = max(5, max_w - len(hint_str) - 8)
-                    if len(cur_desc_val) > avail_desc:
-                        disp_desc = cur_desc_val[:avail_desc - 1] + "…"
-                    else:
-                        disp_desc = cur_desc_val
-
                     if need_redraw:
+                        elapsed_sec = int(now - start_turn_time)
+                        time_hint = f"({elapsed_sec}s, esc: detach · ctrl+c: batal)"
+
+                        cur_desc_val = step_desc() if callable(step_desc) else str(step_desc)
+                        from scripcy.ui.interactive import get_live_terminal_size
+                        term_cols, _ = get_live_terminal_size(self.console)
+                        max_w = max(20, term_cols - 1)
+                        raw_lines = [l for l in str(cur_desc_val).splitlines() if l.strip()] or ["Memproses..."]
+
+                        # Line 0: Worker parent
                         frame = SPINNER_FRAMES[frame_idx]
-                        line = f"\r\x1b[2K\033[1;36m{frame}\033[0m \033[1;37m{disp_desc}\033[0m   \033[2;37m{hint_str}\033[0m"
-                        sys.stdout.write(line)
+                        w_line = raw_lines[0]
+                        if w_line.startswith("[⠋]"):
+                            w_line = w_line[3:].strip()
+                            prefix = f"\033[1;36m{frame}\033[0m "
+                        elif w_line.startswith("[✓]"):
+                            w_line = w_line[3:].strip()
+                            prefix = "\033[1;32m✓\033[0m "
+                        elif w_line.startswith("[✗]"):
+                            w_line = w_line[3:].strip()
+                            prefix = "\033[1;31m✗\033[0m "
+                        else:
+                            prefix = f"\033[1;36m{frame}\033[0m "
+
+                        # Responsive truncation for line 0 so timer and hints are always visible
+                        avail_desc = max(10, max_w - len(time_hint) - 6)
+                        if len(w_line) > avail_desc:
+                            disp_desc = w_line[: avail_desc - 3] + "..."
+                        else:
+                            disp_desc = w_line
+
+                        formatted_line0 = f"\r\x1b[2K{prefix}\033[1;37m{disp_desc}\033[0m  \033[2;37m{time_hint}\033[0m"
+
+                        child_lines: list[str] = []
+                        for cl in raw_lines[1:]:
+                            cl_str = cl
+                            cl_str = cl_str.replace("[⠋]", f"\033[1;36m{frame}\033[0m")
+                            cl_str = cl_str.replace("[✓]", "\033[1;32m✓\033[0m")
+                            cl_str = cl_str.replace("[✗]", "\033[1;31m✗\033[0m")
+                            cl_str = cl_str.replace("[○]", "\033[2;37m○\033[0m")
+                            plain_len = len(re.sub(r"\033\[[0-9;]*m", "", cl_str))
+                            if plain_len > max_w:
+                                cl_str = cl_str[: max_w - 4] + "..."
+                            child_lines.append(f"\r\x1b[2K{cl_str}")
+
+                        if last_rendered_line_count > 1:
+                            sys.stdout.write(f"\x1b[{last_rendered_line_count - 1}A")
+
+                        output_block = formatted_line0
+                        if child_lines:
+                            output_block += "\n" + "\n".join(child_lines)
+
+                        sys.stdout.write(output_block)
                         sys.stdout.flush()
+                        last_rendered_line_count = 1 + len(child_lines)
 
                     await asyncio.sleep(0.04)
 
-                sys.stdout.write("\r\x1b[2K")
+                if last_rendered_line_count > 1:
+                    sys.stdout.write(f"\x1b[{last_rendered_line_count - 1}A")
+                for _ in range(last_rendered_line_count):
+                    sys.stdout.write("\r\x1b[2K\n")
+                if last_rendered_line_count > 0:
+                    sys.stdout.write(f"\x1b[{last_rendered_line_count}A\r")
                 sys.stdout.flush()
                 return await t
 
             except BaseException as exc:
-                sys.stdout.write("\r\x1b[2K")
+                if last_rendered_line_count > 1:
+                    sys.stdout.write(f"\x1b[{last_rendered_line_count - 1}A")
+                for _ in range(last_rendered_line_count):
+                    sys.stdout.write("\r\x1b[2K\n")
+                if last_rendered_line_count > 0:
+                    sys.stdout.write(f"\x1b[{last_rendered_line_count}A\r")
                 sys.stdout.flush()
                 if isinstance(exc, SessionDetachSignal):
                     raise
@@ -1482,6 +1538,54 @@ class StudioAgentLoopMixin:
                 raise
 
         return asyncio.run(_interactive_loop())
+
+    def reattach_running_chat_task(self, task: TaskInfo, session: ChatSession) -> None:
+        """Re-attach interactive foreground monitoring to a running background chat turn task."""
+        model_name = self.get_active_project_model()
+        model_label = _format_model_display_name(model_name)
+        effort = self.get_active_project_effort()
+        prompt_str = f"{self.current_project.name}/chat/{session.name}> " if (self.current_project and session) else "> "
+
+        async def _wait_for_active_task() -> TaskInfo:
+            while True:
+                t_info = self.task_manager.get_task(task.id)
+                if not t_info or t_info.status in ("completed", "failed", "cancelled"):
+                    return t_info or task
+                await asyncio.sleep(0.04)
+
+        def _get_status_line() -> str:
+            t_info = self.task_manager.get_task(task.id)
+            if t_info and t_info.progress and not t_info.progress.startswith("[Watchdog"):
+                return t_info.progress
+            return "Memproses sintesis riset..."
+
+        try:
+            completed_task = self._run_agent_turn_interactive(
+                coro=_wait_for_active_task(),
+                step_desc=_get_status_line,
+                prompt_lbl=prompt_str,
+                model_label=model_label,
+                effort=effort,
+                task_id=task.id,
+            )
+            # Render latest messages if completed
+            if completed_task and completed_task.status == "completed":
+                self._drain_and_render_session_buffer(session.id)
+                if hasattr(self, "chat_manager") and self.chat_manager:
+                    messages = self.chat_manager.get_messages(session.id, limit=2)
+                    for msg in reversed(messages):
+                        if msg.role == "assistant":
+                            self.console.print()
+                            render_academic_markdown(msg.content, console=self.console)
+                            break
+        except SessionDetachSignal:
+            self.sub_mode = None
+            self.console.print(f"\n[bold cyan]● Sesi '{session.name}' di-detach ke latar belakang.[/bold cyan]\n")
+            raise
+        except (KeyboardInterrupt, asyncio.CancelledError):
+            if hasattr(self, "task_manager") and self.task_manager:
+                self.task_manager.cancel_task(task.id)
+            self.console.print(f"\n[dim][x] Tugas {task.id} dibatalkan oleh pengguna.[/dim]\n")
 
     def handle_chat(self, query: str) -> None:
         """Process research query with evidence synthesis and real-time streaming output."""
@@ -1800,13 +1904,20 @@ class StudioAgentLoopMixin:
                             "[Contractor] Memecah kontrak ke Worker (Vault, Web, Literatur)...",
                         )
 
-                        def _on_subagent_tree_update(lines: list[str]) -> None:
-                            for raw_line in reversed(lines):
+                        def _on_subagent_tree_update(tree_data: Any) -> None:
+                            if isinstance(tree_data, list):
+                                raw_lines = [str(x) for x in tree_data]
+                            else:
+                                raw_lines = str(tree_data).splitlines()
+
+                            clean_lines: list[str] = []
+                            for raw_line in raw_lines:
                                 plain = re.sub(r"\[/?[^\]]+\]", "", raw_line).strip()
-                                if "RUNNING" in plain or "QUEUED" in plain:
-                                    cleaned = re.sub(r"^[├└│─\s]+", "", plain)
-                                    self.task_manager.update_progress(task_id, f"[Worker] {cleaned}")
-                                    return
+                                if plain:
+                                    clean_lines.append(plain)
+                            if clean_lines:
+                                formatted_progress = "\n".join(clean_lines)
+                                self.task_manager.update_progress(task_id, formatted_progress)
 
                         orchestrator = SubagentOrchestrator(
                             engine=self.engine,

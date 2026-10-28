@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import os
 import threading
+import time
+import urllib.parse
 from typing import Any, Callable
 
 from pydantic import BaseModel, Field
@@ -107,11 +109,47 @@ class SubagentOrchestrator:
             lines.append(f"  {branch} {icon} [bold bright_white]{label}[/bold bright_white]: [dim]{detail}[/dim]")
         return "\n".join(lines)
 
+    def format_hierarchical_status(
+        self,
+        worker_title: str,
+        worker_state: str,
+        worker_detail: str,
+        agent_states: dict[str, tuple[str, str]],
+        elapsed_seconds: float = 0.0,
+    ) -> str:
+        """Render a 2-tier tree status: Sequential Worker parent and Parallel Agents children."""
+        lines: list[str] = []
+        if worker_state == "done":
+            w_icon = "[✓]"
+            lines.append(f"{w_icon} Worker berhasil menangani contract \"{worker_title}\" ({worker_detail})")
+        elif worker_state == "cancelled":
+            w_icon = "[✗]"
+            lines.append(f"{w_icon} Worker dibatalkan: {worker_detail}")
+        else:
+            w_icon = "[⠋]"
+            lines.append(f"{w_icon} Worker [{worker_title}]: {worker_detail}")
+
+        items = list(agent_states.items())
+        for idx, (label, (st, det)) in enumerate(items):
+            branch = "└──" if idx == len(items) - 1 else "├──"
+            if st == "done":
+                a_icon = "[✓]"
+            elif st == "running":
+                a_icon = "[⠋]"
+            elif st == "cancelled":
+                a_icon = "[✗]"
+            else:
+                a_icon = "[○]"
+            lines.append(f"       {branch} {a_icon} {label}: {det}")
+
+        return "\n".join(lines)
+
     async def _execute_autonomous_scout_subcontracts(
         self,
         scout_subcontracts: list[SubContract],
         session_id: str | None = None,
         cancel_event: threading.Event | None = None,
+        on_agent_status_change: Callable[[str, str, str], None] | None = None,
     ) -> list[str]:
         """Run WebScout and LitScout subcontracts in parallel and coalesce document ingestion into a single batch."""
         if not scout_subcontracts:
@@ -123,6 +161,8 @@ class SubagentOrchestrator:
         async def _run_web(sc: SubContract) -> list[str]:
             stems: list[str] = []
             if not self.web_scout:
+                if on_agent_status_change:
+                    on_agent_status_change("Agent Download Web", "done", "WebScout tidak aktif")
                 return stems
             is_web_mocked = (
                 hasattr(self.web_scout, "_is_mock")
@@ -131,25 +171,42 @@ class SubagentOrchestrator:
                 or "Mock" in type(self.web_scout).__name__
             )
             if is_mock and not is_web_mocked:
+                if on_agent_status_change:
+                    on_agent_status_change("Agent Download Web", "done", "Selesai (mock env)")
                 return stems
 
             vec_vault = getattr(self.vault_manager, "vector_vault", None) if self.vault_manager else None
             for q in sc.search_queries[:2]:
                 if cancel_event and cancel_event.is_set():
+                    if on_agent_status_change:
+                        on_agent_status_change("Agent Download Web", "cancelled", "Dibatalkan oleh pengguna")
                     break
                 try:
+                    if on_agent_status_change:
+                        on_agent_status_change("Agent Download Web", "running", f"Mencari web resmi: '{q[:30]}...'")
                     hits = await self.web_scout.search_official_web(q, limit=2, require_official=True)
                     for hit in (hits or [])[:2]:
+                        if cancel_event and cancel_event.is_set():
+                            break
+                        domain = urllib.parse.urlparse(hit.url).netloc or "web"
+                        if on_agent_status_change:
+                            on_agent_status_change("Agent Download Web", "running", f"Mengunduh web [{domain}]: '{hit.title[:30]}...'")
                         parsed = await self.web_scout.ingest_url(hit.url, vector_vault=vec_vault)
                         if parsed and getattr(parsed, "metadata", None) and parsed.metadata.cite_key:
                             stems.append(parsed.metadata.cite_key)
+                            if on_agent_status_change:
+                                on_agent_status_change("Agent Download Web", "running", f"Mengekstrak visual & teks ({len(stems)} sumber)")
                 except Exception:
                     continue
+            if on_agent_status_change:
+                on_agent_status_change("Agent Download Web", "done", f"{len(stems)} web resmi diindeks" if stems else "Selesai")
             return stems
 
         async def _run_lit(sc: SubContract) -> list[str]:
             stems: list[str] = []
             if not self.scout:
+                if on_agent_status_change:
+                    on_agent_status_change("Agent Download Journal", "done", "LitScout tidak aktif")
                 return stems
             is_lit_mocked = (
                 hasattr(self.scout, "_is_mock")
@@ -158,28 +215,42 @@ class SubagentOrchestrator:
                 or "Mock" in type(self.scout).__name__
             )
             if is_mock and not is_lit_mocked:
+                if on_agent_status_change:
+                    on_agent_status_change("Agent Download Journal", "done", "Selesai (mock env)")
                 return stems
 
             from scripcy.core.scout import ScoutQuery
             for q in sc.search_queries[:2]:
                 if cancel_event and cancel_event.is_set():
+                    if on_agent_status_change:
+                        on_agent_status_change("Agent Download Journal", "cancelled", "Dibatalkan oleh pengguna")
                     break
                 try:
+                    if on_agent_status_change:
+                        on_agent_status_change("Agent Download Journal", "running", f"Mencari repositori jurnal: '{q[:30]}...'")
                     sq = ScoutQuery(keywords=q, limit=3)
                     papers = await self.scout.search_multi_source(sq, limit=3)
                     for p in (papers or [])[:2]:
+                        if cancel_event and cancel_event.is_set():
+                            break
                         stem = sanitize_filename(p.title)
                         if p.has_pdf and p.pdf_url:
                             try:
+                                if on_agent_status_change:
+                                    on_agent_status_change("Agent Download Journal", "running", f"Mengunduh PDF: '{p.title[:35]}...'")
                                 await self.scout.download_scout_paper(p)
                                 stems.append(stem)
                                 continue
                             except Exception:
                                 pass
+                        if on_agent_status_change:
+                            on_agent_status_change("Agent Download Journal", "running", f"Mengindeks abstrak: '{p.title[:35]}...'")
                         await asyncio.to_thread(self.scout.ingest_abstract_paper, p)
                         stems.append(stem)
                 except Exception:
                     continue
+            if on_agent_status_change:
+                on_agent_status_change("Agent Download Journal", "done", f"{len(stems)} naskah jurnal diindeks" if stems else "Selesai")
             return stems
 
         coros = []
@@ -319,6 +390,25 @@ class SubagentOrchestrator:
         gap_extractors = [sc for sc in plan.subcontracts if sc.role == "GapExtractor"]
 
         states: dict[str, tuple[str, str]] = {}
+        start_orch_t = time.monotonic()
+        agent_states: dict[str, tuple[str, str]] = {}
+
+        def _notify_hierarchical(worker_title: str, worker_state: str, worker_detail: str) -> None:
+            if on_tree_update:
+                elapsed = time.monotonic() - start_orch_t
+                tree_str = self.format_hierarchical_status(
+                    worker_title=worker_title,
+                    worker_state=worker_state,
+                    worker_detail=worker_detail,
+                    agent_states=agent_states,
+                    elapsed_seconds=elapsed,
+                )
+                on_tree_update(tree_str)
+
+        def _on_scout_agent_status(name: str, st: str, det: str) -> None:
+            agent_states[name] = (st, det)
+            _notify_hierarchical("Pencarian & Unduhan Literatur", "running", "Mengumpulkan literatur eksternal secara paralel")
+
         if plan_audit and (plan_audit.prune_ids or plan_audit.additions):
             p_cnt = len(plan_audit.prune_ids)
             a_cnt = len(plan_audit.additions)
@@ -328,23 +418,41 @@ class SubagentOrchestrator:
             )
         for sc in local_extractors:
             states[f"Worker [{sc.role}]"] = ("running", f"Mengekstrak {len(sc.evidence_slice)} chunk lokal (Paralel)")
+            agent_states["Agent Ekstraksi Vault"] = ("running", f"Mengekstrak {len(sc.evidence_slice)} chunk lokal...")
         for sc in scout_contracts:
             states[f"Worker [{sc.role}]"] = ("running", f"Menelusuri sumber eksternal ({sc.target_channel})")
+            if sc.role == "WebScout":
+                agent_states["Agent Download Web"] = ("running", "Menyiapkan penelusuran web resmi...")
+            elif sc.role == "LitScout":
+                agent_states["Agent Download Journal"] = ("running", "Menyiapkan penelusuran repositori jurnal...")
         for sc in gap_extractors:
             states[f"Worker [{sc.role}]"] = ("waiting", "Menunggu hasil pencarian & batch index (Antre)")
         states["Worker [ScopeAuditor]"] = ("waiting", "Menunggu seluruh worker selesai (Antre)")
 
-        if on_tree_update:
-            on_tree_update(self.format_tree_status(contract, states))
+        if scout_contracts:
+            _notify_hierarchical("Pencarian & Unduhan Literatur", "running", "Menjalankan agen pencarian paralel")
+        else:
+            _notify_hierarchical("Ekstraksi Fakta", "running", "Mengekstrak bukti lokal")
 
         local_future = asyncio.to_thread(self.pool.run_parallel_extractions, local_extractors)
         scout_future = self._execute_autonomous_scout_subcontracts(
             scout_contracts,
             session_id=session_id,
             cancel_event=cancel_event,
+            on_agent_status_change=_on_scout_agent_status,
         )
 
         local_artifacts, newly_ingested_stems = await asyncio.gather(local_future, scout_future)
+
+        if scout_contracts:
+            if cancel_event and cancel_event.is_set():
+                _notify_hierarchical("Pencarian & Unduhan Literatur", "cancelled", "Operasi dihentikan oleh pengguna")
+            else:
+                _notify_hierarchical(
+                    "Pencarian & Unduhan Literatur",
+                    "done",
+                    f"{len(newly_ingested_stems)} dokumen baru diindeks" if newly_ingested_stems else "Selesai",
+                )
 
         # 1x automated retry fallback for any local extractor that returned no facts
         for idx, art in enumerate(local_artifacts):
@@ -371,6 +479,9 @@ class SubagentOrchestrator:
         all_artifacts = list(local_artifacts)
 
         if gap_extractors and newly_ingested_stems and self.workspace and self.engine:
+            agent_states.clear()
+            agent_states["Agent Ekstraksi Dokumen Baru"] = ("running", f"Mengekstrak bukti dari {len(newly_ingested_stems)} dokumen baru...")
+            _notify_hierarchical("Ekstraksi & Pemetaan Fakta", "running", "Memproses bukti ke Fact Ledger")
             new_paths = [
                 self.workspace.get_cache_path(f"{s}.md")
                 for s in newly_ingested_stems
@@ -395,6 +506,7 @@ class SubagentOrchestrator:
                         f"{len(g_art.extracted_facts)} fakta baru diekstrak ({g_art.tokens_used} tok)",
                     )
                 all_artifacts.extend(gap_artifacts)
+                _notify_hierarchical("Ekstraksi & Pemetaan Fakta", "done", f"{len(all_artifacts)} artefak fakta terverifikasi")
             else:
                 for ge in gap_extractors:
                     states[f"Worker [{ge.role}]"] = ("done", "Tidak ada dokumen baru")
@@ -433,8 +545,15 @@ class SubagentOrchestrator:
             follow_scouts = [sc for sc in ev_adj.follow_up_subcontracts if sc.role in ("WebScout", "LitScout")]
             follow_extractors = [sc for sc in ev_adj.follow_up_subcontracts if sc.role == "GapExtractor"]
 
+            agent_states.clear()
             for sc in follow_scouts:
                 states[f"Worker [{sc.role}]"] = ("running", f"Follow-up: {sc.objective[:45]}...")
+                if sc.role == "WebScout":
+                    agent_states["Agent Download Web"] = ("running", "Menelusuri web lanjutan...")
+                elif sc.role == "LitScout":
+                    agent_states["Agent Download Journal"] = ("running", "Menelusuri jurnal lanjutan...")
+
+            _notify_hierarchical("Penelusuran Literatur Lanjutan", "running", "Mencari bukti tambahan sesuai audit")
             if on_tree_update:
                 on_tree_update(self.format_tree_status(contract, states))
 
@@ -442,6 +561,7 @@ class SubagentOrchestrator:
                 follow_scouts,
                 session_id=session_id,
                 cancel_event=cancel_event,
+                on_agent_status_change=_on_scout_agent_status,
             )
             for sc in follow_scouts:
                 states[f"Worker [{sc.role}]"] = ("done", f"{len(follow_stems)} sumber baru diindeks" if follow_stems else "Selesai")

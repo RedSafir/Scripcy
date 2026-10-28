@@ -293,7 +293,38 @@ class StudioChatHubMixin:
                 self.console.print(f"  [bold cyan]●[/bold cyan] [cyan]{t.name}{st_tag}[/cyan] [dim]({t.progress or 'Sedang memproses...'} • ID: {t.id})[/dim]")
             self.console.print(" [dim]• Indikator proses aktif di bawah prompt. Ketik /proc untuk pantau atau /detach untuk kembali.[/dim]\n")
 
+        # Check if an active agent/turn synthesis task is running in this session and reattach immediately
+        active_turn_task = next(
+            (t for t in running if getattr(t, "is_active", t.status == "running") and (t.task_type == "agent" or t.lane == "turn")),
+            None,
+        )
+        if active_turn_task and hasattr(self, "reattach_running_chat_task"):
+            self.console.print(f"[bold cyan]● Mengaitkan kembali (re-attach) ke proses yang sedang berjalan: {active_turn_task.name}...[/bold cyan]")
+            try:
+                self.reattach_running_chat_task(active_turn_task, session)
+            except SessionDetachSignal:
+                self.sub_mode = "chat_hub"
+                return
+            except (KeyboardInterrupt, asyncio.CancelledError):
+                pass
+
         while self.sub_mode == "chat" and self.active_chat_session:
+            # Check again at loop top: if a turn task is currently active, re-attach immediately without prompt
+            cur_session_tasks = self.task_manager.list_tasks_for_session(session.id) if self.task_manager else []
+            active_turn = next(
+                (t for t in cur_session_tasks if getattr(t, "is_active", t.status == "running") and (t.task_type == "agent" or t.lane == "turn")),
+                None,
+            )
+            if active_turn and hasattr(self, "reattach_running_chat_task"):
+                try:
+                    self.reattach_running_chat_task(active_turn, session)
+                except SessionDetachSignal:
+                    self.sub_mode = "chat_hub"
+                    break
+                except (KeyboardInterrupt, asyncio.CancelledError):
+                    pass
+                continue
+
             # Flush any background UI events and session buffer first
             self._flush_pending_ui_events()
             self._drain_and_render_session_buffer(session.id)
