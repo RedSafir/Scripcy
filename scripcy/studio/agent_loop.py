@@ -616,6 +616,16 @@ class StudioAgentLoopMixin:
         promisor: Promisor = getattr(self, "promisor", None) or Promisor()
         sess_id = self.active_chat_session.id if self.active_chat_session else None
         decision = promisor.evaluate(clean, session_id=sess_id)
+
+        # 1. Entry Point: Direct Fast Reply (0 Token - Casual / Chit-chat)
+        if decision.entry_point == "direct" and decision.direct_reply:
+            session = self._ensure_active_chat_session()
+            if session and self.chat_manager:
+                self.chat_manager.add_message(session.id, "user", clean)
+                self.chat_manager.add_message(session.id, "assistant", decision.direct_reply)
+            self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Scripcy[/bold bright_white] [dim](Direct Fast Reply • 0 tok)[/dim]\n{decision.direct_reply}\n")
+            return
+
         if decision.is_system_tool:
             handled = self._dispatch_promisor_action(decision, original_prompt=clean)
             if handled:
@@ -1665,7 +1675,30 @@ class StudioAgentLoopMixin:
             )
             t_contract_s = time.time()
             contract_extractor = self.contract_extractor or TaskContractExtractor(engine=self.engine)
-            task_contract = contract_extractor.extract(query)
+            promisor_decision = getattr(self, "promisor", Promisor()).evaluate(query, session_id=session.id if session else None)
+            
+            # Short-circuit Archetype if dispatched directly to Examiner (Hypothesis Testing) or Manager (Revision)
+            if promisor_decision.entry_point == "examiner":
+                task_contract = TaskContract(
+                    archetype="DIALECTICAL_CRITIQUE",
+                    primary_goal=f"Audit dan verifikasi ketahanan hipotesis ilmiah: {query[:120]}",
+                    in_scope=["Verifikasi klaim empiris", "Counter-evidence dan batasan metodologi"],
+                    out_of_scope=["Tinjauan pustaka umum yang tidak membantah/mendukung hipotesis"],
+                    format_requirements="Audit dialektis terstruktur (Status Hipotesis, Bukti Pendukung, Counter-Evidence, Batasan).",
+                    allow_counter_arguments=True,
+                    unlimited_tokens=True,
+                )
+            elif promisor_decision.entry_point == "manager":
+                task_contract = TaskContract(
+                    archetype="FOCUSED_QA",
+                    primary_goal=f"Penyempurnaan dan perbaikan draf berdasarkan masukan pengguna: {query[:120]}",
+                    in_scope=["Perbaikan spesifik sesuai masukan pengguna", "Retensi fakta sahih yang telah terverifikasi"],
+                    out_of_scope=["Menulis ulang pembahasan dari nol di luar konteks revisi"],
+                    format_requirements="Draf hasil perbaikan presisi dan terstruktur.",
+                    unlimited_tokens=True,
+                )
+            else:
+                task_contract = contract_extractor.extract(query)
             t_contract_dur = time.time() - t_contract_s
             if hasattr(self, "logger") and self.logger:
                 self.logger.log_task_contract(

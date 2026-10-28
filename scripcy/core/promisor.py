@@ -15,15 +15,19 @@ from typing import Any
 
 @dataclass
 class PromisorDecision:
-    """Decision output produced by the Promisor heuristic engine."""
+    """Decision output produced by the Promisor heuristic & AI entry-point dispatcher."""
 
     is_system_tool: bool
-    action: str  # e.g. "vault.images", "vault.tables", "vault.errors", "models.tokens", "vault.list"
+    action: str  # e.g. "vault.images", "vault.tables", "vault.errors", "models.tokens", "vault.list", "casual.reply", "ai_chat"
     display_label: str  # Human-readable action label shown in confirmation dialog
     command_equivalent: str = ""  # CLI / Slash command equivalent
     args: dict[str, Any] = field(default_factory=dict)
     confidence: float = 1.0
     reason: str = ""
+    # Hierarchical Entry-Point Dispatch Governance:
+    # "contractor" | "examiner" | "manager" | "worker" | "direct"
+    entry_point: str = "contractor"
+    direct_reply: str | None = None
 
 
 class Promisor:
@@ -34,6 +38,29 @@ class Promisor:
 
     def _compile_patterns(self) -> None:
         """Compile regex grammars for high-throughput zero-latency matching."""
+        # 0. Casual Chit-chat & Greetings (Direct Reply - 0 Token)
+        self.re_casual_chitchat = re.compile(
+            r"^(halo|hai|hi|hey|hei|pagi|selamat\s+(pagi|siang|sore|malam)|assalamu['a]?laikum|"
+            r"(terima\s+kasih|makasih|thanks?|tq|matur\s+nuwun)(\s+(banyak|ya|mas|bro|gan|bang|scripcy|ai))*|"
+            r"(oke|siap|noted|baiklah|mantap|keren|good\s+job|nice|wkwk+|bye|sampai\s+jumpa)(\s+(ya|mas|bro|gan|bang|scripcy|ai|paham|noted|oke|siap))*|"
+            r"tes(\s+123)?|testing(\s+123)?|kamu\s+siapa|siapa\s+kamu)[!.\s]*$",
+            re.IGNORECASE,
+        )
+
+        # 0b. Revision / Patching indicators (Manager Entry Point)
+        self.re_revision_intent = re.compile(
+            r"\b(perbaiki|revisi|koreksi|ubah|tambahkan|update|tulis\s+ulang|edit|kurang\s+detail|ganti\s+bagian|"
+            r"ringkas\s+lagi|perpendek|perpanjang|terjemahkan\s+jawaban\s+tadi)\b",
+            re.IGNORECASE,
+        )
+
+        # 0c. Hypothesis Testing / Claim Verification (Examiner Entry Point)
+        self.re_hypothesis_audit = re.compile(
+            r"\b(apakah\s+benar|uji\s+hipotesis|verifikasi\s+klaim|validkah|apakah\s+klaim|apakah\s+betul|"
+            r"benarkah\s+bahwa|is\s+it\s+true\s+that|verify\s+claim|audit\s+klaim|uji\s+apakah)\b",
+            re.IGNORECASE,
+        )
+
         # 1. Synthesis & deep analysis guards (if present, route to AI chat)
         self.re_ai_indicators = re.compile(
             r"\b(lalu|kemudian|dan)\s+(jelaskan|simpulkan|analisis|uraikan|interpretasikan|bandingkan|kritisi)\b|"
@@ -191,18 +218,52 @@ class Promisor:
         clean = user_input.strip()
         sess_id = session_id or active_session_id
         if not clean:
-            return PromisorDecision(is_system_tool=False, action="none", display_label="Pesan Kosong")
+            return PromisorDecision(is_system_tool=False, action="none", display_label="Pesan Kosong", entry_point="direct")
 
-        # Guard: If input has explicit AI synthesis/analytical intent, prioritize AI chat
-        if self.re_ai_indicators.search(clean):
+        # 0. Casual Chit-chat & Greetings (Direct Reply - 0 Token)
+        if self.re_casual_chitchat.match(clean):
+            # Fast polite direct response without heavy pipeline overhead
+            lower_c = clean.lower()
+            if any(w in lower_c for w in ("terima kasih", "makasih", "thanks", "matur nuwun")):
+                reply = "Sama-sama! Senang bisa membantu. Ada topik riset atau dokumen lain di vault yang ingin dianalisis?"
+            elif any(w in lower_c for w in ("oke", "siap", "noted", "baiklah", "mantap", "keren")):
+                reply = "Siap. Silakan sampaikan pertanyaan atau instruksi riset berikutnya kapan saja."
+            elif any(w in lower_c for w in ("kamu siapa", "siapa kamu")):
+                reply = "Saya Scripcy, asisten riset akademis berbasis bukti dokumen vault dan literatur ilmiah."
+            elif any(w in lower_c for w in ("tes", "testing")):
+                reply = "Scripcy aktif dan siap memproses naskah atau pertanyaan riset Anda."
+            else:
+                reply = "Halo! Ada naskah di vault atau topik penelitian yang ingin kita telaah bersama?"
+            return PromisorDecision(
+                is_system_tool=False,
+                action="casual.reply",
+                display_label="Respon Ramah Langsung (0 Token LLM)",
+                reason="Terdeteksi sapaan / ucapan terima kasih / konfirmasi santai.",
+                entry_point="direct",
+                direct_reply=reply,
+            )
+
+        # 0b. Revision / Patching Intent -> Dispatched to Manager (Working Memory)
+        if self.re_revision_intent.search(clean):
             return PromisorDecision(
                 is_system_tool=False,
                 action="ai_chat",
-                display_label="Riset & Sintesis AI",
-                reason="Terdeteksi pertanyaan konseptual / instruksi sintesis akademis.",
+                display_label="Revisi & Perbaikan Draf Sesi (Manager)",
+                reason="Permintaan revisi/perbaikan dialihkan langsung ke Manager menggunakan draf baseline sebelumnya.",
+                entry_point="manager",
             )
 
-        # 1. Vault Errors & Broken Files
+        # 0c. Hypothesis Testing / Claim Verification -> Dispatched to Examiner
+        if self.re_hypothesis_audit.search(clean):
+            return PromisorDecision(
+                is_system_tool=False,
+                action="ai_chat",
+                display_label="Audit & Pengujian Hipotesis (Examiner)",
+                reason="Permintaan verifikasi kebenaran/klaim dialihkan langsung ke Examiner untuk audit empiris.",
+                entry_point="examiner",
+            )
+
+        # 1. Vault Errors & Broken Files -> Dispatched to Worker
         if self.re_vault_errors.search(clean):
             return PromisorDecision(
                 is_system_tool=True,
@@ -210,6 +271,7 @@ class Promisor:
                 display_label="Tampilkan Daftar Berkas Rusak / Error di Vault",
                 command_equivalent="/vault errors",
                 reason="Pemeriksaan berkas yang mengalami kegagalan konversi atau tidak didukung.",
+                entry_point="worker",
             )
 
         # 2. Vault Paper Images
@@ -465,10 +527,11 @@ class Promisor:
                 reason="Monitoring background workers dan antrean proses.",
             )
 
-        # Default fallback: Route to AI Chat
+        # Default fallback: Route to AI Chat (Contractor Entry Point)
         return PromisorDecision(
             is_system_tool=False,
             action="ai_chat",
-            display_label="Riset & Pertanyaan AI",
-            reason="Tidak terdeteksi perintah sistem, dialihkan ke pipeline sintesis AI.",
+            display_label="Riset & Pertanyaan AI (Contractor)",
+            reason="Pertanyaan riset akademis baru dialihkan ke Contractor untuk formulasi Small Contracts.",
+            entry_point="contractor",
         )
