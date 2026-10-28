@@ -1817,15 +1817,13 @@ class StudioAgentLoopMixin:
 
             # Big Contract (task_contract) is held internally by Scripcy as system state.
             # Only a concise Small Contract directive is dispatched to the model prompt.
-            token_target_desc = (
-                "Bebas / Tanpa Batas"
-                if task_contract.unlimited_tokens
-                else f"{task_contract.min_words}-{task_contract.max_words} kata"
-            )
+            format_desc = task_contract.format_requirements
+            if not task_contract.unlimited_tokens:
+                format_desc = f"{format_desc} (~{task_contract.min_words}-{task_contract.max_words} kata)"
             small_contract_directive = (
                 f"\n\n[TUGAS KONTRAK: {task_contract.archetype}]\n"
                 f"Sasaran: {task_contract.primary_goal}\n"
-                f"Format & Alokasi: {task_contract.format_requirements} ({token_target_desc})."
+                f"Format: {format_desc}."
             )
             current_query = f"{current_query}{small_contract_directive}"
             current_docs = list(existing_paths)

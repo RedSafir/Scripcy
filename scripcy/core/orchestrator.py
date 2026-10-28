@@ -311,14 +311,8 @@ class SubagentOrchestrator:
                 f"```tsv\n{tsv_ledger}\n```"
             )
 
-        margin_disp = int(round(contract.token_margin_pct * 100))
-        if getattr(contract, "unlimited_tokens", True):
-            parts.append(
-                "[ALOKASI KUOTA TOKEN & KEDALAMAN SUBSTANSI]:\n"
-                "- Mode: BEBAS / UNLIMITED (Tanpa batas kuota token sempit).\n"
-                "- Tuliskan elaborasi mendalam, tuntas, dan komprehensif. DILARANG menyingkat atau memotong rincian metodologi, fakta, dan komparasi penting."
-            )
-        else:
+        if not getattr(contract, "unlimited_tokens", True):
+            margin_disp = int(round(contract.token_margin_pct * 100))
             parts.append(
                 f"[ALOKASI KUOTA TOKEN KONTRAK ABSOLUT]:\n"
                 f"- Target Token Output: ~{contract.target_output_tokens} token "
