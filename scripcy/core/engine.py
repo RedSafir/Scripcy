@@ -162,6 +162,8 @@ class EvidenceSynthesizer:
             expansions.append(f"{clean} {' '.join(addon_terms)}")
 
         return expansions
+
+    def score_chunk(self, query_terms: list[str], full_query: str, chunk_text: str) -> float:
         """Compute relevance score for a passage based on term frequency and phrase match."""
         if not query_terms:
             return 0.0
