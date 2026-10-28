@@ -40,10 +40,10 @@ class Promisor:
         """Compile regex grammars for high-throughput zero-latency matching."""
         # 0. Casual Chit-chat & Greetings (Direct Reply - 0 Token)
         self.re_casual_chitchat = re.compile(
-            r"^(halo|hai|hi|hey|hei|pagi|selamat\s+(pagi|siang|sore|malam)|assalamu['a]?laikum|"
-            r"(terima\s+kasih|makasih|thanks?|tq|matur\s+nuwun)(\s+(banyak|ya|mas|bro|gan|bang|scripcy|ai))*|"
-            r"(oke|siap|noted|baiklah|mantap|keren|good\s+job|nice|wkwk+|bye|sampai\s+jumpa)(\s+(ya|mas|bro|gan|bang|scripcy|ai|paham|noted|oke|siap))*|"
-            r"tes(\s+123)?|testing(\s+123)?|kamu\s+siapa|siapa\s+kamu)[!.\s]*$",
+            r"^(?:(?:halo|hai|hi|hey|hei|pagi|selamat\s+(?:pagi|siang|sore|malam)|assalamu['a]?laikum|"
+            r"terima\s+kasih|makasih|thanks?|tq|matur\s+nuwun|oke|siap|noted|baiklah|mantap|keren|good\s+job|nice|"
+            r"wkwk+|bye|sampai\s+jumpa|tes(?:\s+123)?|testing(?:\s+123)?|kamu\s+siapa|siapa\s+kamu|"
+            r"banyak|ya|mas|bro|gan|bang|scripcy|ai|paham)[\s,!.]*)+$",
             re.IGNORECASE,
         )
 
