@@ -285,6 +285,7 @@ def test_contract_token_margin_pct_and_ai_first_extraction() -> None:
     from scripcy.core.engine import LLMEngine
 
     cfg = ScripcyConfig()
+    cfg.contract_unlimited_tokens = False
     assert cfg.contract_token_margin_pct == 0.30
 
     def fake_ai_contract_fn(sys_prompt: str, user_query: str) -> dict[str, Any]:
