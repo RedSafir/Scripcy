@@ -301,99 +301,125 @@ def append_vault_bibliography(
         "### 📚 Daftar Pustaka:",
     ]
 
+    base_vault_dir = getattr(vault_manager, "vault_dir", None) or Path("vault")
+    annotated_dir = Path(base_vault_dir) / "annotated"
+
+    # Pre-generate annotated visual evidence per evidence chunk (fine-grained claim level)
+    # Map (paper_stem, page_num) -> link_url
+    chunk_annot_urls: list[dict[str, Any]] = []
+    if evidence:
+        for ev_idx, ev in enumerate(evidence, 1):
+            ev_source_clean = re.sub(r"_c\d+$", "", Path(ev.source).stem).lower()
+            ev_page = ev.page_num or 1
+            ev_quote = ev.quote_snippet or ""
+            target_p = None
+            for e in entries:
+                if e.get("path") and ev_source_clean in Path(e["path"]).stem.lower():
+                    target_p = Path(e["path"])
+                    break
+
+            ev_url = ""
+            if target_p and target_p.exists() and target_p.suffix.lower() == ".pdf" and ev_quote:
+                annot_pdf = EvidenceHighlighter.highlight_pdf_passage(
+                    pdf_path=target_p,
+                    page_num=ev_page,
+                    quote_snippet=ev_quote,
+                    output_dir=annotated_dir,
+                    prefix_id=f"ev_p{ev_page}_{ev_idx}",
+                )
+                tgt_f = annot_pdf if annot_pdf and annot_pdf.exists() else target_p
+                clean_fp = tgt_f.resolve().as_posix()
+                if not clean_fp.startswith("/"):
+                    clean_fp = f"/{clean_fp}"
+                ev_url = f"file://{clean_fp}#page={ev_page}"
+            elif target_p and target_p.exists():
+                clean_fp = target_p.resolve().as_posix()
+                if not clean_fp.startswith("/"):
+                    clean_fp = f"/{clean_fp}"
+                ev_url = f"file://{clean_fp}#page={ev_page}"
+
+            if ev_url:
+                chunk_annot_urls.append({
+                    "stem": ev_source_clean,
+                    "page_num": ev_page,
+                    "quote": ev_quote,
+                    "text": ev.text,
+                    "url": ev_url,
+                })
+
     for idx, entry in enumerate(entries, 1):
         key = entry["key"]
         ref_text = entry["formatted_entry"]
         filename = entry["filename"]
         raw_path = entry.get("path")
-
-        # Find matching evidence chunk to extract page number and quote snippet
-        page_str = ""
-        quote_str = ""
-        matching_ev = None
-        if evidence:
-            for ev in evidence:
-                if str(ev.source).lower() in filename.lower() or filename.lower().startswith(str(ev.source).lower()):
-                    matching_ev = ev
-                    if ev.page_num:
-                        page_str = f" • Halaman {ev.page_num}"
-                    if ev.quote_snippet:
-                        clean_quote = ev.quote_snippet.strip().replace("\n", " ")
-                        quote_str = f"  \n   > _\"{clean_quote}\"_"
-                    break
-
-        file_link_str = f"`[File: {filename}{page_str}]`"
         p_obj = Path(raw_path) if raw_path else None
+        p_stem = p_obj.stem.lower() if p_obj else filename.lower()
 
-        link_url = ""
-        # Check if source is PDF and can be annotated with permanent yellow stabilo
-        if p_obj and p_obj.exists() and p_obj.suffix.lower() == ".pdf" and matching_ev and matching_ev.quote_snippet:
-            base_vault_dir = getattr(vault_manager, "vault_dir", None) or Path("vault")
-            annotated_dir = Path(base_vault_dir) / "annotated"
-            annotated_pdf = EvidenceHighlighter.highlight_pdf_passage(
-                pdf_path=p_obj,
-                page_num=matching_ev.page_num,
-                quote_snippet=matching_ev.quote_snippet,
-                output_dir=annotated_dir,
-                prefix_id=f"ev{idx}",
-            )
-            target_file = annotated_pdf if annotated_pdf and annotated_pdf.exists() else p_obj
-            clean_fp = target_file.resolve().as_posix()
-            if not clean_fp.startswith("/"):
-                clean_fp = f"/{clean_fp}"
-            page_param = f"#page={matching_ev.page_num}"
-            link_url = f"file://{clean_fp}{page_param}"
-            file_link_str = f"[`{filename}{page_str} (Tersorot Stabilo)`]({link_url})"
-        elif p_obj and p_obj.exists():
-            # Check if source is Web document with URL
-            url_target = None
-            if p_obj.suffix.lower() == ".md" and p_obj.read_text(encoding="utf-8", errors="ignore").startswith("---"):
-                try:
-                    import yaml
-                    content_str = p_obj.read_text(encoding="utf-8", errors="ignore")
-                    m = re.match(r"^---\n(.*?)\n---", content_str, re.DOTALL)
-                    if m:
-                        meta_yaml = yaml.safe_load(m.group(1)) or {}
-                        url_target = meta_yaml.get("url") or meta_yaml.get("source_url")
-                except Exception:
-                    pass
+        # Find all matching evidence chunks for this entry
+        matching_chunks = [c for c in chunk_annot_urls if c["stem"] in p_stem or p_stem in c["stem"]]
 
-            if url_target and matching_ev and matching_ev.quote_snippet:
-                frag_url = EvidenceHighlighter.generate_web_highlight_url(url_target, matching_ev.quote_snippet)
-                link_url = frag_url
-                file_link_str = f"[`{filename} (Tersorot di Web)`]({frag_url})"
-            else:
-                clean_fp = p_obj.resolve().as_posix()
-                if not clean_fp.startswith("/"):
-                    clean_fp = f"/{clean_fp}"
-                page_param = f"#page={matching_ev.page_num}" if (matching_ev and matching_ev.page_num) else ""
-                link_url = f"file://{clean_fp}{page_param}"
-                file_link_str = f"[`{filename}{page_str}`]({link_url})"
-
-        # Hyperlink inline narrative citation keys (e.g. (Putra, 2026) -> [(Putra, 2026)](link_url))
-        if link_url and key:
-            # Match both (Author, Year) and Author (Year)
+        # 1. Hyperlink inline citations in the body text on a paragraph/claim level
+        if key:
             clean_k = key.strip("()[]")
             k_esc = re.escape(clean_k)
-            # 1. (Author, Year) -> [(Author, Year)](url)
-            cleaned_text = re.sub(
-                r"(?<!\[)\(" + k_esc + r"\)(?!\])",
-                f"[({clean_k})]({link_url})",
-                cleaned_text,
-            )
-            # 2. Author (Year) -> [Author (Year)](url)
-            if ", " in clean_k:
-                k_auth, k_yr = clean_k.split(", ", 1)
-                narr_pat = re.escape(k_auth) + r"\s*\(" + re.escape(k_yr) + r"\)"
-                cleaned_text = re.sub(
-                    r"(?<!\[)" + narr_pat + r"(?!\])",
-                    f"[{k_auth} ({k_yr})]({link_url})",
-                    cleaned_text,
-                )
+            # Find paragraphs containing this citation
+            paras = cleaned_text.split("\n\n")
+            new_paras = []
+            for para in paras:
+                if re.search(r"(?<!\[)\(" + k_esc + r"\)(?!\])", para) or (
+                    ", " in clean_k and re.search(r"(?<!\[)" + re.escape(clean_k.split(", ")[0]) + r"\s*\(" + re.escape(clean_k.split(", ")[1]) + r"\)(?!\])", para)
+                ):
+                    # Pick best matching evidence chunk for this specific paragraph
+                    best_url = ""
+                    if matching_chunks:
+                        para_words = set(re.findall(r"\b\w{4,}\b", para.lower()))
+                        best_score = -1
+                        for mc in matching_chunks:
+                            chunk_words = set(re.findall(r"\b\w{4,}\b", (mc["quote"] + " " + mc["text"]).lower()))
+                            overlap = len(para_words & chunk_words)
+                            if overlap > best_score:
+                                best_score = overlap
+                                best_url = mc["url"]
+                    if not best_url and matching_chunks:
+                        best_url = matching_chunks[0]["url"]
+
+                    if best_url:
+                        # Replace in this paragraph
+                        para = re.sub(
+                            r"(?<!\[)\(" + k_esc + r"\)(?!\])",
+                            f"[({clean_k})]({best_url})",
+                            para,
+                        )
+                        if ", " in clean_k:
+                            k_auth, k_yr = clean_k.split(", ", 1)
+                            narr_pat = re.escape(k_auth) + r"\s*\(" + re.escape(k_yr) + r"\)"
+                            para = re.sub(
+                                r"(?<!\[)" + narr_pat + r"(?!\])",
+                                f"[{k_auth} ({k_yr})]({best_url})",
+                                para,
+                            )
+                new_paras.append(para)
+            cleaned_text = "\n\n".join(new_paras)
+
+        # 2. Format Bibliography links (include distinct page proofs if available)
+        proof_links = []
+        seen_pages = set()
+        for mc in matching_chunks:
+            p_no = mc["page_num"]
+            if p_no not in seen_pages:
+                q_snip = f' > _"{mc["quote"][:120].strip()}"_' if mc["quote"] else ""
+                proof_links.append(f"[`Halaman {p_no} (Tersorot Stabilo)`]({mc['url']}){(' ' + q_snip) if q_snip else ''}")
+                seen_pages.add(p_no)
+
+        if proof_links:
+            proof_str = "  \n   " + "\n   ".join(proof_links)
+        else:
+            default_url = f"file:///{p_obj.resolve().as_posix()}" if p_obj else ""
+            proof_str = f"  \n   [`{filename}`]({default_url})" if default_url else ""
 
         if norm_style == "IEEE":
-            lines.append(f"{ref_text}  \n   {file_link_str}{quote_str}")
+            lines.append(f"{ref_text}{proof_str}")
         else:
-            lines.append(f"{idx}. **{key}** {ref_text}  \n   {file_link_str}{quote_str}")
+            lines.append(f"{idx}. **{key}** {ref_text}{proof_str}")
 
     return cleaned_text.rstrip() + "\n" + "\n".join(lines) + "\n"

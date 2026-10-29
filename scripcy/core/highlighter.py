@@ -43,8 +43,8 @@ class EvidenceHighlighter:
             target_page_idx = max(0, min(page_num - 1, len(doc) - 1))
             page = doc[target_page_idx]
 
-            # Clean quote query to improve match rate (remove markdown, extra whitespace)
-            clean_quote = re.sub(r"[#*_`\"']", "", quote_snippet).strip()
+            # Clean quote query to improve match rate (remove markdown, punctuation, extra whitespace)
+            clean_quote = re.sub(r"[#*_`\"'()]", "", quote_snippet).strip()
             # Try full match first
             quads = page.search_for(clean_quote)
 
@@ -54,6 +54,18 @@ class EvidenceHighlighter:
                 if len(words) >= 4:
                     shorter = " ".join(words[:6])
                     quads = page.search_for(shorter)
+
+            # If still no match, slide a 3-to-4 word window across the quote snippet
+            if not quads:
+                words = [w.strip(".,;:?!") for w in clean_quote.split() if len(w.strip(".,;:?!")) > 2]
+                for w_len in (4, 3):
+                    for i in range(len(words) - w_len + 1):
+                        window = " ".join(words[i : i + w_len])
+                        quads = page.search_for(window)
+                        if quads:
+                            break
+                    if quads:
+                        break
 
             if quads:
                 annot = page.add_highlight_annot(quads)
