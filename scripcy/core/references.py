@@ -358,61 +358,113 @@ def append_vault_bibliography(
         # Find all matching evidence chunks for this entry
         matching_chunks = [c for c in chunk_annot_urls if c["stem"] in p_stem or p_stem in c["stem"]]
 
-        # 1. Hyperlink inline citations in the body text on a paragraph/claim level
+        # Extract full-PDF sentence index so EVERY citation occurrence in the draft can match its exact page & sentence
+        sentence_index: list[dict[str, Any]] = []
+        sent_df: dict[str, int] = {}
+        if p_obj and p_obj.exists() and p_obj.suffix.lower() == ".pdf":
+            sentence_index, sent_df = EvidenceHighlighter.extract_pdf_sentence_index(p_obj)
+
+        # Track all distinct (page_num, quote, url) proofs actually used across inline citations + evidence
+        used_proofs: list[dict[str, Any]] = []
+        annot_cache: dict[tuple[int, str], str] = {}
+
+        def _get_or_create_annot_url(p_num: int, q_text: str, occ_id: int) -> str:
+            cache_key = (p_num, q_text[:60])
+            if cache_key in annot_cache:
+                return annot_cache[cache_key]
+            if p_obj and p_obj.exists() and p_obj.suffix.lower() == ".pdf" and q_text:
+                annot_pdf = EvidenceHighlighter.highlight_pdf_passage(
+                    pdf_path=p_obj,
+                    page_num=p_num,
+                    quote_snippet=q_text,
+                    output_dir=annotated_dir,
+                    prefix_id=f"c{idx}_p{p_num}_{occ_id}",
+                )
+                tgt_f = annot_pdf if annot_pdf and annot_pdf.exists() else p_obj
+                clean_fp = tgt_f.resolve().as_posix()
+                if not clean_fp.startswith("/"):
+                    clean_fp = f"/{clean_fp}"
+                res_url = f"file://{clean_fp}#page={p_num}"
+                annot_cache[cache_key] = res_url
+                used_proofs.append({"page_num": p_num, "quote": q_text, "url": res_url})
+                return res_url
+            elif matching_chunks:
+                return matching_chunks[0]["url"]
+            elif p_obj and p_obj.exists():
+                clean_fp = p_obj.resolve().as_posix()
+                if not clean_fp.startswith("/"):
+                    clean_fp = f"/{clean_fp}"
+                return f"file://{clean_fp}#page={p_num}"
+            return ""
+
+        # 1. Hyperlink EVERY inline citation occurrence at the line/sentence/table-row level
         if key:
             clean_k = key.strip("()[]")
             k_esc = re.escape(clean_k)
-            # Find paragraphs containing this citation
-            paras = cleaned_text.split("\n\n")
-            new_paras = []
-            for para in paras:
-                if re.search(r"(?<!\[)\(" + k_esc + r"\)(?!\])", para) or (
-                    ", " in clean_k and re.search(r"(?<!\[)" + re.escape(clean_k.split(", ")[0]) + r"\s*\(" + re.escape(clean_k.split(", ")[1]) + r"\)(?!\])", para)
-                ):
-                    # Pick best matching evidence chunk for this specific paragraph
-                    best_url = ""
-                    if matching_chunks:
-                        para_words = set(re.findall(r"\b\w{4,}\b", para.lower()))
-                        best_score = -1
-                        for mc in matching_chunks:
-                            chunk_words = set(re.findall(r"\b\w{4,}\b", (mc["quote"] + " " + mc["text"]).lower()))
-                            overlap = len(para_words & chunk_words)
-                            if overlap > best_score:
-                                best_score = overlap
-                                best_url = mc["url"]
-                    if not best_url and matching_chunks:
-                        best_url = matching_chunks[0]["url"]
+            paren_regex = re.compile(r"(?<!\[)\(" + k_esc + r"\)(?!\])")
+            narr_regex = None
+            k_auth, k_yr = "", ""
+            if ", " in clean_k:
+                k_auth, k_yr = clean_k.split(", ", 1)
+                narr_regex = re.compile(r"(?<!\[)" + re.escape(k_auth) + r"\s*\(" + re.escape(k_yr) + r"\)(?!\])")
 
+            occ_counter = [0]
+            body_lines = cleaned_text.split("\n")
+            new_body_lines = []
+
+            for b_line in body_lines:
+                has_paren = bool(paren_regex.search(b_line))
+                has_narr = bool(narr_regex and narr_regex.search(b_line))
+                if not has_paren and not has_narr:
+                    new_body_lines.append(b_line)
+                    continue
+
+                # Split line into sentences (unless it is a Markdown table row, where the whole row is the claim)
+                is_table_row = b_line.lstrip().startswith("|")
+                if is_table_row:
+                    occ_counter[0] += 1
+                    p_num, q_sent = EvidenceHighlighter.match_claim_to_pdf_sentence(
+                        b_line, sentence_index, sent_df, fallback_chunks=matching_chunks
+                    )
+                    best_url = _get_or_create_annot_url(p_num, q_sent, occ_counter[0])
                     if best_url:
-                        # Replace in this paragraph
-                        para = re.sub(
-                            r"(?<!\[)\(" + k_esc + r"\)(?!\])",
-                            f"[({clean_k})]({best_url})",
-                            para,
-                        )
-                        if ", " in clean_k:
-                            k_auth, k_yr = clean_k.split(", ", 1)
-                            narr_pat = re.escape(k_auth) + r"\s*\(" + re.escape(k_yr) + r"\)"
-                            para = re.sub(
-                                r"(?<!\[)" + narr_pat + r"(?!\])",
-                                f"[{k_auth} ({k_yr})]({best_url})",
-                                para,
+                        b_line = paren_regex.sub(f"[({clean_k} • Hal. {p_num})]({best_url})", b_line)
+                        if narr_regex:
+                            b_line = narr_regex.sub(f"[{k_auth} ({k_yr}, Hal. {p_num})]({best_url})", b_line)
+                    new_body_lines.append(b_line)
+                else:
+                    # Process per sentence within the line so multiple citations in one paragraph map to their exact sentences
+                    sents = re.split(r"(?<=[.!?])\s+(?=[A-Z0-9\*\(\[])", b_line)
+                    new_sents = []
+                    for s_part in sents:
+                        if paren_regex.search(s_part) or (narr_regex and narr_regex.search(s_part)):
+                            occ_counter[0] += 1
+                            p_num, q_sent = EvidenceHighlighter.match_claim_to_pdf_sentence(
+                                s_part, sentence_index, sent_df, fallback_chunks=matching_chunks
                             )
-                new_paras.append(para)
-            cleaned_text = "\n\n".join(new_paras)
+                            best_url = _get_or_create_annot_url(p_num, q_sent, occ_counter[0])
+                            if best_url:
+                                s_part = paren_regex.sub(f"[({clean_k} • Hal. {p_num})]({best_url})", s_part)
+                                if narr_regex:
+                                    s_part = narr_regex.sub(f"[{k_auth} ({k_yr}, Hal. {p_num})]({best_url})", s_part)
+                        new_sents.append(s_part)
+                    new_body_lines.append(" ".join(new_sents))
 
-        # 2. Format Bibliography links (include distinct page proofs if available)
+            cleaned_text = "\n".join(new_body_lines)
+
+        # 2. Format Bibliography links (combine distinct page proofs from inline claims + retrieved chunks)
+        all_candidate_proofs = used_proofs + matching_chunks
         proof_links = []
         seen_pages = set()
-        for mc in matching_chunks:
+        for mc in all_candidate_proofs:
             p_no = mc["page_num"]
             if p_no not in seen_pages:
                 q_snip = f' > _"{mc["quote"][:120].strip()}"_' if mc["quote"] else ""
-                proof_links.append(f"[`Halaman {p_no} (Tersorot Stabilo)`]({mc['url']}){(' ' + q_snip) if q_snip else ''}")
+                proof_links.append(f"- [`Halaman {p_no} (Tersorot Stabilo)`]({mc['url']}){(' ' + q_snip) if q_snip else ''}")
                 seen_pages.add(p_no)
 
         if proof_links:
-            proof_str = "  \n   " + "\n   ".join(proof_links)
+            proof_str = "\n   " + "\n   ".join(sorted(proof_links, key=lambda x: int(re.search(r"Halaman (\d+)", x).group(1)) if re.search(r"Halaman (\d+)", x) else 999))
         else:
             default_url = f"file:///{p_obj.resolve().as_posix()}" if p_obj else ""
             proof_str = f"  \n   [`{filename}`]({default_url})" if default_url else ""

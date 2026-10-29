@@ -702,6 +702,9 @@ class ProjectVectorVault:
             conn.commit()
 
         # Free temporary chunk arrays and force immediate heap garbage collection
+        c_count = len(raw_chunks)
+        t_count = len(raw_tables)
+        i_count = len(raw_images)
         raw_chunks.clear()
         raw_tables.clear()
         raw_images.clear()
@@ -709,9 +712,9 @@ class ProjectVectorVault:
         gc.collect()
 
         return {
-            "chunks": len(raw_chunks),
-            "tables": len(raw_tables),
-            "images": len(raw_images),
+            "chunks": c_count,
+            "tables": t_count,
+            "images": i_count,
         }
 
     def ingest_web_document(
@@ -827,16 +830,16 @@ class ProjectVectorVault:
             conn.commit()
 
         # Free temporary chunk arrays and force immediate heap garbage collection
+        c_count = len(raw_chunks)
+        i_count = len(images) if images else 0
         raw_chunks.clear()
-        raw_tables.clear()
-        raw_images.clear()
         import gc
         gc.collect()
 
         return {
-            "chunks": len(raw_chunks),
+            "chunks": c_count,
             "tables": 0,
-            "images": len(raw_images),
+            "images": i_count,
         }
 
     def ingest_standalone_table(

@@ -9,6 +9,7 @@ Provides:
 from __future__ import annotations
 
 import logging
+import math
 from pathlib import Path
 import re
 import urllib.parse
@@ -18,9 +19,96 @@ import pymupdf as fitz
 
 logger = logging.getLogger(__name__)
 
+_ID_EN_STOPWORDS = {
+    "yang", "dalam", "pada", "untuk", "dengan", "dari", "atau", "serta", "adalah",
+    "sebagai", "terhadap", "melalui", "dapat", "lebih", "secara", "oleh", "telah",
+    "merupakan", "tersebut", "sehingga", "antara", "seperti", "juga", "akan",
+    "namun", "karena", "ketika", "tidak", "bisa", "bagi", "suatu", "berbagai",
+    "this", "that", "with", "from", "have", "been", "were", "their", "which",
+    "through", "between", "into", "such", "also", "more", "than", "these",
+}
+
 
 class EvidenceHighlighter:
     """Creates deep links and highlighted visual evidence for both PDF and Web documents."""
+
+    @staticmethod
+    def extract_pdf_sentence_index(pdf_path: Path) -> tuple[list[dict[str, Any]], dict[str, int]]:
+        """Extract all substantive sentences across all pages of a PDF (filtering running headers/footers)
+        along with document frequencies for fast IDF-weighted claim matching.
+        """
+        sentences: list[dict[str, Any]] = []
+        df: dict[str, int] = {}
+        if not pdf_path or not pdf_path.exists() or pdf_path.suffix.lower() != ".pdf":
+            return sentences, df
+
+        try:
+            with fitz.open(str(pdf_path)) as doc:
+                for p_idx in range(len(doc)):
+                    page = doc[p_idx]
+                    p_num = p_idx + 1
+                    p_height = page.rect.height
+                    blocks = page.get_text("blocks")
+                    for b in blocks:
+                        if len(b) >= 5 and b[6] == 0 and 35 <= b[1] <= (p_height - 35):
+                            txt = b[4].replace("-\n", "").replace("\n", " ").strip()
+                            for sent in re.split(r"(?<=[.!?])\s+", txt):
+                                clean_s = sent.strip()
+                                if len(clean_s) >= 25:
+                                    tokens = {
+                                        w for w in re.findall(r"\b[a-zA-Z]{4,}\b", clean_s.lower())
+                                        if w not in _ID_EN_STOPWORDS
+                                    }
+                                    if len(tokens) >= 2:
+                                        for w in tokens:
+                                            df[w] = df.get(w, 0) + 1
+                                        sentences.append({
+                                            "page_num": p_num,
+                                            "sentence": clean_s,
+                                            "tokens": tokens,
+                                        })
+        except Exception as e:
+            logger.debug(f"Failed indexing sentences for {pdf_path.name}: {e}")
+
+        return sentences, df
+
+    @staticmethod
+    def match_claim_to_pdf_sentence(
+        claim_text: str,
+        sentence_index: list[dict[str, Any]],
+        df: dict[str, int],
+        fallback_chunks: list[dict[str, Any]] | None = None,
+    ) -> tuple[int, str]:
+        """Find the exact (page_num, verbatim_sentence) in the PDF that best supports the given claim/sentence."""
+        if not sentence_index:
+            if fallback_chunks:
+                return fallback_chunks[0]["page_num"], fallback_chunks[0]["quote"]
+            return 1, ""
+
+        claim_tokens = {
+            w for w in re.findall(r"\b[a-zA-Z]{4,}\b", claim_text.lower())
+            if w not in _ID_EN_STOPWORDS
+        }
+        total_n = len(sentence_index)
+        best_page = sentence_index[0]["page_num"]
+        best_sent = sentence_index[0]["sentence"]
+        best_score = -1.0
+
+        for item in sentence_index:
+            common = claim_tokens & item["tokens"]
+            if not common:
+                continue
+            # IDF-weighted overlap score: rare technical terms carry much higher weight
+            score = sum(math.log(1.0 + total_n / (1.0 + df.get(w, 1))) for w in common)
+            if score > best_score:
+                best_score = score
+                best_page = item["page_num"]
+                best_sent = item["sentence"]
+
+        if best_score <= 0 and fallback_chunks:
+            return fallback_chunks[0]["page_num"], fallback_chunks[0]["quote"]
+
+        return best_page, best_sent
 
     @staticmethod
     def highlight_pdf_passage(

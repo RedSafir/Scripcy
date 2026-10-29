@@ -316,7 +316,19 @@ class EvidenceSynthesizer:
                             quote_snippet=quote_snip,
                         ))
                     if matched_chunks:
-                        return matched_chunks[:limit_chunks]
+                        # Enforce Page & Document Diversity (max 2 chunks per (source, page_num) on first pass)
+                        diverse_chunks: list[EvidenceChunk] = []
+                        overflow_chunks: list[EvidenceChunk] = []
+                        page_counts: dict[tuple[str, int], int] = {}
+                        for mc in matched_chunks:
+                            pk = (mc.source, mc.page_num)
+                            if page_counts.get(pk, 0) < 2:
+                                diverse_chunks.append(mc)
+                                page_counts[pk] = page_counts.get(pk, 0) + 1
+                            else:
+                                overflow_chunks.append(mc)
+                        final_selection = (diverse_chunks + overflow_chunks)[:limit_chunks]
+                        return final_selection
             except Exception as v_err:
                 logger.debug(f"Hybrid search fallback to lexical chunking: {v_err}")
 
