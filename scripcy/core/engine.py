@@ -462,12 +462,12 @@ class EvidenceSynthesizer:
             )
             formatted_blocks.append(block)
 
-        # Footnote Citation Guidance
+        # Citation Guidance
         formatted_blocks.append(
-            "[PETUNJUK CITATION FOOTNOTE DIRECT MAPPING]:\n"
-            "- Gunakan sitasi bernomor footnote [^1], [^2], dst. setiap kali Anda menyatakan fakta penting.\n"
-            "- Nomor footnote harus berkorespondensi dengan nomor [Evidence 1], [Evidence 2] di atas.\n"
-            "- Di akhir jawaban, Scripcy akan otomatis menyusun daftar rujukan kutipan dan link berkas halaman PDF."
+            "[PETUNJUK SITASI AKADEMIS & GROUNDING EVIDENCE]:\n"
+            "- Gunakan format sitasi akademis standar APA in-text seperti (Penulis, Tahun) atau (Penulis et al., Tahun) setiap kali Anda merujuk pada temuan penting.\n"
+            "- DILARANG menambahkan penomoran footnote sintetis seperti [^1], [^2]. Cukup gunakan format sitasi nama dan tahun APA murni.\n"
+            "- Sistem Scripcy akan otomatis menautkan sitasi narasi Anda ke dokumen bukti vault terverifikasi dan menyusun Daftar Pustaka resmi di akhir respons."
         )
 
         has_visuals = any("[[VISUAL:" in c.text for c in chunks)

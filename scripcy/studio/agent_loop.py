@@ -1677,7 +1677,14 @@ class StudioAgentLoopMixin:
             contract_extractor = self.contract_extractor or TaskContractExtractor(engine=self.engine)
             promisor_decision = getattr(self, "promisor", Promisor()).evaluate(query, session_id=session.id if session else None)
             
-            # Short-circuit Archetype if dispatched directly to Examiner (Hypothesis Testing) or Manager (Revision)
+            # Short-circuit Archetype if dispatched directly to Direct Reply, Examiner, or Manager
+            if promisor_decision.entry_point == "direct" and promisor_decision.direct_reply:
+                if session and self.chat_manager:
+                    self.chat_manager.add_message(session.id, "user", query)
+                    self.chat_manager.add_message(session.id, "assistant", promisor_decision.direct_reply)
+                self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Scripcy[/bold bright_white] [dim](Direct Fast Reply • 0 tok)[/dim]\n{promisor_decision.direct_reply}\n")
+                return
+
             if promisor_decision.entry_point == "examiner":
                 task_contract = TaskContract(
                     archetype="DIALECTICAL_CRITIQUE",
@@ -2784,7 +2791,7 @@ class StudioAgentLoopMixin:
             # Record turn in SessionContextManager for future turns
             if hasattr(self, "_session_context_managers") and sess_key in self._session_context_managers:
                 sc_summaries = [sc.objective for sc in (orch_res.plan.subcontracts if orch_res and orch_res.plan else [])]
-                v_facts = [f.fact for f in (orch_res.verified_facts if orch_res and orch_res.verified_facts else [])]
+                v_facts = [getattr(f, "claim_or_metric", getattr(f, "fact", str(f))) for f in (orch_res.verified_facts if orch_res and orch_res.verified_facts else [])]
                 self._session_context_managers[sess_key].record_turn(
                     query=query,
                     full_response=final_response_persisted,

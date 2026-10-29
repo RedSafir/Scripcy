@@ -325,6 +325,7 @@ def append_vault_bibliography(
         file_link_str = f"`[File: {filename}{page_str}]`"
         p_obj = Path(raw_path) if raw_path else None
 
+        link_url = ""
         # Check if source is PDF and can be annotated with permanent yellow stabilo
         if p_obj and p_obj.exists() and p_obj.suffix.lower() == ".pdf" and matching_ev and matching_ev.quote_snippet:
             base_vault_dir = getattr(vault_manager, "vault_dir", None) or Path("vault")
@@ -341,7 +342,8 @@ def append_vault_bibliography(
             if not clean_fp.startswith("/"):
                 clean_fp = f"/{clean_fp}"
             page_param = f"#page={matching_ev.page_num}"
-            file_link_str = f"[`{filename}{page_str} (Tersorot Stabilo)`](file://{clean_fp}{page_param})"
+            link_url = f"file://{clean_fp}{page_param}"
+            file_link_str = f"[`{filename}{page_str} (Tersorot Stabilo)`]({link_url})"
         elif p_obj and p_obj.exists():
             # Check if source is Web document with URL
             url_target = None
@@ -358,13 +360,36 @@ def append_vault_bibliography(
 
             if url_target and matching_ev and matching_ev.quote_snippet:
                 frag_url = EvidenceHighlighter.generate_web_highlight_url(url_target, matching_ev.quote_snippet)
+                link_url = frag_url
                 file_link_str = f"[`{filename} (Tersorot di Web)`]({frag_url})"
             else:
                 clean_fp = p_obj.resolve().as_posix()
                 if not clean_fp.startswith("/"):
                     clean_fp = f"/{clean_fp}"
                 page_param = f"#page={matching_ev.page_num}" if (matching_ev and matching_ev.page_num) else ""
-                file_link_str = f"[`{filename}{page_str}`](file://{clean_fp}{page_param})"
+                link_url = f"file://{clean_fp}{page_param}"
+                file_link_str = f"[`{filename}{page_str}`]({link_url})"
+
+        # Hyperlink inline narrative citation keys (e.g. (Putra, 2026) -> [(Putra, 2026)](link_url))
+        if link_url and key:
+            # Match both (Author, Year) and Author (Year)
+            clean_k = key.strip("()[]")
+            k_esc = re.escape(clean_k)
+            # 1. (Author, Year) -> [(Author, Year)](url)
+            cleaned_text = re.sub(
+                r"(?<!\[)\(" + k_esc + r"\)(?!\])",
+                f"[({clean_k})]({link_url})",
+                cleaned_text,
+            )
+            # 2. Author (Year) -> [Author (Year)](url)
+            if ", " in clean_k:
+                k_auth, k_yr = clean_k.split(", ", 1)
+                narr_pat = re.escape(k_auth) + r"\s*\(" + re.escape(k_yr) + r"\)"
+                cleaned_text = re.sub(
+                    r"(?<!\[)" + narr_pat + r"(?!\])",
+                    f"[{k_auth} ({k_yr})]({link_url})",
+                    cleaned_text,
+                )
 
         if norm_style == "IEEE":
             lines.append(f"{ref_text}  \n   {file_link_str}{quote_str}")

@@ -389,196 +389,207 @@ class ProjectVectorVault:
                 page_num = page_idx + 1
                 rect_page = page.rect
 
-            # 1. Text Extraction & Parent-Child Chunking
-            # Child Chunk (~100-120 words for sharp vector match), Parent Context (~350-450 words)
-            page_text = page.get_text("text").strip()
-            if page_text:
-                words = page_text.split()
-                # Determine parent window (~400 words)
-                parent_content = " ".join(words[:450]) if words else ""
-                child_step = max(1, 110 - 25)
-                for start in range(0, len(words), child_step):
-                    chunk_words = words[start : start + 110]
-                    chunk_str = " ".join(chunk_words)
-                    # Dynamic surrounding parent context (±150 words around child)
-                    p_start = max(0, start - 80)
-                    p_end = min(len(words), start + 110 + 80)
-                    dynamic_parent = " ".join(words[p_start:p_end])
+                # 1. Text Extraction & Parent-Child Chunking with Running Header/Footer Filtering
+                # Filter out running heads (top margin < 35 pt) and running footers (bottom margin > height - 40 pt)
+                try:
+                    p_blocks = page.get_text("blocks")
+                    p_height = rect_page.height
+                    substantive_blocks = [
+                        b[4].strip()
+                        for b in p_blocks
+                        if len(b) >= 5 and b[6] == 0 and b[1] >= 35 and b[3] <= (p_height - 35) and len(b[4].strip()) > 5
+                    ]
+                    page_text = "\n\n".join(substantive_blocks).strip() if substantive_blocks else page.get_text("text").strip()
+                except Exception:
+                    page_text = page.get_text("text").strip()
 
-                    if len(chunk_str.strip()) >= 20:
-                        raw_chunks.append({
-                            "id": f"{paper_id}_p{page_num}_c{chunk_counter}",
-                            "paper_id": paper_id,
-                            "page_num": page_num,
-                            "chunk_index": chunk_counter,
-                            "content": chunk_str,
-                            "parent_content": dynamic_parent or parent_content,
-                        })
-                        chunk_counter += 1
-                    if start + 110 >= len(words):
-                        break
+                if page_text:
+                    words = page_text.split()
+                    # Determine parent window (~400 words)
+                    parent_content = " ".join(words[:450]) if words else ""
+                    child_step = max(1, 110 - 25)
+                    for start in range(0, len(words), child_step):
+                        chunk_words = words[start : start + 110]
+                        chunk_str = " ".join(chunk_words)
+                        # Dynamic surrounding parent context (±150 words around child)
+                        p_start = max(0, start - 80)
+                        p_end = min(len(words), start + 110 + 80)
+                        dynamic_parent = " ".join(words[p_start:p_end])
 
-            # 2. Structured Table Extraction via PyMuPDF find_tables()
-            try:
-                tables = page.find_tables()
-                for t_idx, tab in enumerate(tables):
-                    df_rows = tab.extract()
-                    if not df_rows or len(df_rows) < 2:
-                        continue
+                        if len(chunk_str.strip()) >= 20:
+                            raw_chunks.append({
+                                "id": f"{paper_id}_p{page_num}_c{chunk_counter}",
+                                "paper_id": paper_id,
+                                "page_num": page_num,
+                                "chunk_index": chunk_counter,
+                                "content": chunk_str,
+                                "parent_content": dynamic_parent or parent_content,
+                            })
+                            chunk_counter += 1
+                        if start + 110 >= len(words):
+                            break
 
-                    total_cells = sum(len(r) for r in df_rows)
-                    empty_cells = sum(1 for r in df_rows for c in r if not c or not str(c).strip())
-                    empty_ratio = empty_cells / max(1, total_cells)
+                # 2. Structured Table Extraction via PyMuPDF find_tables()
+                try:
+                    tables = page.find_tables()
+                    for t_idx, tab in enumerate(tables):
+                        df_rows = tab.extract()
+                        if not df_rows or len(df_rows) < 2:
+                            continue
 
-                    # Fallback check: empty ratio > 35% or ragged rows
-                    needs_vision = empty_ratio > 0.35 or any(len(r) != len(df_rows[0]) for r in df_rows)
+                        total_cells = sum(len(r) for r in df_rows)
+                        empty_cells = sum(1 for r in df_rows for c in r if not c or not str(c).strip())
+                        empty_ratio = empty_cells / max(1, total_cells)
 
-                    tbl_stem = f"tbl_p{page_num}_{t_idx + 1}"
-                    csv_path = paper_tables_dir / f"{tbl_stem}.csv"
-                    md_path = paper_tables_dir / f"{tbl_stem}.md"
-                    tbl_cap_match = match_table_to_caption(page, tab.bbox)
-                    tbl_caption = tbl_cap_match[1] if tbl_cap_match else f"Tabel Halaman {page_num} #{t_idx + 1}"
+                        # Fallback check: empty ratio > 35% or ragged rows
+                        needs_vision = empty_ratio > 0.35 or any(len(r) != len(df_rows[0]) for r in df_rows)
 
-                    if not needs_vision:
-                        # Write clean Markdown and CSV
-                        headers = [str(c or "").strip() for c in df_rows[0]]
-                        md_lines = ["| " + " | ".join(headers) + " |"]
-                        md_lines.append("| " + " | ".join(["---"] * len(headers)) + " |")
-                        csv_lines = [",".join(f'"{c}"' for c in headers)]
+                        tbl_stem = f"tbl_p{page_num}_{t_idx + 1}"
+                        csv_path = paper_tables_dir / f"{tbl_stem}.csv"
+                        md_path = paper_tables_dir / f"{tbl_stem}.md"
+                        tbl_cap_match = match_table_to_caption(page, tab.bbox)
+                        tbl_caption = tbl_cap_match[1] if tbl_cap_match else f"Tabel Halaman {page_num} #{t_idx + 1}"
 
-                        for row in df_rows[1:]:
-                            clean_cells = [str(c or "").replace("\n", " ").strip() for c in row]
-                            md_lines.append("| " + " | ".join(clean_cells) + " |")
-                            csv_lines.append(",".join(f'"{c}"' for c in clean_cells))
+                        if not needs_vision:
+                            # Write clean Markdown and CSV
+                            headers = [str(c or "").strip() for c in df_rows[0]]
+                            md_lines = ["| " + " | ".join(headers) + " |"]
+                            md_lines.append("| " + " | ".join(["---"] * len(headers)) + " |")
+                            csv_lines = [",".join(f'"{c}"' for c in headers)]
 
-                        md_path.write_text("\n".join(md_lines), encoding="utf-8")
-                        csv_path.write_text("\n".join(csv_lines), encoding="utf-8")
-                        raw_tables.append({
-                            "id": f"{paper_id}_{tbl_stem}",
-                            "paper_id": paper_id,
-                            "page_num": page_num,
-                            "csv_path": str(csv_path),
-                            "md_path": str(md_path),
-                            "caption": tbl_caption,
-                            "is_vision_fallback": 0,
-                        })
-                    else:
-                        # Crop table bbox to image
-                        try:
-                            pix = page.get_pixmap(clip=tab.bbox, dpi=200)
-                            crop_img_path = paper_tables_dir / f"{tbl_stem}.png"
-                            pix.save(str(crop_img_path))
+                            for row in df_rows[1:]:
+                                clean_cells = [str(c or "").replace("\n", " ").strip() for c in row]
+                                md_lines.append("| " + " | ".join(clean_cells) + " |")
+                                csv_lines.append(",".join(f'"{c}"' for c in clean_cells))
 
-                            # Transcribe via Multimodal Vision API if engine available
-                            vision_md = self._analyze_vision_table(crop_img_path, engine, model_name)
-                            if vision_md:
-                                md_path.write_text(vision_md, encoding="utf-8")
-
+                            md_path.write_text("\n".join(md_lines), encoding="utf-8")
+                            csv_path.write_text("\n".join(csv_lines), encoding="utf-8")
                             raw_tables.append({
                                 "id": f"{paper_id}_{tbl_stem}",
                                 "paper_id": paper_id,
                                 "page_num": page_num,
-                                "csv_path": str(crop_img_path),
-                                "md_path": str(md_path) if vision_md else None,
+                                "csv_path": str(csv_path),
+                                "md_path": str(md_path),
                                 "caption": tbl_caption,
-                                "is_vision_fallback": 1,
+                                "is_vision_fallback": 0,
                             })
-                        except Exception as crop_err:
-                            logger.warning(f"Failed cropping table on p{page_num}: {crop_err}")
-            except Exception as tab_err:
-                logger.debug(f"Table detection skipped on p{page_num}: {tab_err}")
+                        else:
+                            # Crop table bbox to image
+                            try:
+                                pix = page.get_pixmap(clip=tab.bbox, dpi=200)
+                                crop_img_path = paper_tables_dir / f"{tbl_stem}.png"
+                                pix.save(str(crop_img_path))
 
-            # 3. Informative Image Extraction with Multi-stage Academic Junk Filter
-            try:
-                for img_idx, img_info in enumerate(page.get_images(full=True)):
-                    xref = img_info[0]
-                    base_image = doc.extract_image(xref)
-                    width, height = base_image["width"], base_image["height"]
+                                # Transcribe via Multimodal Vision API if engine available
+                                vision_md = self._analyze_vision_table(crop_img_path, engine, model_name)
+                                if vision_md:
+                                    md_path.write_text(vision_md, encoding="utf-8")
 
-                    # Heuristic Rule 1: Min dimensions (>= 120x120)
-                    if width < 120 or height < 120:
-                        continue
+                                raw_tables.append({
+                                    "id": f"{paper_id}_{tbl_stem}",
+                                    "paper_id": paper_id,
+                                    "page_num": page_num,
+                                    "csv_path": str(crop_img_path),
+                                    "md_path": str(md_path) if vision_md else None,
+                                    "caption": tbl_caption,
+                                    "is_vision_fallback": 1,
+                                })
+                            except Exception as crop_err:
+                                logger.warning(f"Failed cropping table on p{page_num}: {crop_err}")
+                except Exception as tab_err:
+                    logger.debug(f"Table detection skipped on p{page_num}: {tab_err}")
 
-                    # Heuristic Rule 2: Aspect ratio (0.2 to 5.5 - eliminate long border lines)
-                    ratio = width / max(1, height)
-                    if ratio < 0.20 or ratio > 5.5:
-                        continue
+                # 3. Informative Image Extraction with Multi-stage Academic Junk Filter
+                try:
+                    for img_idx, img_info in enumerate(page.get_images(full=True)):
+                        xref = img_info[0]
+                        base_image = doc.extract_image(xref)
+                        width, height = base_image["width"], base_image["height"]
 
-                    # Heuristic Rule 3: Page boundary exclusion (skip top 8% header logos and bottom 8% copyright footers)
-                    img_rects = page.get_image_rects(xref)
-                    if not img_rects:
-                        continue
-                    bbox = img_rects[0]
-                    if bbox.y1 < rect_page.height * 0.08 or bbox.y0 > rect_page.height * 0.92:
-                        continue
-
-                    # Heuristic Rule 4: Physical page area check (skip icons / bullets < 2.5% of page)
-                    page_area = max(1.0, rect_page.width * rect_page.height)
-                    if (bbox.width * bbox.height) / page_area < 0.025:
-                        continue
-
-                    # Heuristic Rule 5: Color variance, Shannon entropy, and white pixel ratio
-                    entropy, variance, white_ratio = evaluate_image_entropy_and_white(base_image["image"])
-                    # Discard pure white masks, solid boxes, and zero-entropy bars
-                    if white_ratio > 0.90 or variance < 4.5 or entropy < 2.5:
-                        continue
-
-                    # Heuristic Rule 6: Proximity Caption Matching
-                    cap_match = match_image_to_caption(page, bbox)
-                    if cap_match:
-                        fig_label, caption_text = cap_match
-                    else:
-                        # If no academic figure caption is found, require high visual complexity
-                        if entropy < 4.0:
+                        # Heuristic Rule 1: Min dimensions (>= 120x120)
+                        if width < 120 or height < 120:
                             continue
-                        caption_text = f"Visual Diagram Halaman {page_num} #{img_idx + 1}"
 
-                    # Candidate image passed all offline CV filters!
-                    img_ext = base_image["ext"]
-                    img_stem = f"fig_p{page_num}_{img_idx + 1}"
-                    img_file = paper_images_dir / f"{img_stem}.{img_ext}"
-                    img_file.write_bytes(base_image["image"])
+                        # Heuristic Rule 2: Aspect ratio (0.2 to 5.5 - eliminate long border lines)
+                        ratio = width / max(1, height)
+                        if ratio < 0.20 or ratio > 5.5:
+                            continue
 
-                    # Visual Complexity Classification (PyMuPDF Vector stream inspection with Raster fallback)
-                    try:
-                        v_res = VisualClassifier.classify_vector_bbox(page, bbox, caption=caption_text)
-                    except Exception:
-                        v_res = VisualClassifier.classify_raster(img_file, caption=caption_text)
+                        # Heuristic Rule 3: Page boundary exclusion (skip top 8% header logos and bottom 8% copyright footers)
+                        img_rects = page.get_image_rects(xref)
+                        if not img_rects:
+                            continue
+                        bbox = img_rects[0]
+                        if bbox.y1 < rect_page.height * 0.08 or bbox.y0 > rect_page.height * 0.92:
+                            continue
 
-                    visual_type_str = v_res.visual_type.value
-                    class_reasons = "; ".join(v_res.reasons[:3])
+                        # Heuristic Rule 4: Physical page area check (skip icons / bullets < 2.5% of page)
+                        page_area = max(1.0, rect_page.width * rect_page.height)
+                        if (bbox.width * bbox.height) / page_area < 0.025:
+                            continue
 
-                    # Optional Multimodal Verification / AI Analysis if engine provided
-                    analysis = None
-                    if v_res.is_simple:
-                        # For SIMPLE visual (flowchart/architecture), run AI Visual Analysis once ahead-of-time
-                        if engine:
-                            analysis = self._analyze_vision_figure(img_file, engine, model_name)
-                            if analysis and "JUNK_IMAGE" in analysis:
-                                if img_file.exists():
-                                    img_file.unlink()
+                        # Heuristic Rule 5: Color variance, Shannon entropy, and white pixel ratio
+                        entropy, variance, white_ratio = evaluate_image_entropy_and_white(base_image["image"])
+                        # Discard pure white masks, solid boxes, and zero-entropy bars
+                        if white_ratio > 0.90 or variance < 4.5 or entropy < 2.5:
+                            continue
+
+                        # Heuristic Rule 6: Proximity Caption Matching
+                        cap_match = match_image_to_caption(page, bbox)
+                        if cap_match:
+                            fig_label, caption_text = cap_match
+                        else:
+                            # If no academic figure caption is found, require high visual complexity
+                            if entropy < 4.0:
                                 continue
-                        if not analysis:
-                            analysis = f"Bagan/diagram alir konseptual terindeks: {caption_text}."
-                    else:
-                        # For COMPLEX visual (charts, plots, heatmap, math), keep raw pixels for Direct Multimodal Injection
-                        analysis = f"Visual data kompleks terindeks ({class_reasons}). Tersedia untuk Direct Multimodal Injection."
+                            caption_text = f"Visual Diagram Halaman {page_num} #{img_idx + 1}"
 
-                    # Genuine scientific diagram/chart
-                    raw_images.append({
-                        "id": f"{paper_id}_{img_stem}",
-                        "paper_id": paper_id,
-                        "page_num": page_num,
-                        "file_path": str(img_file),
-                        "caption": caption_text,
-                        "ai_analysis": analysis,
-                        "width": width,
-                        "height": height,
-                        "visual_type": visual_type_str,
-                        "classification_reason": class_reasons,
-                    })
-            except Exception as img_err:
-                logger.debug(f"Image extraction skipped on p{page_num}: {img_err}")
+                        # Candidate image passed all offline CV filters!
+                        img_ext = base_image["ext"]
+                        img_stem = f"fig_p{page_num}_{img_idx + 1}"
+                        img_file = paper_images_dir / f"{img_stem}.{img_ext}"
+                        img_file.write_bytes(base_image["image"])
+
+                        # Visual Complexity Classification (PyMuPDF Vector stream inspection with Raster fallback)
+                        try:
+                            v_res = VisualClassifier.classify_vector_bbox(page, bbox, caption=caption_text)
+                        except Exception:
+                            v_res = VisualClassifier.classify_raster(img_file, caption=caption_text)
+
+                        visual_type_str = v_res.visual_type.value
+                        class_reasons = "; ".join(v_res.reasons[:3])
+
+                        # Optional Multimodal Verification / AI Analysis if engine provided
+                        analysis = None
+                        if v_res.is_simple:
+                            # For SIMPLE visual (flowchart/architecture), run AI Visual Analysis once ahead-of-time
+                            if engine:
+                                analysis = self._analyze_vision_figure(img_file, engine, model_name)
+                                if analysis and "JUNK_IMAGE" in analysis:
+                                    if img_file.exists():
+                                        img_file.unlink()
+                                    continue
+                            if not analysis:
+                                analysis = f"Bagan/diagram alir konseptual terindeks: {caption_text}."
+                        else:
+                            # For COMPLEX visual (charts, plots, heatmap, math), keep raw pixels for Direct Multimodal Injection
+                            analysis = f"Visual data kompleks terindeks ({class_reasons}). Tersedia untuk Direct Multimodal Injection."
+
+                        # Genuine scientific diagram/chart
+                        raw_images.append({
+                            "id": f"{paper_id}_{img_stem}",
+                            "paper_id": paper_id,
+                            "page_num": page_num,
+                            "file_path": str(img_file),
+                            "caption": caption_text,
+                            "ai_analysis": analysis,
+                            "width": width,
+                            "height": height,
+                            "visual_type": visual_type_str,
+                            "classification_reason": class_reasons,
+                        })
+                except Exception as img_err:
+                    logger.debug(f"Image extraction skipped on p{page_num}: {img_err}")
 
         # Batch compute dense embeddings for all chunks in this paper with streaming batching (batch_size=32)
         if raw_chunks and embedder is not None:

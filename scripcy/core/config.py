@@ -228,7 +228,7 @@ class ScripcyConfig(BaseModel):
         """Resolve custom base URL for a model or provider."""
         model_str = model.lower()
         if model_str.startswith("9router/"):
-            return self.api_bases.get("9router") or os.environ.get("ROUTER9_BASE_URL") or "http://localhost:20128/v1"
+            return self.api_bases.get("9router") or os.environ.get("ROUTER9_BASE_URL") or "http://127.0.0.1:20128/v1"
         if "/" in model_str:
             prefix = model_str.split("/", 1)[0]
             if prefix in self.api_bases and self.api_bases[prefix]:

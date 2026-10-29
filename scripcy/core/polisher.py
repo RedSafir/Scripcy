@@ -262,6 +262,9 @@ class AcademicPolisher:
         # 2. Strip superficial bookending summary
         polished = self.strip_bookending_summary(polished)
 
+        # 3. Clean orphaned synthetic footnotes like [^1], [^2], [^1][^2]
+        polished = re.sub(r"(?:\[\^[0-9]+\])+", "", polished)
+
         # Clean double spaces or broken start of sentences
         polished = re.sub(r"[ \t]+", " ", polished)
         polished = re.sub(r"\n{3,}", "\n\n", polished)

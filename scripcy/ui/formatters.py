@@ -295,6 +295,27 @@ def render_academic_markdown(
     # 1. Beautify LaTeX math first
     formatted_text = beautify_academic_math(text)
 
-    # 2. Render Markdown
+    # 2. Patch Markdown parser to allow file:// links (for interactive PDF stabilo clicks)
+    try:
+        import markdown_it
+        orig_init = Markdown.__init__
+
+        def _custom_md_init(self, markup, *args, **kwargs):
+            parser = markdown_it.MarkdownIt().enable("strikethrough").enable("table")
+            parser.validateLink = lambda url: not url.strip().lower().startswith(("javascript:", "vbscript:"))
+            self.markup = markup
+            self.parsed = parser.parse(markup)
+            self.code_theme = kwargs.get("code_theme", "monokai")
+            self.justify = kwargs.get("justify", None)
+            self.style = kwargs.get("style", "none")
+            self.hyperlinks = kwargs.get("hyperlinks", True)
+            self.inline_code_lexer = kwargs.get("inline_code_lexer", None)
+            self.inline_code_theme = kwargs.get("inline_code_theme", None) or self.code_theme
+
+        Markdown.__init__ = _custom_md_init
+    except Exception:
+        pass
+
+    # 3. Render Markdown
     md = Markdown(formatted_text, justify="left", code_theme="monokai")
     c.print(md)
