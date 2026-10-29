@@ -1417,6 +1417,40 @@ def interactive_help_view(
         c.show_cursor(True)
 
 
+def get_mention_suggestions(buf: str, base_dir: Path | None = None) -> list[tuple[str, str]]:
+    """Scan candidate folders for @ file mentions and return autocompletion tuples."""
+    at_match = re.search(r"@([a-zA-Z0-9_\-.]*)$", buf)
+    if not at_match:
+        return []
+    at_query = at_match.group(1).lower()
+    file_suggestions = []
+    root = base_dir or Path.cwd()
+    try:
+        candidate_folders = [
+            root / "USER INPUT HERE",
+            root / "vault/user",
+            root / "vault/Downloads",
+            root / "vault/papers",
+            root / "vault/images",
+            root / "vault/tables",
+        ]
+        seen_f = set()
+        for f_dir in candidate_folders:
+            if f_dir.exists():
+                for p in sorted(f_dir.rglob("*")):
+                    if p.is_file() and not p.name.startswith(".") and not p.name.endswith(".db"):
+                        if p.name.lower() in seen_f:
+                            continue
+                        seen_f.add(p.name.lower())
+                        if not at_query or at_query in p.name.lower():
+                            ext_tag = p.suffix.upper().lstrip(".") or "FILE"
+                            mtime_str = time.strftime("%d %b %H:%M", time.localtime(p.stat().st_mtime))
+                            file_suggestions.append((f"@{p.name}", f"{ext_tag} • {mtime_str} • {f_dir.name}"))
+    except Exception:
+        pass
+    return file_suggestions[:10]
+
+
 def interactive_input_prompt(
     console: Console | None = None,
     prompt_label: str = "> ",
@@ -1468,6 +1502,10 @@ def interactive_input_prompt(
     last_rendered_text = ""
 
     def get_suggestions(buf: str) -> list[tuple[str, str]]:
+        mentions = get_mention_suggestions(buf)
+        if mentions:
+            return mentions
+
         clean = buf.strip()
         if not clean.startswith("/"):
             return []
@@ -1673,6 +1711,10 @@ def interactive_input_prompt(
             if key == "ENTER":
                 if suggestions:
                     chosen = suggestions[suggestion_cursor][0]
+                    if chosen.startswith("@"):
+                        buffer = re.sub(r"@([a-zA-Z0-9_\-.]*)$", chosen + " ", buffer)
+                        suggestion_cursor = 0
+                        continue
                     # If chosen has subcommands and buffer was just prefix, complete with space
                     if chosen in SUBCOMMAND_SUGGESTIONS and buffer.strip() == chosen:
                         buffer = chosen + " "
@@ -1698,7 +1740,10 @@ def interactive_input_prompt(
             elif key == "TAB":
                 if suggestions:
                     chosen = suggestions[suggestion_cursor][0]
-                    buffer = chosen + " "
+                    if chosen.startswith("@"):
+                        buffer = re.sub(r"@([a-zA-Z0-9_\-.]*)$", chosen + " ", buffer)
+                    else:
+                        buffer = chosen + " "
                     suggestion_cursor = 0
                 continue
 

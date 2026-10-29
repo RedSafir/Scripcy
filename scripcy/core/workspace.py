@@ -37,11 +37,15 @@ class WorkspaceManager:
         self.root_dir = resolved_root.expanduser().resolve()
         self.cache_dir = self.root_dir / "cache"
         self.vault_dir = self.root_dir / "vault"
-        self.papers_dir = self.vault_dir / "papers"
+        self.downloads_dir = self.vault_dir / "Downloads"
+        self.papers_dir = self.downloads_dir  # Alias for downloads
+        self.user_dir = self.vault_dir / "user"
+        self.user_input_dir = self.root_dir / "USER INPUT HERE"
+        self.local_dir = self.user_input_dir  # Alias for user input intake
         self.web_dir = self.vault_dir / "web"
         self.images_dir = self.vault_dir / "images"
         self.tables_dir = self.vault_dir / "tables"
-        self.local_dir = self.vault_dir / "local"
+        self.annotated_dir = self.vault_dir / "annotated"
 
         if auto_create:
             self.ensure_directories()
@@ -52,11 +56,13 @@ class WorkspaceManager:
             self.root_dir.mkdir(parents=True, exist_ok=True)
             self.cache_dir.mkdir(parents=True, exist_ok=True)
             self.vault_dir.mkdir(parents=True, exist_ok=True)
-            self.papers_dir.mkdir(parents=True, exist_ok=True)
+            self.downloads_dir.mkdir(parents=True, exist_ok=True)
+            self.user_dir.mkdir(parents=True, exist_ok=True)
+            self.user_input_dir.mkdir(parents=True, exist_ok=True)
             self.web_dir.mkdir(parents=True, exist_ok=True)
             self.images_dir.mkdir(parents=True, exist_ok=True)
             self.tables_dir.mkdir(parents=True, exist_ok=True)
-            self.local_dir.mkdir(parents=True, exist_ok=True)
+            self.annotated_dir.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
             raise WorkspaceError(
                 f"Failed to create workspace directories at '{self.root_dir}': {exc}"

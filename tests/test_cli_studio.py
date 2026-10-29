@@ -1218,6 +1218,7 @@ class TestAgenticUXAndFormatting:
         from scripcy.core.engine import EvidenceChunk
 
         cli_studio.config.api_keys["gemini"] = "dummy-key"
+        cli_studio.config.contract_unlimited_tokens = False
         # 8 chunks (> 5 chunk threshold)
         mock_evidence = [
             EvidenceChunk(chunk_id=f"c{i}", source=f"paper{i}", text=f"Evidence text {i}", score=1.0)
@@ -1226,7 +1227,7 @@ class TestAgenticUXAndFormatting:
         with patch.object(cli_studio.engine.evidence_synthesizer, "retrieve_evidence", return_value=mock_evidence):
             with patch("scripcy.cli_studio.interactive_token_warning_confirm", return_value="cancel"):
                 with patch.object(cli_studio.engine, "stream_query") as mock_stream:
-                    cli_studio.handle_chat("rangkum semua paper di vault")
+                    cli_studio.handle_chat("jelaskan metodologi paper di vault")
                     mock_stream.assert_not_called()
 
         out = cli_studio.console.file.getvalue()

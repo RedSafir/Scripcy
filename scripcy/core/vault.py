@@ -81,9 +81,12 @@ class VaultManager:
         self.workspace = workspace
         self.vault_dir = workspace.vault_dir
         self.archive_dir = self.vault_dir / ".archive"
-        self.papers_dir = getattr(workspace, "papers_dir", self.vault_dir / "papers")
+        self.downloads_dir = getattr(workspace, "downloads_dir", self.vault_dir / "Downloads")
+        self.papers_dir = self.downloads_dir  # Alias for downloads
+        self.user_dir = getattr(workspace, "user_dir", self.vault_dir / "user")
+        self.user_input_dir = getattr(workspace, "user_input_dir", workspace.root_dir / "USER INPUT HERE")
+        self.local_dir = self.user_input_dir  # Alias for intake dropzone
         self.web_dir = getattr(workspace, "web_dir", self.vault_dir / "web")
-        self.local_dir = getattr(workspace, "local_dir", self.vault_dir / "local")
         self.user_tables_dir = self.vault_dir / "tables" / "user"
         self.user_images_dir = self.vault_dir / "images" / "user"
         self.history_file = self.vault_dir / ".history.jsonl"
@@ -110,8 +113,11 @@ class VaultManager:
         self._markitdown = val
 
     def ensure_directories(self) -> None:
-        """Ensure vault, archive, and local staging directories exist."""
+        """Ensure vault, downloads, user, user_input, archive, and staging directories exist."""
         self.vault_dir.mkdir(parents=True, exist_ok=True)
+        self.downloads_dir.mkdir(parents=True, exist_ok=True)
+        self.user_dir.mkdir(parents=True, exist_ok=True)
+        self.user_input_dir.mkdir(parents=True, exist_ok=True)
         self.archive_dir.mkdir(parents=True, exist_ok=True)
         self.local_dir.mkdir(parents=True, exist_ok=True)
         self.user_tables_dir.mkdir(parents=True, exist_ok=True)
@@ -192,8 +198,8 @@ class VaultManager:
                     category = "web"
                     target_dir = self.web_dir / subfolder_path
                 else:
-                    category = "papers"
-                    target_dir = self.papers_dir / subfolder_path
+                    category = "user"
+                    target_dir = self.user_dir / subfolder_path
 
                 target_file = target_dir / p.name
                 is_duplicate = target_file.exists() or (p.name.lower() in existing_filenames)
@@ -314,11 +320,13 @@ class VaultManager:
             pass
 
         candidate_dirs = [
+            getattr(self.workspace, "downloads_dir", self.vault_dir / "Downloads"),
             self.workspace.papers_dir,
+            getattr(self.workspace, "user_dir", self.vault_dir / "user"),
             getattr(self.workspace, "web_dir", self.vault_dir / "web"),
             self.user_tables_dir,
             self.user_images_dir,
-            self.local_dir,
+            getattr(self.workspace, "user_input_dir", self.workspace.root_dir / "USER INPUT HERE"),
             self.vault_dir,
         ]
         for cdir in candidate_dirs:
@@ -337,13 +345,15 @@ class VaultManager:
                     meta = self._read_frontmatter_metadata(cache_file) if cache_file.exists() else None
 
                     # Determine item category
-                    if (hasattr(self.workspace, "web_dir") and self.workspace.web_dir in p.parents) or p.suffix.lower() in WEB_EXTENSIONS:
+                    if (hasattr(self.workspace, "user_dir") and self.workspace.user_dir in p.parents) or (hasattr(self.workspace, "user_input_dir") and self.workspace.user_input_dir in p.parents):
+                        item_category = "user"
+                    elif (hasattr(self.workspace, "web_dir") and self.workspace.web_dir in p.parents) or p.suffix.lower() in WEB_EXTENSIONS:
                         item_category = "web"
                     elif p.suffix.lower() in TABLE_EXTENSIONS:
                         item_category = "tables"
                     elif p.suffix.lower() in IMAGE_EXTENSIONS:
                         item_category = "images"
-                    elif (hasattr(self.workspace, "papers_dir") and self.workspace.papers_dir in p.parents) or p.suffix.lower() == ".pdf":
+                    elif (hasattr(self.workspace, "downloads_dir") and self.workspace.downloads_dir in p.parents) or (hasattr(self.workspace, "papers_dir") and self.workspace.papers_dir in p.parents) or p.suffix.lower() == ".pdf":
                         item_category = "papers"
                     else:
                         item_category = "papers"
@@ -435,14 +445,19 @@ class VaultManager:
                     it.is_duplicate = True
 
         if category and category != "all":
-            return [it for it in items if it.category == category]
+            cat_norm = category.lower().strip()
+            if cat_norm in ("downloads", "papers"):
+                return [it for it in items if it.category in ("downloads", "papers")]
+            elif cat_norm in ("user", "user_input"):
+                return [it for it in items if it.category in ("user", "user_input")]
+            return [it for it in items if it.category == cat_norm]
         return items
 
-    def check_vault_health(self) -> dict[str, Any]:
-        """Check status and health anomalies across all vault items and categories."""
-        active_files = self.list_active_files()
-        tables = self.list_tables()
-        images = self.list_images()
+    def check_vault_health(self, category: str | None = None) -> dict[str, Any]:
+        """Check status and health anomalies across all vault items or a specific category."""
+        active_files = self.list_active_files(category=category)
+        tables = self.list_tables() if not category or category in ("tables", "all") else []
+        images = self.list_images() if not category or category in ("images", "all") else []
 
         last_updated = "-"
         if active_files:
@@ -460,8 +475,9 @@ class VaultManager:
 
         duplicate_items = [it for group in seen_keys.values() if len(group) > 1 for it in group[1:]]
 
-        papers_items = [it for it in active_files if it.category == "papers"]
+        papers_items = [it for it in active_files if it.category in ("papers", "downloads")]
         web_items = [it for it in active_files if it.category == "web"]
+        user_items = [it for it in active_files if it.category in ("user", "user_input")]
 
         def _cat_stats(cat_items: list[VaultItem]) -> dict[str, Any]:
             c_unindexed = sum(1 for it in cat_items if not it.is_cached and not it.has_error)
@@ -476,6 +492,8 @@ class VaultManager:
 
         cat_health = {
             "papers": _cat_stats(papers_items),
+            "downloads": _cat_stats(papers_items),
+            "user": _cat_stats(user_items),
             "web": _cat_stats(web_items),
             "tables": {"total": len(tables), "warning": 0, "error": 0, "items": tables},
             "images": {"total": len(images), "warning": 0, "error": 0, "items": images},

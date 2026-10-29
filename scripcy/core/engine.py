@@ -50,6 +50,7 @@ class EvidenceChunk(BaseModel):
     page_num: int = Field(default=1, description="Page number where evidence appears.")
     parent_text: str = Field(default="", description="Surrounding parent context block.")
     quote_snippet: str = Field(default="", description="Verbatim quote snippet for fine-grained citation.")
+    category: str = Field(default="papers", description="Category: 'papers' or 'user'.")
 
 
 class SynthesisResult(BaseModel):
@@ -459,27 +460,42 @@ class EvidenceSynthesizer:
         if not chunks:
             return ""
 
-        formatted_blocks = ["### RETRIEVED RESEARCH EVIDENCE CONTEXT:"]
+        user_chunks = [c for c in chunks if getattr(c, "category", "papers") == "user" or "user" in str(c.source).lower()]
+        lit_chunks = [c for c in chunks if c not in user_chunks]
+
+        formatted_blocks = []
         total_orig = sum(len(c.text) for c in chunks)
         total_compact = 0
 
-        for idx, chunk in enumerate(chunks, 1):
-            compact_text = MarkdownMinifier.minify(chunk.text)
-            total_compact += len(compact_text)
-            page_info = f", Halaman {chunk.page_num}" if chunk.page_num else ""
-            quote_info = f"\nKutipan Kunci: \"{chunk.quote_snippet}\"" if chunk.quote_snippet else ""
-            block = (
-                f"[Evidence {idx}] (Source ID: {chunk.source}{page_info}, Score: {chunk.score:.2f}):{quote_info}\n"
-                f"\"\"\"\n{compact_text}\n\"\"\""
-            )
-            formatted_blocks.append(block)
+        if user_chunks:
+            formatted_blocks.append("### DATA RISET PRIMER PENELITI (FOKUS ANALISIS UTAMA):")
+            for idx, chunk in enumerate(user_chunks, 1):
+                compact_text = MarkdownMinifier.minify(chunk.text)
+                total_compact += len(compact_text)
+                formatted_blocks.append(
+                    f"[Data Peneliti {idx}] (Source: {chunk.source}):\n"
+                    f"\"\"\"\n{compact_text}\n\"\"\""
+                )
+
+        if lit_chunks:
+            formatted_blocks.append("### BUKTI LITERATUR ILMIAH (RUJUKAN PEMBANDING & SITASI):")
+            for idx, chunk in enumerate(lit_chunks, 1):
+                compact_text = MarkdownMinifier.minify(chunk.text)
+                total_compact += len(compact_text)
+                page_info = f", Halaman {chunk.page_num}" if chunk.page_num else ""
+                quote_info = f"\nKutipan Kunci: \"{chunk.quote_snippet}\"" if chunk.quote_snippet else ""
+                formatted_blocks.append(
+                    f"[Literature {idx}] (Source ID: {chunk.source}{page_info}, Score: {chunk.score:.2f}):{quote_info}\n"
+                    f"\"\"\"\n{compact_text}\n\"\"\""
+                )
 
         # Citation Guidance
         formatted_blocks.append(
             "[PETUNJUK SITASI AKADEMIS & GROUNDING EVIDENCE]:\n"
-            "- Gunakan format sitasi akademis standar APA in-text seperti (Penulis, Tahun) atau (Penulis et al., Tahun) setiap kali Anda merujuk pada temuan penting.\n"
+            "- Gunakan format sitasi akademis standar APA in-text seperti (Penulis, Tahun) HANYA saat merujuk pada BUKTI LITERATUR ILMIAH.\n"
+            "- Data riset primer peneliti adalah milik pengguna sendiri (bukan publikasi luar), jangan buat sitasi formal palsu untuk data peneliti.\n"
             "- DILARANG menambahkan penomoran footnote sintetis seperti [^1], [^2]. Cukup gunakan format sitasi nama dan tahun APA murni.\n"
-            "- Sistem Scripcy akan otomatis menautkan sitasi narasi Anda ke dokumen bukti vault terverifikasi dan menyusun Daftar Pustaka resmi di akhir respons."
+            "- Sistem Scripcy akan otomatis menautkan sitasi literatur Anda ke dokumen bukti vault terverifikasi dan menyusun Daftar Pustaka resmi di akhir respons."
         )
 
         has_visuals = any("[[VISUAL:" in c.text for c in chunks)

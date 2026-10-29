@@ -119,7 +119,7 @@ class TestVaultManager:
         assert health["total_files"] == 1
         assert health["status"] == "need_update"
         assert "belum di-update" in health["warning_details"][0]
-        assert health["category_health"]["papers"]["total"] == 1
+        assert health["category_health"]["user"]["total"] == 1
 
         # Re-index / convert
         test_vault_manager.reload_vault()

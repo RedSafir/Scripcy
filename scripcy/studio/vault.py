@@ -75,9 +75,43 @@ from scripcy.ui.interactive import (
 
 class StudioVaultMixin:
     def run_interactive_vault(self) -> None:
-        """Vault resources interactive overview and options without typing."""
+        """Top-level vault entry: simple 3-option menu for Downloads, User Input, and Back."""
         while self.sub_mode == "vault" and self.current_project:
-            health = self.vault_manager.check_vault_health() if self.vault_manager else {
+            options = [
+                ("downloads", "Downloads"),
+                ("user_input", "User Input"),
+                ("back", "Kembali ke Proyek"),
+            ]
+            choice = interactive_menu(
+                options=options,
+                header=Text(f"Pilih Repositori Vault [{self.current_project.name}]:", style="bold bright_white"),
+                console=self.console,
+                footer_hint="↑/↓ Navigasi · enter Pilih · 1-3 Lompat cepat · esc Kembali",
+                allow_back=True,
+            )
+
+            if choice in ("back", None):
+                return
+            elif choice == "downloads":
+                self.run_interactive_vault_hub(scope="downloads")
+            elif choice == "user_input":
+                self.run_interactive_vault_hub(scope="user")
+
+    def run_interactive_vault_hub(self, scope: str = "downloads") -> None:
+        """Vault resources interactive overview for the chosen tier (downloads or user)."""
+        scope_title = "Downloads" if scope == "downloads" else "User Input"
+        while self.sub_mode == "vault" and self.current_project:
+            # If user_input, auto-scan USER INPUT HERE first
+            if scope == "user" and self.vault_manager:
+                try:
+                    staging = self.vault_manager.scan_local_staging()
+                    for item in staging:
+                        if not item.get("is_duplicate"):
+                            self.vault_manager.process_local_item(item, action="keep_both")
+                except Exception:
+                    pass
+
+            health = self.vault_manager.check_vault_health(category=scope) if self.vault_manager else {
                 "status": "active",
                 "status_display": "[bold green]Aktif[/bold green]",
                 "total_files": 0,
@@ -107,7 +141,7 @@ class StudioVaultMixin:
                 ("history", "Riwayat Vault (Log Aktivitas & Sinkronisasi)"),
                 ("add", "Tambah Berkas"),
                 ("update", "Update Berkas"),
-                ("back", "Kembali ke Proyek"),
+                ("back", "Kembali ke Menu Vault"),
             ]
 
             choice = interactive_menu(
@@ -122,7 +156,10 @@ class StudioVaultMixin:
                 return
 
             if choice == "list_berkas":
-                self.run_interactive_vault_categories()
+                if scope == "downloads":
+                    self.run_interactive_vault_categories(scope="downloads")
+                else:
+                    self.run_interactive_vault_view(category="user")
             elif choice == "graph":
                 self.cmd_vault_graph()
             elif choice == "history":
@@ -132,10 +169,10 @@ class StudioVaultMixin:
             elif choice == "update":
                 self.cmd_vault_update()
 
-    def run_interactive_vault_categories(self) -> None:
+    def run_interactive_vault_categories(self, scope: str = "downloads") -> None:
         """Browse categorized vault sections with category-specific issue indicators."""
         while self.sub_mode == "vault" and self.current_project:
-            health = self.vault_manager.check_vault_health() if self.vault_manager else {
+            health = self.vault_manager.check_vault_health(category=scope) if self.vault_manager else {
                 "total_files": 0,
                 "category_health": {},
             }
@@ -158,7 +195,7 @@ class StudioVaultMixin:
                 return lbl
 
             options = [
-                ("papers", _build_cat_label("Papers (Naskah & Jurnal Ilmiah)", papers_h["total"], "berkas", papers_h["warning"], papers_h["error"])),
+                ("papers", _build_cat_label("Downloads (Naskah & Jurnal Ilmiah)", papers_h["total"], "berkas", papers_h["warning"], papers_h["error"])),
                 ("web", _build_cat_label("Web (Arsip & Portal Resmi)", web_h["total"], "berkas", web_h["warning"], web_h["error"])),
                 ("tables", _build_cat_label("Tables (Tabel Data Terstruktur)", tables_h["total"], "tabel", tables_h["warning"], tables_h["error"])),
                 ("images", _build_cat_label("Images (Visual, Grafik & Diagram)", images_h["total"], "gambar", images_h["warning"], images_h["error"])),
@@ -167,7 +204,7 @@ class StudioVaultMixin:
                 ("back", "Kembali ke Menu Vault"),
             ]
 
-            header = Text(f"Kategori Berkas Vault [{self.current_project.name}]:", style="bold bright_white")
+            header = Text(f"Kategori Berkas Downloads [{self.current_project.name}]:", style="bold bright_white")
 
             choice = interactive_menu(
                 options=options,
@@ -351,7 +388,7 @@ class StudioVaultMixin:
                     )
             return
 
-        cat_title = "Papers" if category == "papers" else ("Web" if category == "web" else "Semua Berkas")
+        cat_title = "User Input" if category in ("user", "user_input") else ("Downloads" if category in ("papers", "downloads") else ("Web" if category == "web" else "Semua Berkas"))
         while True:
             active_items = self.vault_manager.list_active_files(category=category if category != "all" else None) if self.vault_manager else []
             if not active_items:

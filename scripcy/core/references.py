@@ -95,7 +95,12 @@ def resolve_vault_reference_entries(
     if not vault_manager:
         return []
 
-    active_items = vault_manager.list_active_files()
+    active_items = [
+        it for it in vault_manager.list_active_files()
+        if getattr(it, "category", "") not in ("user", "user_input")
+        and "/vault/user" not in str(it.path).replace("\\", "/").lower()
+        and "user input here" not in str(it.path).replace("\\", "/").lower()
+    ]
     if not active_items:
         return []
 

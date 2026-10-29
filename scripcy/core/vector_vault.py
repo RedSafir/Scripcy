@@ -240,6 +240,7 @@ class ProjectVectorVault:
                     title TEXT NOT NULL,
                     filename TEXT NOT NULL,
                     path TEXT NOT NULL,
+                    category TEXT DEFAULT 'papers',
                     indexed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
@@ -254,17 +255,26 @@ class ProjectVectorVault:
                     content TEXT NOT NULL,
                     parent_content TEXT,
                     section_title TEXT,
+                    category TEXT DEFAULT 'papers',
                     FOREIGN KEY(paper_id) REFERENCES papers(id) ON DELETE CASCADE
                 )
             """)
 
-            # Ensure parent_content column exists if table was created in older schema
+            # Ensure columns exist if table was created in older schema
+            try:
+                cur.execute("ALTER TABLE papers ADD COLUMN category TEXT DEFAULT 'papers'")
+            except Exception:
+                pass
             try:
                 cur.execute("ALTER TABLE chunks ADD COLUMN parent_content TEXT")
             except Exception:
                 pass
             try:
                 cur.execute("ALTER TABLE chunks ADD COLUMN section_title TEXT")
+            except Exception:
+                pass
+            try:
+                cur.execute("ALTER TABLE chunks ADD COLUMN category TEXT DEFAULT 'papers'")
             except Exception:
                 pass
 
@@ -366,6 +376,7 @@ class ProjectVectorVault:
         title: str,
         engine: Any = None,
         model_name: str | None = None,
+        category: str = "papers",
     ) -> dict[str, int]:
         """Process academic PDF with PyMuPDF, extract informative images/tables, chunk and embed into SQLite."""
         if not pdf_path.exists():
@@ -604,9 +615,9 @@ class ProjectVectorVault:
 
             # Insert paper
             cur.execute("""
-                INSERT OR REPLACE INTO papers (id, title, filename, path)
-                VALUES (?, ?, ?, ?)
-            """, (paper_id, title, pdf_path.name, str(pdf_path)))
+                INSERT OR REPLACE INTO papers (id, title, filename, path, category)
+                VALUES (?, ?, ?, ?, ?)
+            """, (paper_id, title, pdf_path.name, str(pdf_path), category))
 
             # Delete old chunks if re-indexing
             cur.execute("SELECT rowid FROM chunks WHERE paper_id = ?", (paper_id,))
@@ -620,11 +631,12 @@ class ProjectVectorVault:
             # Insert chunks & vectors
             for c_info, emb in zip(raw_chunks, embeddings):
                 cur.execute("""
-                    INSERT INTO chunks (id, paper_id, page_num, chunk_index, content, parent_content)
-                    VALUES (?, ?, ?, ?, ?, ?)
+                    INSERT INTO chunks (id, paper_id, page_num, chunk_index, content, parent_content, category)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
                 """, (
                     c_info["id"], c_info["paper_id"], c_info["page_num"],
-                    c_info["chunk_index"], c_info["content"], c_info.get("parent_content", c_info["content"])
+                    c_info["chunk_index"], c_info["content"], c_info.get("parent_content", c_info["content"]),
+                    category
                 ))
                 rowid = cur.lastrowid
 
@@ -724,6 +736,7 @@ class ProjectVectorVault:
         markdown_text: str,
         source_path: Path,
         images: list[dict[str, Any]] | None = None,
+        category: str = "papers",
     ) -> dict[str, int]:
         """Ingest parsed official web document into SQLite vector vault."""
         embedder = get_shared_embedder()
@@ -761,9 +774,9 @@ class ProjectVectorVault:
         with self._get_connection() as conn:
             cur = conn.cursor()
             cur.execute("""
-                INSERT OR REPLACE INTO papers (id, title, filename, path)
-                VALUES (?, ?, ?, ?)
-            """, (paper_id, title, source_path.name, str(source_path)))
+                INSERT OR REPLACE INTO papers (id, title, filename, path, category)
+                VALUES (?, ?, ?, ?, ?)
+            """, (paper_id, title, source_path.name, str(source_path), category))
 
             cur.execute("SELECT rowid FROM chunks WHERE paper_id = ?", (paper_id,))
             old_rowids = [r[0] for r in cur.fetchall()]
@@ -774,11 +787,12 @@ class ProjectVectorVault:
 
             for c_info, emb in zip(raw_chunks, embeddings):
                 cur.execute("""
-                    INSERT INTO chunks (id, paper_id, page_num, chunk_index, content, parent_content)
-                    VALUES (?, ?, ?, ?, ?, ?)
+                    INSERT INTO chunks (id, paper_id, page_num, chunk_index, content, parent_content, category)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
                 """, (
                     c_info["id"], c_info["paper_id"], c_info["page_num"],
-                    c_info["chunk_index"], c_info["content"], c_info.get("parent_content", c_info["content"])
+                    c_info["chunk_index"], c_info["content"], c_info.get("parent_content", c_info["content"]),
+                    category
                 ))
                 rowid = cur.lastrowid
                 blob = serialize_f32(list(emb))
