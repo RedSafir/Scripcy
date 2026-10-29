@@ -612,6 +612,9 @@ class VaultManager:
                 raw_md = file_path.read_text(encoding="utf-8", errors="replace")
             except Exception:
                 raw_md = f"# {file_path.name}"
+            from scripcy.core.models import FRONTMATTER_REGEX
+            if FRONTMATTER_REGEX.match(raw_md):
+                return self.workspace.save_to_cache(f"{file_path.stem}.md", raw_md)
         # 3. MarkItDown path for all document types (Word, PPT, Excel, HTML, PDF fallback)
         elif self.markitdown:
             try:
@@ -627,11 +630,8 @@ class VaultManager:
             except Exception:
                 raw_md = f"# {file_path.name}\n\n[Binary file]"
 
-        # Create standard frontmatter
-        meta = DocumentMetadata(
-            title=file_path.stem.replace("_", " ").title(),
-            cite_key=file_path.stem.lower().replace(" ", "_"),
-        )
+        # Create standard frontmatter with heuristic metadata
+        meta = self.pdf_parser._heuristic_extract_metadata(raw_md, file_path)
         meta.ensure_cite_key()
         full_content = f"{meta.to_frontmatter()}\n{raw_md}"
         return self.workspace.save_to_cache(f"{file_path.stem}.md", full_content)

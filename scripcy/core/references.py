@@ -170,11 +170,30 @@ def resolve_vault_reference_entries(
                 seen_stems.add(k_lower)
             continue
 
-        # Match author surname and/or year against metadata
+        # Match author surname, title keywords, and/or year against metadata
         found = False
+        k_year_match = re.search(r"\b(19\d{2}|20\d{2})\b", k_lower)
+        k_year = int(k_year_match.group(1)) if k_year_match else None
+
         for stem_key, v_item in item_by_stem.items():
             meta = meta_by_stem.get(stem_key)
             if meta:
+                # Dynamic heuristic hydration if metadata authors are missing
+                if not meta.authors and vault_manager:
+                    c_path = vault_manager.workspace.get_cache_path(f"{v_item.stem}.md")
+                    if c_path.exists():
+                        try:
+                            c_text = c_path.read_text(encoding="utf-8", errors="replace")[:2500]
+                            h_meta = vault_manager.pdf_parser._heuristic_extract_metadata(c_text, v_item.path)
+                            if h_meta.authors:
+                                meta.authors = h_meta.authors
+                            if not meta.year and h_meta.year:
+                                meta.year = h_meta.year
+                            if not meta.doi and h_meta.doi:
+                                meta.doi = h_meta.doi
+                        except Exception:
+                            pass
+
                 # Check author surnames
                 author_match = False
                 if meta.authors:
@@ -185,8 +204,23 @@ def resolve_vault_reference_entries(
                             author_match = True
                             break
 
-                year_match = str(meta.year) in k_lower if meta.year else False
-                if (author_match and year_match) or (author_match and len(item_by_stem) == 1):
+                # Check title / stem keywords (e.g. 'bayesian' in 'Integration of Bayesian Methods')
+                title_keyword_match = False
+                title_tokens = [
+                    w for w in re.findall(r"\b[a-zA-Z]{5,}\b", (meta.title or stem_key).lower())
+                    if w not in {"review", "study", "analysis", "empirical", "theoretical", "method", "systematic"}
+                ]
+                if any(w in k_lower for w in title_tokens):
+                    title_keyword_match = True
+
+                year_match = False
+                if meta.year:
+                    if k_year:
+                        year_match = (meta.year == k_year or abs(meta.year - k_year) <= 1)
+                    else:
+                        year_match = str(meta.year) in k_lower
+
+                if ((author_match or title_keyword_match) and (year_match or not k_year)) or (author_match and len(item_by_stem) == 1):
                     if stem_key not in seen_stems:
                         matched_stems.append((stem_key, disp_label))
                         seen_stems.add(stem_key)

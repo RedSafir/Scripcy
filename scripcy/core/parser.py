@@ -30,6 +30,42 @@ class DocumentParser:
         self.workspace = workspace or WorkspaceManager()
         self.extractor = extractor or GeminiMetadataExtractor()
 
+    def _heuristic_extract_metadata(self, text: str, target_path: Path) -> DocumentMetadata:
+        """Fallback deterministic heuristic metadata extraction from text content."""
+        import re
+
+        doi_match = re.search(r"10\.\d{4,9}/[-._;()/:A-Za-z0-9]+", text[:2500])
+        doi = doi_match.group(0).rstrip(".,)") if doi_match else None
+
+        year_match = re.search(r"(?:published|terbit|tahun|copyright|©|\(c\))\s*:?.*?(\b20\d{2}\b)", text[:2500], re.IGNORECASE)
+        if not year_match:
+            year_match = re.search(r"\b(20\d{2})\b", text[:2500])
+        year = int(year_match.group(1)) if year_match else None
+
+        authors = []
+        auth_match = re.search(r"\*\*Penulis\*\*:\s*([^(\n]+)", text[:2500])
+        if not auth_match:
+            auth_match = re.search(r"(?:^|\n)\s*[_*]+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)[_*]+", text[:2500])
+        if auth_match:
+            cand = auth_match.group(1).strip()
+            if not any(w in cand.lower() for w in ["research article", "keywords", "abstrak", "abstract", "universitas", "university"]):
+                authors.append(cand)
+
+        title = target_path.stem.replace("_", " ").title()
+        header_match = re.search(r"(?:^|\n)#+\s*\**([^\n*]+)\**", text[:2000])
+        if header_match:
+            cand_title = header_match.group(1).strip()
+            if len(cand_title) > 8 and not cand_title.lower().startswith("research article"):
+                title = cand_title
+
+        return DocumentMetadata(
+            title=title,
+            authors=authors,
+            year=year,
+            doi=doi,
+            cite_key=target_path.stem.lower().replace(" ", "_"),
+        )
+
     def parse(
         self,
         file_path: str | Path,
@@ -98,11 +134,8 @@ class DocumentParser:
             metadata = self.extractor.extract(first_page_text)
             metadata.ensure_cite_key()
         except Exception:
-            # Graceful fallback metadata from file stem if extractor fails or no API key provided
-            metadata = DocumentMetadata(
-                title=target_path.stem.replace("_", " ").title(),
-                cite_key=target_path.stem.lower().replace(" ", "_"),
-            )
+            # Graceful deterministic fallback from first page text before raw stem fallback
+            metadata = self._heuristic_extract_metadata(first_page_text or clean_body_markdown, target_path)
             metadata.ensure_cite_key()
 
         # Build YAML frontmatter and composite markdown
