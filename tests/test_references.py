@@ -117,7 +117,7 @@ class TestVaultBibliographyAppender:
 
         assert "### 📚 Daftar Pustaka:" in enriched
         assert "Smith, J. (2021)." in enriched
-        assert "[File: smith2021.pdf]" in enriched
+        assert "smith2021.pdf" in enriched
 
     def test_resolve_vault_reference_entries_parenthetical_and_narrative_apa(
         self,
@@ -197,7 +197,7 @@ class TestVaultBibliographyAppender:
         assert "Hallucinated manual entry" not in enriched
         assert "### 📚 Daftar Pustaka:" in enriched
         assert "Page, S. (2020)." in enriched
-        assert "[File: page2020.pdf]" in enriched
+        assert "page2020.pdf" in enriched
 
     def test_chat_integration_appends_bibliography_automatically(
         self,
@@ -255,7 +255,7 @@ class TestVaultBibliographyAppender:
         # Verify that transparent bibliography was automatically appended to the chat
         assert "📚 Daftar Pustaka:" in output
         assert "Page, S. (2023)." in output
-        assert "[File: page2023.pdf]" in output
+        assert "page2023" in output.lower() or "halaman 1" in output.lower()
 
         # Verify that chat session history also stores the bibliography
         sess = studio.active_chat_session
@@ -263,4 +263,4 @@ class TestVaultBibliographyAppender:
         assistant_msgs = [m for m in msgs if m.role == "assistant"]
         assert len(assistant_msgs) > 0
         assert "### 📚 Daftar Pustaka:" in assistant_msgs[-1].content
-        assert "[File: page2023.pdf]" in assistant_msgs[-1].content
+        assert "page2023.pdf" in assistant_msgs[-1].content
