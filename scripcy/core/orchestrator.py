@@ -339,11 +339,13 @@ class SubagentOrchestrator:
             )
 
         parts.append(
-            "[INSTRUKSI DRAF AKHIR GOLDEN PASS & ANTI-SLOP]:\n"
+            "[INSTRUKSI DRAF AKHIR GOLDEN PASS: KOHESI ILMIAH & ANTI-SLOP]:\n"
             "- DILARANG menyertakan kalimat pembuka basa-basi, salam, meta-komentar (misal: 'Berdasarkan literatur yang dianalisis...'), dan kalimat penutup generik. Mulai LANGSUNG pada Heading 1 atau kalimat substansi pertama.\n"
             "- DILARANG menulis ulang daftar pustaka/referensi di akhir teks draf. Cukup cantumkan penanda sitasi APA di dalam narasi seperti (Penulis et al., Tahun). DILARANG menambahkan penomoran footnote sintetis [^1]. Daftar Pustaka resmi akan dirakit secara otomatis oleh sistem backend.\n"
             "- Seluruh investigasi Worker telah selesai tuntas. DILARANG memanggil perintah alat atau sintaks tool internal (seperti /web, /scout, /read).\n"
-            "- TULISKAN JAWABAN AKHIR LENGKAP berdensitas tinggi secara langsung berdasarkan fakta dari ledger di atas."
+            "- ATURAN ANTI 'FACT-STACKING' (KOHESI NARATIF): Dilarang hanya menjejerkan poin-poin fakta ledger secara kaku atau terpisah-pisah. Bangun narasi ilmiah yang mengalir utuh dengan prinsip kausalitas: [Premis Bukti] -> [Mekanisme Teknis/Alasan] -> [Implikasi Analitis/Komparasi].\n"
+            "- JEMBATAN ANTAR-PARAGRAF (PARAGRAPH BRIDGING): Setiap paragraf harus memiliki keterkaitan logis dengan paragraf sebelumnya menggunakan frasa transisi akademis yang substantif (misal: 'Korelasi teknis tersebut mengindikasikan bahwa...', 'Sebaliknya, pada tataran empiris...', 'Implikasi dari arsitektur ini tercermin pada...').\n"
+            "- TULISKAN JAWABAN AKHIR LENGKAP berdensitas tinggi, kaya argumen analitis mendalam, dan mengalir kohesif berdasarkan fakta dari ledger di atas."
         )
 
         return "\n\n".join(parts)

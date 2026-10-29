@@ -489,9 +489,12 @@ class EvidenceSynthesizer:
                     f"\"\"\"\n{compact_text}\n\"\"\""
                 )
 
-        # Citation Guidance
+        # Synthesis & Citation Guidance
         formatted_blocks.append(
-            "[PETUNJUK SITASI AKADEMIS & GROUNDING EVIDENCE]:\n"
+            "[PETUNJUK SINTESIS AKADEMIS & SITASI EVIDENCE]:\n"
+            "- SINTESIS ARGUMENTATIF (ANTI FACT-STACKING): Jangan menjejerkan kutipan fakta secara terisolasi. "
+            "Hubungkan temuan dengan alur kausal: [Premis Bukti] -> [Mekanisme Teknis] -> [Implikasi/Komparasi]. "
+            "Setiap paragraf harus mengalir lancar dan tersambung secara logis dengan paragraf berikutnya.\n"
             "- Gunakan format sitasi akademis standar APA in-text seperti (Penulis, Tahun) HANYA saat merujuk pada BUKTI LITERATUR ILMIAH.\n"
             "- Data riset primer peneliti adalah milik pengguna sendiri (bukan publikasi luar), jangan buat sitasi formal palsu untuk data peneliti.\n"
             "- DILARANG menambahkan penomoran footnote sintetis seperti [^1], [^2]. Cukup gunakan format sitasi nama dan tahun APA murni.\n"

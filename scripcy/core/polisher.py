@@ -46,7 +46,11 @@ INVIOLABLE CONSTRAINTS & STYLOMETRIC DIRECTIVES:
    - Use active voice with nominal subjects for theoretical evaluations and comparative claims.
    - Employ nuanced epistemic stance (hedging): 'indicates a plausible tendency', 'warrants deeper scrutiny' rather than absolute generic claims.
 7. OUTPUT ONLY POLISHED MARKDOWN: Return strictly the polished Markdown content with no introductory conversational pleasantries, no meta-commentary, and no trailing notes.
-8. HIGH-DENSITY DIRECT PROSE: Begin immediately with the core analytical findings. Strip out all opening conversational throat-clearing and superficial bookending summaries."""
+8. HIGH-DENSITY DIRECT PROSE: Begin immediately with the core analytical findings. Strip out all opening conversational throat-clearing and superficial bookending summaries.
+9. PARAGRAPH COHESION & FLOW (ANTI FACT-STACKING):
+   - Ensure seamless argumentative bridging between consecutive paragraphs.
+   - If paragraphs appear as disconnected, isolated bullet points, weave them together using substantive scholarly transitions (e.g. 'In parallel,', 'This mechanistic divergence explains...', 'At an architectural level,', 'Conversely, in empirical evaluations,').
+   - Do not leave choppy, blunt transitions when eliminating AI cliches; preserve the logical continuity of the scientific argument."""
 
 
 class AcademicPolisher:
