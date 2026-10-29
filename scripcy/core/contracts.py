@@ -353,7 +353,7 @@ class TaskContractExtractor:
             "- in_scope: array of strings (2-4 poin fokus yang wajib dijawab)\n"
             "- out_of_scope: array of strings (2-3 pembahasan di luar konteks)\n"
             "- forbidden_drift_topics: array of strings (2-3 topik melebar yang wajib ditolak dari Devil's Advocate)\n"
-            "- format_requirements: string tunggal (format penyajian terbaik, misal tabel + ringkasan sumber)\n"
+            "- format_requirements: string tunggal (format penyajian terbaik: WAJIB format berdensitas tinggi, langsung ke inti empiris tanpa basa-basi pembuka atau penutup generik, sitasi APA)\n"
             "- target_output_tokens: integer (estimasi token output ideal: 250-350 untuk data singkat, 450 untuk QA fokus, 600 untuk komparasi, 1200 untuk bab pustaka)\n"
             "- min_words: integer (50 s/d 900)\n"
             "- max_words: integer (250 s/d 1500)\n"
@@ -794,7 +794,7 @@ class TaskContractExtractor:
             in_scope=[f"Konsep dan temuan relevan terkait {topic_str}", "Bukti ilmiah langsung dari literatur"],
             out_of_scope=["Spekulasi di luar literatur", "Penyimpangan topik"],
             forbidden_drift_topics=["Pembahasan melebar di luar fokus pertanyaan"],
-            format_requirements="Respons akademis terfokus, jelas, dan langsung menjawab inti pertanyaan.",
+            format_requirements="Respons akademis berdensitas tinggi, langsung menjawab inti pertanyaan tanpa basa-basi.",
             min_words=50,
             max_words=600,
             target_output_tokens=420,

@@ -642,6 +642,8 @@ class LLMEngine:
             "model": effective_model,
             "messages": messages,
             "temperature": active_temp,
+            "presence_penalty": getattr(self.config, "presence_penalty", 0.25),
+            "frequency_penalty": getattr(self.config, "frequency_penalty", 0.15),
             "stream": True,
         }
         if api_key:

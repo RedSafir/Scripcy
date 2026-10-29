@@ -2209,7 +2209,13 @@ class StudioAgentLoopMixin:
                                 active_documents=self.get_session_active_documents(session.id if session else None),
                             )
                         last_v_report = v_rep
-                        last_c_report = None
+                        critic_inst = getattr(self, "devils_advocate", None) or DevilsAdvocate(engine=self.engine)
+                        last_c_report = critic_inst.critique_heuristic(
+                            query=query,
+                            answer=p_resp,
+                            contract=task_contract,
+                            fact_check_verdict=v_rep,
+                        )
                         stream_in_est = estimate_tokens(current_query) + sum(c.token_estimate or estimate_tokens(c.text) for c in (curr_evidence or [])) + 250
                         accumulated_input_tokens += stream_in_est + getattr(v_rep, "input_tokens", 0)
                         accumulated_output_tokens += out_tok + getattr(v_rep, "output_tokens", 0)

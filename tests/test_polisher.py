@@ -195,3 +195,36 @@ class TestAcademicPolisher:
         valid, msg = polisher.verify_integrity(orig, corrupted)
         assert valid is False
         assert "Numerical data points missing" in msg
+
+    def test_strip_throat_clearing(self) -> None:
+        polisher = AcademicPolisher()
+        raw = (
+            "Tentu saja! Berikut adalah pembahasan mendalam mengenai model Transformer.\n\n"
+            "Arsitektur Transformer [Vaswani2017] menggunakan mekanisme self-attention untuk memproses token secara paralel."
+        )
+        cleaned = polisher.strip_throat_clearing(raw)
+        assert "Tentu saja!" not in cleaned
+        assert "Berikut adalah pembahasan" not in cleaned
+        assert cleaned.startswith("Arsitektur Transformer [Vaswani2017]")
+
+    def test_strip_bookending_summary(self) -> None:
+        polisher = AcademicPolisher()
+        raw = (
+            "Model Transformer [Vaswani2017] mencapai akurasi 95.4%.\n\n"
+            "Sebagai kesimpulan, dapat disimpulkan bahwa arsitektur ini sangat berguna bagi perkembangan kecerdasan buatan di masa depan."
+        )
+        cleaned = polisher.strip_bookending_summary(raw)
+        assert "Sebagai kesimpulan" not in cleaned
+        assert "Model Transformer [Vaswani2017] mencapai akurasi 95.4%." in cleaned
+
+    def test_calculate_slop_density(self) -> None:
+        polisher = AcademicPolisher()
+        clean_text = "Transformer [Vaswani2017] mencapai latensi 45 ms pada pengujian empiris dengan throughput 120 fps."
+        sloppy_text = (
+            "Penting untuk dicatat bahwa penelitian ini menyelami bukti nyata yang memainkan peran penting "
+            "dan krusial dalam membentuk permadani atau tapestry pengetahuan ilmiah."
+        )
+        clean_density = polisher.calculate_slop_density(clean_text)
+        slop_density = polisher.calculate_slop_density(sloppy_text)
+        assert clean_density == 0.0
+        assert slop_density > 5.0

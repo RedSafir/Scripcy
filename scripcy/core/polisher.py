@@ -45,7 +45,8 @@ INVIOLABLE CONSTRAINTS & STYLOMETRIC DIRECTIVES:
    - Use passive voice purposefully for methodological and experimental descriptions.
    - Use active voice with nominal subjects for theoretical evaluations and comparative claims.
    - Employ nuanced epistemic stance (hedging): 'indicates a plausible tendency', 'warrants deeper scrutiny' rather than absolute generic claims.
-7. OUTPUT ONLY POLISHED MARKDOWN: Return strictly the polished Markdown content with no introductory conversational pleasantries, no meta-commentary, and no trailing notes."""
+7. OUTPUT ONLY POLISHED MARKDOWN: Return strictly the polished Markdown content with no introductory conversational pleasantries, no meta-commentary, and no trailing notes.
+8. HIGH-DENSITY DIRECT PROSE: Begin immediately with the core analytical findings. Strip out all opening conversational throat-clearing and superficial bookending summaries."""
 
 
 class AcademicPolisher:
@@ -157,8 +158,83 @@ class AcademicPolisher:
         variance = sum((l - mean) ** 2 for l in lengths) / len(lengths)
         return round(math.sqrt(variance), 2)
 
+    @classmethod
+    def strip_throat_clearing(cls, text: str) -> str:
+        """
+        Strip conversational throat-clearing, greetings, and meta-intros.
+        Example: "Tentu, berikut adalah pembahasan mendalam mengenai..." -> removed.
+        """
+        cleaned = text.strip()
+        opening_patterns = [
+            re.compile(r"^(?:tentu\s+saja|tentu(?:lah)?|baiklah|baik|berikut\s+(?:adalah|ini)|dalam\s+pembahasan\s+ini|menjawab\s+pertanyaan\s+(?:anda|tersebut)|berdasarkan\s+pertanyaan\s+(?:anda|tersebut)|sure|certainly|of\s+course|here\s+is|in\s+this\s+response|in\s+this\s+synthesis)[^.\n\?!]*[.:!]\s*", re.IGNORECASE),
+            re.compile(r"^(?:sebagai\s+asisten\s+akademis|halo|hai|hello|hi)[^.\n\?!]*[.:!]\s*", re.IGNORECASE),
+        ]
+        for pat in opening_patterns:
+            cleaned = pat.sub("", cleaned).strip()
+
+        paragraphs = cleaned.split("\n\n")
+        if paragraphs:
+            first_p = paragraphs[0].strip()
+            # If first paragraph is purely a meta preamble (under 120 chars, no citations, no numbers)
+            is_meta_preamble = (
+                len(first_p) < 120
+                and not cls.extract_citations(first_p)
+                and not cls.extract_numbers(first_p)
+                and any(kw in first_p.lower() for kw in ("berikut", "pembahasan", "ulasan", "here is", "let's explore", "mari kita"))
+            )
+            if is_meta_preamble and len(paragraphs) > 1:
+                cleaned = "\n\n".join(paragraphs[1:]).strip()
+
+        return cleaned
+
+    @classmethod
+    def strip_bookending_summary(cls, text: str) -> str:
+        """
+        Strip superficial closing paragraphs that merely repeat previous claims without new citations.
+        """
+        paragraphs = text.strip().split("\n\n")
+        if len(paragraphs) <= 1:
+            return text.strip()
+
+        last_p = paragraphs[-1].strip()
+        conclusion_starters = [
+            re.compile(r"^(?:sebagai\s+kesimpulan|kesimpulannya|secara\s+keseluruhan|dapat\s+disimpulkan\s+bahwa|pada\s+akhirnya|in\s+conclusion|to\s+summarize|in\s+summary|to\s+conclude)", re.IGNORECASE),
+        ]
+        is_closing_slop = any(pat.search(last_p) for pat in conclusion_starters)
+        if is_closing_slop:
+            if not cls.extract_citations(last_p):
+                paragraphs.pop()
+                return "\n\n".join(paragraphs).strip()
+
+        return text.strip()
+
+    @classmethod
+    def calculate_slop_density(cls, text: str) -> float:
+        """Calculate frequency of known AI slop phrases per 100 words."""
+        words = re.findall(r"\b\w+\b", text.lower())
+        if not words:
+            return 0.0
+
+        slop_phrases = [
+            "delve", "testament", "pivotal", "multifaceted", "interplay", "intricacies",
+            "tapestry", "beacon", "furthermore", "moreover", "in conclusion",
+            "it is important to note that", "it is worth noting that",
+            "penting untuk dicatat", "perlu dicatat", "perlu ditekankan", "sebagai kesimpulan",
+            "menyelami", "bukti nyata", "memainkan peran penting", "memainkan peran krusial",
+            "secara keseluruhan", "hal ini membuktikan bahwa",
+        ]
+        count = 0
+        text_lower = text.lower()
+        for phrase in slop_phrases:
+            count += len(re.findall(re.escape(phrase), text_lower))
+
+        return round((count / len(words)) * 100, 2)
+
     def polish_heuristic(self, text: str) -> str:
         """Rule-based de-smoothing: removes robotic boilerplate while keeping exact keywords and citations."""
+        # 1. Strip conversational throat-clearing
+        polished = self.strip_throat_clearing(text)
+
         replacements = [
             (r"(?i)\b(?:it is important to note that|it is worth noting that|it should be noted that)\s*", ""),
             (r"(?i)\b(?:in conclusion,?\s*|as a conclusion,?\s*)", ""),
@@ -180,9 +256,11 @@ class AcademicPolisher:
             (r"(?i)\bhal ini membuktikan bahwa\b", "temuan ini mengindikasikan bahwa"),
         ]
 
-        polished = text
         for pat, repl in replacements:
             polished = re.sub(pat, repl, polished)
+
+        # 2. Strip superficial bookending summary
+        polished = self.strip_bookending_summary(polished)
 
         # Clean double spaces or broken start of sentences
         polished = re.sub(r"[ \t]+", " ", polished)

@@ -334,7 +334,7 @@ class DevilsAdvocate:
 
             if is_strict_length and words < eff_min:
                 contract_conformance = False
-                msg = f"Panjang draf ({words} kata) berada di bawah batas minimum elaborasi ({eff_min} kata dari target {getattr(contract, 'min_words', 300)}). Uraikan lebih mendalam."
+                msg = f"Panjang draf ({words} kata) berada di bawah batas minimum toleransi ({eff_min} kata dari target {getattr(contract, 'min_words', 300)}). Uraikan lebih mendalam."
                 conformance_details.append(msg)
                 weaknesses.append(msg)
                 score -= 2
@@ -403,6 +403,18 @@ class DevilsAdvocate:
         if is_outdated and recency_msg:
             weaknesses.append(recency_msg)
             score -= 2
+
+        # Anti-Slop & High-Density Audit
+        from scripcy.core.polisher import AcademicPolisher
+        slop_density = AcademicPolisher.calculate_slop_density(answer)
+        if slop_density > 2.5:
+            weaknesses.append(f"Kepadatan klise AI (Slop Density: {slop_density}%) melebihi ambang batas toleransi.")
+            score = min(score, 6)
+
+        has_throat_clearing = bool(re.search(r"^(?:tentu\s+saja|tentu|baiklah|berikut\s+adalah|sure|certainly|here\s+is)\b", answer.strip(), re.IGNORECASE))
+        if has_throat_clearing:
+            weaknesses.append("Terdeteksi basa-basi pembuka (throat-clearing). Respons wajib langsung ke inti temuan ilmiah.")
+            score = min(score, 6)
 
         # Require counter-arguments only when contract permits dialectical debate or when no restrictive contract is set.
         if contract is None or (allow_counter and archetype != "DATA_FACTUAL"):
