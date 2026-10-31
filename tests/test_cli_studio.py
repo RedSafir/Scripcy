@@ -725,6 +725,30 @@ class TestNewProjectWizardFlow:
         assert "Aksi Scripcy Disarankan AI" in output
         assert "dilewati" in output
 
+    def test_handle_suggested_actions_ignores_ascii_diagrams(
+        self,
+        cli_studio: CLIStudio,
+    ) -> None:
+        executed_cmds: list[str] = []
+        with patch.object(cli_studio, "handle_project_command", side_effect=lambda cmd: executed_cmds.append(cmd)):
+            response = (
+                "Berikut perbandingan arsitekturnya:\n"
+                "```scripcy\n"
+                "+-----------------------------------------------------------------------------------------+\n"
+                "| ALUR EVOLUSI ARSITEKTUR DETEKSI OBJEK                                                   |\n"
+                "| Two-Stage (R-CNN) -> Deteksi terpisah, akurasi tinggi, latensi komputasi berat          |\n"
+                "| | |                                                                                     |\n"
+                "| ▼ |                                                                                     |\n"
+                "| Single-Stage CNN (YOLO) -> Lokalisasi & klasifikasi simultan, cepat                     |\n"
+                "+-----------------------------------------------------------------------------------------+\n"
+                "```\n"
+            )
+            cli_studio._handle_suggested_actions(response)
+
+        assert len(executed_cmds) == 0
+        output = cli_studio.console.file.getvalue()
+        assert "Aksi Scripcy Disarankan AI" not in output
+
     def test_chat_submode_slash_commands_and_plain_queries(
         self,
         cli_studio: CLIStudio,

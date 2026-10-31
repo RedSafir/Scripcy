@@ -15,27 +15,25 @@ from scripcy.core.vector_vault import HybridSearchResult
 
 
 def test_unlimited_token_contract_properties() -> None:
-    """TaskContract respects unlimited_tokens flag, removing upper ceiling constraints."""
+    """TaskContract respects natural word bounds, without artificial token ceilings."""
     contract = TaskContract(
         archetype="DATA_FACTUAL",
         primary_goal="Statistik kebakaran hutan",
         in_scope=["Angka hektare"],
         out_of_scope=["Bab 2"],
         format_requirements="Tabel data",
-        target_output_tokens=300,
-        token_margin_pct=0.30,
-        unlimited_tokens=True,
+        min_words=100,
+        max_words=300,
+        tolerance_pct=0.15,
     )
-    assert contract.unlimited_tokens is True
-    assert contract.effective_min_tokens == 210
-    assert contract.effective_max_tokens == 999_999
-    assert contract.is_token_count_acceptable(250) is True
-    assert contract.is_token_count_acceptable(5000) is True
-    assert contract.is_token_count_acceptable(100) is False  # below min
+    assert contract.effective_min_words == 85
+    assert contract.effective_max_words == 345
+    assert contract.is_word_count_acceptable(200) is True
+    assert contract.is_word_count_acceptable(50) is False
 
 
 def test_contractor_gatekeeper_allows_expansion_when_unlimited() -> None:
-    """ContractDecomposer never rejects elaboration due to token limits in unlimited mode."""
+    """ContractDecomposer checks word count limits rather than narrow token ceilings."""
     gatekeeper = ContractDecomposer()
     contract_limited = TaskContract(
         archetype="DATA_FACTUAL",
@@ -43,36 +41,26 @@ def test_contractor_gatekeeper_allows_expansion_when_unlimited() -> None:
         in_scope=["Data"],
         out_of_scope=["Bab 2"],
         format_requirements="Tabel",
-        target_output_tokens=200,
-        token_margin_pct=0.10,
-        unlimited_tokens=False,
+        min_words=50,
+        max_words=100,
+        tolerance_pct=0.10,
     )
-    # 200 * 1.10 = 220
+    # 100 * 1.10 = 110 words max
     is_vetoed, reason = gatekeeper._is_critique_out_of_contract(
         "uraikan lebih lanjut dan tambahkan pembahasan lengkap",
         contract_limited,
-        draft_tokens=250,
+        draft_words=120,
     )
     assert is_vetoed is True
-    assert "telah mencapai batas atas kuota kontrak" in reason
+    assert "telah mencapai batas atas kata kontrak" in reason
 
-    # With unlimited_tokens=True
-    contract_unlimited = TaskContract(
-        archetype="DATA_FACTUAL",
-        primary_goal="Uji kuota",
-        in_scope=["Data"],
-        out_of_scope=["Bab 2"],
-        format_requirements="Tabel",
-        target_output_tokens=200,
-        token_margin_pct=0.10,
-        unlimited_tokens=True,
-    )
-    is_vetoed_unl, _ = gatekeeper._is_critique_out_of_contract(
+    # Within bounds (e.g. 80 words)
+    is_vetoed_ok, _ = gatekeeper._is_critique_out_of_contract(
         "uraikan lebih lanjut dan tambahkan pembahasan lengkap",
-        contract_unlimited,
-        draft_tokens=250,
+        contract_limited,
+        draft_words=80,
     )
-    assert is_vetoed_unl is False
+    assert is_vetoed_ok is False
 
 
 def test_detect_evidence_gap_prioritizes_official_web_for_factual_data() -> None:
@@ -146,7 +134,7 @@ def test_official_web_scoring_boost_in_evidence_synthesizer() -> None:
 
 
 def test_settings_commands_for_unlimited_tokens_and_margin(tmp_path: Path) -> None:
-    """Studio settings command toggles and configures unlimited tokens and margin of error."""
+    """Studio settings command configures effort tiers."""
     from scripcy.studio.commands import StudioCommandsMixin
     from rich.console import Console
 
@@ -159,25 +147,12 @@ def test_settings_commands_for_unlimited_tokens_and_margin(tmp_path: Path) -> No
             self.engine = None
 
     studio = DummyStudio(tmp_path)
-    assert studio.config.contract_unlimited_tokens is False
+    assert studio.config.default_effort_tier == "medium"
 
-    # 1. Toggle unlimited tokens
-    studio.cmd_settings("toggle unlimited-tokens")
-    assert studio.config.contract_unlimited_tokens is True
+    # 1. Set effort tier to extra
+    studio.cmd_settings("set-effort extra")
+    assert studio.config.default_effort_tier == "extra"
 
-    # 2. Toggle back off
-    studio.cmd_settings("toggle unlimited-tokens")
-    assert studio.config.contract_unlimited_tokens is False
-
-    # 3. Explicit set-unlimited-tokens on
-    studio.cmd_settings("set-unlimited-tokens on")
-    assert studio.config.contract_unlimited_tokens is True
-
-    # 4. set-token-margin with numeric percentage restores limited mode
-    studio.cmd_settings("set-token-margin 25")
-    assert studio.config.contract_token_margin_pct == 0.25
-    assert studio.config.contract_unlimited_tokens is False
-
-    # 5. set-token-margin unlimited enables unlimited mode
-    studio.cmd_settings("set-token-margin unlimited")
-    assert studio.config.contract_unlimited_tokens is True
+    # 2. Set effort tier to low
+    studio.cmd_effort("low")
+    assert studio.config.default_effort_tier == "low"

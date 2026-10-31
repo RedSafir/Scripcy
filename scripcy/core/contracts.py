@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any, Callable
+from typing import Any, Callable, Literal
 
 from pydantic import BaseModel, Field
 
@@ -160,6 +160,31 @@ class CriterionScore(BaseModel):
     justification: str = Field(default="")
 
 
+class AcademicSearchBlueprint(BaseModel):
+    """Context-driven semantic query blueprint resolving entities and domain authorities."""
+
+    canonical_entities: list[str] = Field(
+        default_factory=list,
+        description="Core scientific entities, algorithms, models, datasets (e.g. ['YOLOS', 'Vision Transformer', 'COCO'])",
+    )
+    queries_en_exact: list[str] = Field(
+        default_factory=list,
+        description="English exact keyword queries with operators or specific titles/models",
+    )
+    queries_en_broad: list[str] = Field(
+        default_factory=list,
+        description="Broader English academic search terms for high recall",
+    )
+    queries_local: list[str] = Field(
+        default_factory=list,
+        description="User's original language search queries (Indonesian, Spanish, etc.)",
+    )
+    target_authority_domains: list[str] = Field(
+        default_factory=list,
+        description="Authoritative domains relevant to context (e.g. ['openalex.org', 'arxiv.org', 'bps.go.id', 'fao.org'])",
+    )
+
+
 class TaskContract(BaseModel):
     """Semantic execution contract derived dynamically from user query."""
 
@@ -173,6 +198,10 @@ class TaskContract(BaseModel):
     forbidden_drift_topics: list[str] = Field(
         default_factory=list,
         description="Tangential sub-topics that must be stripped if generated.",
+    )
+    search_blueprint: AcademicSearchBlueprint = Field(
+        default_factory=AcademicSearchBlueprint,
+        description="Semantic blueprint mapping technical entities, exact English search strings, and authority domains.",
     )
     format_requirements: str = Field(default="Analisis akademis terstruktur", description="Structure, layout, and style requested.")
     min_words: int = Field(default=300, description="Minimum recommended word count.")
@@ -203,21 +232,37 @@ class TaskContract(BaseModel):
         default=True,
         description="True: Contract serves as the absolute supreme boundary over Devil's Advocate and synthesis.",
     )
-    target_output_tokens: int = Field(
-        default=450,
-        ge=60,
-        le=8192,
-        description="Estimated target output tokens determined by AI contract.",
+    effort_level: Literal["low", "medium", "extra"] = Field(
+        default="medium",
+        description="Depth of research investigation resolved dynamically: low, medium, or extra.",
     )
-    token_margin_pct: float = Field(
-        default=0.30,
-        ge=0.05,
-        le=0.50,
-        description="Configurable margin of error percentage for output token budget (default 0.30 = +-30%).",
+    min_sources: int = Field(
+        default=1,
+        ge=0,
+        description="Minimum distinct literature sources required (can be 0 for purely deductive/formatting queries).",
     )
-    unlimited_tokens: bool = Field(
-        default=True,
-        description="Whether token budget limits are disabled (unlimited output tokens).",
+    max_sources: int = Field(
+        default=3,
+        ge=1,
+        description="Upper bound of literature sources to search and cite.",
+    )
+    max_search_queries: int = Field(
+        default=4,
+        ge=1,
+        le=20,
+        description="Maximum external search queries allowed before search exhaustion.",
+    )
+    max_download_items: int = Field(
+        default=3,
+        ge=0,
+        le=20,
+        description="Maximum documents to download before search exhaustion.",
+    )
+    sufficiency_threshold: float = Field(
+        default=0.85,
+        ge=0.1,
+        le=1.0,
+        description="Coverage score threshold to trigger early stopping.",
     )
     required_search_channels: list[str] = Field(
         default_factory=lambda: list(DEFAULT_SEARCH_CHANNELS),
@@ -242,27 +287,9 @@ class TaskContract(BaseModel):
         """Upper word limit with tolerance margin (e.g. 500 * 1.15 = 575)."""
         return int(self.max_words * (1.0 + self.tolerance_pct))
 
-    @property
-    def effective_min_tokens(self) -> int:
-        """Lower token limit with configured margin of error (default -30%)."""
-        return max(40, int(round(self.target_output_tokens * (1.0 - self.token_margin_pct))))
-
-    @property
-    def effective_max_tokens(self) -> int:
-        """Upper token limit with configured margin of error (default +30%), or 999999 if unlimited."""
-        if self.unlimited_tokens:
-            return 999_999
-        return int(round(self.target_output_tokens * (1.0 + self.token_margin_pct)))
-
     def is_word_count_acceptable(self, actual_words: int) -> bool:
         """Verify whether actual word count is within tolerance margin."""
         return self.effective_min_words <= actual_words <= self.effective_max_words
-
-    def is_token_count_acceptable(self, actual_tokens: int) -> bool:
-        """Verify whether actual output token count falls within target +- margin of error."""
-        if self.unlimited_tokens:
-            return actual_tokens >= self.effective_min_tokens
-        return self.effective_min_tokens <= actual_tokens <= self.effective_max_tokens
 
 
 class AdaptiveCriticVerdict(BaseModel):
@@ -292,7 +319,10 @@ INTENT_CATEGORIES: dict[str, list[str]] = {
         "data statistik", "carikan data", "cari data", "data ", "statistik",
         "angka", "rekap", "rekapitulasi", "tabel", "jumlah", "tren",
     ],
-    "literature_review": ["tinjauan pustaka", "bab 2", "bab 1", "bab 3", "draf lengkap", "sintesis komprehensif"],
+    "literature_review": [
+        "tinjauan pustaka", "bab 2", "bab 1", "bab 3", "draf lengkap", "sintesis komprehensif",
+        "penelitian terbaru", "riset terbaru", "literatur terbaru", "studi terbaru",
+    ],
 }
 
 
@@ -315,20 +345,32 @@ class TaskContractExtractor:
         self.engine = engine
         self.llm_completion_fn = llm_completion_fn
 
-    def _configured_margin(self) -> float:
-        """Return configured token margin of error percentage (default 0.30 = +-30%)."""
+    def _get_tier_config(self, tier: str) -> tuple[int, int, int, int]:
+        """Return (min_sources, max_sources, max_search_queries, max_download_items) for tier."""
         cfg = getattr(self.engine, "config", None) if self.engine else None
-        raw = getattr(cfg, "contract_token_margin_pct", 0.30) if cfg else 0.30
-        try:
-            val = float(raw)
-            return max(0.05, min(0.50, val))
-        except Exception:
-            return 0.30
-
-    def _configured_unlimited(self) -> bool:
-        """Return configured unlimited token setting (default True: bebas tanpa limitasi kuota sempit)."""
-        cfg = getattr(self.engine, "config", None) if self.engine else None
-        return bool(getattr(cfg, "contract_unlimited_tokens", True))
+        if not cfg:
+            try:
+                from scripcy.core.config import ConfigManager
+                cfg = ConfigManager().config
+            except Exception:
+                cfg = None
+        tier_cfg = None
+        if cfg:
+            tier_name = f"effort_tier_{tier.lower()}"
+            tier_cfg = getattr(cfg, tier_name, None)
+        if tier_cfg:
+            return (
+                getattr(tier_cfg, "min_sources", 1),
+                getattr(tier_cfg, "max_sources", 3),
+                getattr(tier_cfg, "max_search_queries", 3),
+                getattr(tier_cfg, "max_download_items", 3),
+            )
+        defaults = {
+            "low": (0, 1, 1, 1),
+            "medium": (1, 3, 3, 3),
+            "extra": (3, 7, 6, 6),
+        }
+        return defaults.get(tier.lower(), (1, 3, 3, 3))
 
     def is_ambiguous_intent(self, query: str) -> bool:
         """Determine if query contains competing signals across multiple intent categories."""
@@ -340,21 +382,25 @@ class TaskContractExtractor:
         return len(matched) >= 2
 
     def _extract_via_llm(self, query: str) -> TaskContract | None:
-        """Formulate an AI-First Absolute TaskContract with token budget and search-depth rules."""
-        margin_pct = self._configured_margin()
-        unlimited = self._configured_unlimited()
+        """Formulate an AI-First Absolute TaskContract with context-driven source and search-depth rules."""
+        low_min, low_max, _, _ = self._get_tier_config("low")
+        med_min, med_max, _, _ = self._get_tier_config("medium")
+        ext_min, ext_max, _, _ = self._get_tier_config("extra")
+
         system_prompt = (
             "Anda adalah AI Contract Architect untuk Scripcy.\n"
             "Rumuskan KONTRAK TUGAS ABSOLUT berdasarkan kebutuhan pengguna. "
             "Kontrak ini bersifat ABSOLUT: Devil's Advocate maupun penulis draf dilarang melanggar batas cakupan.\n"
             "Balas HANYA dalam JSON valid (tanpa teks lain) dengan field berikut:\n"
             "- archetype: string, WAJIB salah satu dari ['DATA_FACTUAL', 'FOCUSED_QA', 'COMPARISON', 'DIALECTICAL_CRITIQUE', 'LITERATURE_SYNTHESIS']\n"
+            f"- effort_level: string, WAJIB salah satu dari ['low', 'medium', 'extra']. "
+            f"Evaluasi konteks kueri: 'low' untuk pemformatan/tata bahasa/deduktif konseptual tanpa perlu jurnal baru ({low_min}-{low_max} sumber); "
+            f"'medium' untuk QA/faktual terarah ({med_min}-{med_max} sumber); 'extra' untuk tinjauan pustaka/komparasi mendalam ({ext_min}-{ext_max} sumber)\n"
             "- primary_goal: string (tujuan inti yang menjawab kebutuhan pengguna)\n"
             "- in_scope: array of strings (2-4 poin fokus yang wajib dijawab)\n"
             "- out_of_scope: array of strings (2-3 pembahasan di luar konteks)\n"
             "- forbidden_drift_topics: array of strings (2-3 topik melebar yang wajib ditolak dari Devil's Advocate)\n"
             "- format_requirements: string tunggal (format penyajian terbaik: WAJIB format berdensitas tinggi, langsung ke inti empiris tanpa basa-basi pembuka atau penutup generik, sitasi APA)\n"
-            "- target_output_tokens: integer (estimasi token output ideal: 250-350 untuk data singkat, 450 untuk QA fokus, 600 untuk komparasi, 1200 untuk bab pustaka)\n"
             "- min_words: integer (50 s/d 900)\n"
             "- max_words: integer (250 s/d 1500)\n"
             "- allow_counter_arguments: boolean (true HANYA jika kueri meminta debat/pro-kontra/komparasi)\n"
@@ -362,7 +408,8 @@ class TaskContractExtractor:
             "- definition_of_done: array of strings (3-4 kriteria selesai yang terukur)\n"
             "- required_search_channels: array of strings dari ['vault_lokal', 'web_resmi', 'repositori_jurnal_multi_source', 'reference_mapping_snowballing_backward_forward']\n"
             "- search_exhaustion_policy: string tunggal (aturan batas pencarian via vault, web resmi, jurnal, dan reference mapping + snowballing forward/backward, serta berhenti mencari jika data tetap tidak ditemukan)\n"
-            "- is_modular_section_needed: boolean"
+            "- is_modular_section_needed: boolean\n"
+            "- search_blueprint: object berisi {canonical_entities: [nama entitas/model/algoritma spesifik], queries_en_exact: [kueri bahasa inggris presisi untuk jurnal/arxiv], queries_en_broad: [kueri bahasa inggris luas], queries_local: [kueri bahasa asli pengguna], target_authority_domains: [domain otoritas internasional/nasional yang relevan]}"
         )
 
         try:
@@ -435,13 +482,34 @@ class TaskContractExtractor:
 
             archetype = _normalize_archetype(data.get("archetype"), query)
 
-            default_tok_map = {
-                "DATA_FACTUAL": 280,
-                "FOCUSED_QA": 420,
-                "DIALECTICAL_CRITIQUE": 520,
-                "COMPARISON": 600,
-                "LITERATURE_SYNTHESIS": 1200,
-            }
+            # Resolve effort level and source bounds
+            raw_effort = str(data.get("effort_level") or "").strip().lower()
+            if raw_effort in ("low", "medium", "extra"):
+                effort_level = raw_effort
+            else:
+                if archetype in ("LITERATURE_SYNTHESIS", "COMPARISON"):
+                    effort_level = "extra"
+                elif any(k in query.lower() for k in ("tata bahasa", "perbaiki kalimat", "format", "deduksi murni", "tanpa jurnal")):
+                    effort_level = "low"
+                else:
+                    effort_level = "medium"
+
+            def_min_s, def_max_s, def_max_q, def_max_dl = self._get_tier_config(effort_level)
+
+            # Check explicit user query regex for minimal sources requested (e.g. 'minimal 5 paper')
+            source_match = re.search(r"minimal\s+(\d+)\s+(?:paper|jurnal|sumber|dokumen|literatur)", query.lower())
+            explicit_min = int(source_match.group(1)) if source_match else None
+
+            if explicit_min is not None:
+                min_sources = max(def_min_s, explicit_min)
+                max_sources = max(def_max_s, min_sources + 2)
+                if min_sources >= ext_min:
+                    effort_level = "extra"
+            else:
+                # Patokan kuota sumber mutlak mengikuti konfigurasi tier di settings yang diatur pengguna
+                min_sources = def_min_s
+                max_sources = def_max_s
+
             default_words_map = {
                 "DATA_FACTUAL": (60, 350),
                 "FOCUSED_QA": (180, 550),
@@ -450,12 +518,6 @@ class TaskContractExtractor:
                 "LITERATURE_SYNTHESIS": (700, 1400),
             }
             def_min_w, def_max_w = default_words_map.get(archetype, (180, 550))
-
-            try:
-                target_tokens = int(data.get("target_output_tokens") or default_tok_map.get(archetype, 420))
-            except Exception:
-                target_tokens = default_tok_map.get(archetype, 420)
-            target_tokens = max(60, min(8192, target_tokens))
 
             try:
                 min_words = int(data.get("min_words") or def_min_w)
@@ -512,12 +574,21 @@ class TaskContractExtractor:
                 ),
                 is_modular_section_needed=bool(data.get("is_modular_section_needed", False)),
                 is_absolute=True,
-                target_output_tokens=target_tokens,
-                token_margin_pct=margin_pct,
-                unlimited_tokens=unlimited,
+                effort_level=effort_level,
+                min_sources=min_sources,
+                max_sources=max_sources,
+                max_search_queries=def_max_q,
+                max_download_items=def_max_dl,
                 required_search_channels=req_channels,
                 search_exhaustion_policy=exhaustion_policy,
                 rubric=_default_rubric_for_archetype(archetype),
+                search_blueprint=AcademicSearchBlueprint(
+                    canonical_entities=_ensure_str_list(data.get("search_blueprint", {}).get("canonical_entities") if isinstance(data.get("search_blueprint"), dict) else None),
+                    queries_en_exact=_ensure_str_list(data.get("search_blueprint", {}).get("queries_en_exact") if isinstance(data.get("search_blueprint"), dict) else None),
+                    queries_en_broad=_ensure_str_list(data.get("search_blueprint", {}).get("queries_en_broad") if isinstance(data.get("search_blueprint"), dict) else None),
+                    queries_local=_ensure_str_list(data.get("search_blueprint", {}).get("queries_local") if isinstance(data.get("search_blueprint"), dict) else None) or [query],
+                    target_authority_domains=_ensure_str_list(data.get("search_blueprint", {}).get("target_authority_domains") if isinstance(data.get("search_blueprint"), dict) else None),
+                ),
             )
         except Exception:
             return None
@@ -552,10 +623,20 @@ class TaskContractExtractor:
         word_count = len(q_clean.split())
         topics = self._extract_topics(q_clean)
         topic_str = ", ".join(topics[:3]) if topics else q_clean[:40]
-        margin_pct = self._configured_margin()
-        unlimited = self._configured_unlimited()
+
+        # Check explicit user query regex for minimal sources requested
+        explicit_min: int | None = None
+        source_match = re.search(r"minimal\s+(\d+)\s+(?:paper|jurnal|sumber|dokumen|literatur)", lower_q)
+        if source_match:
+            try:
+                explicit_min = int(source_match.group(1))
+            except Exception:
+                explicit_min = None
 
         if any(k in lower_q for k in INTENT_CATEGORIES["comparison"]) and any(k in lower_q for k in INTENT_CATEGORIES["literature_review"]):
+            t_min, t_max, t_q, t_dl = self._get_tier_config("extra")
+            min_s = max(t_min, explicit_min if explicit_min is not None else t_min)
+            max_s = max(t_max, min_s + 2)
             return TaskContract(
                 archetype="COMPARISON",
                 primary_goal=f"Analisis komparatif metodologis {topic_str} untuk integrasi tinjauan pustaka (Bab 2)",
@@ -569,9 +650,11 @@ class TaskContractExtractor:
                 format_requirements="Tinjauan komparatif akademis terstruktur (matriks komparasi + narasi sintesis kritis).",
                 min_words=450,
                 max_words=1000,
-                target_output_tokens=720,
-                token_margin_pct=margin_pct,
-                unlimited_tokens=unlimited,
+                effort_level="extra",
+                min_sources=min_s,
+                max_sources=max_s,
+                max_search_queries=t_q,
+                max_download_items=t_dl,
                 is_absolute=True,
                 allow_counter_arguments=True,
                 allow_honest_gap=True,
@@ -605,7 +688,10 @@ class TaskContractExtractor:
             is_brief = any(k in lower_q for k in ["singkat", "ringkas", "pendek", "brief"])
             min_w = 60 if is_brief else 350
             max_w = 400 if is_brief else 650
-            target_tok = 280 if is_brief else 520
+            eff_lvl = "extra" if (explicit_min and explicit_min >= 3) else "medium"
+            t_min, t_max, t_q, t_dl = self._get_tier_config(eff_lvl)
+            min_s = max(t_min, explicit_min if explicit_min is not None else t_min)
+            max_s = max(t_max, min_s + 2)
             return TaskContract(
                 archetype="DIALECTICAL_CRITIQUE",
                 primary_goal=f"Eksplorasi dialektika argumen seputar {topic_str}",
@@ -615,9 +701,11 @@ class TaskContractExtractor:
                 format_requirements="Matriks Dialektika: Tesis Sentral, Poin Pendukung (Pro + sitasi), Poin Sanggahan (Kontra + sitasi), dan Celah Riset (Gap).",
                 min_words=min_w,
                 max_words=max_w,
-                target_output_tokens=target_tok,
-                token_margin_pct=margin_pct,
-                unlimited_tokens=unlimited,
+                effort_level=eff_lvl,
+                min_sources=min_s,
+                max_sources=max_s,
+                max_search_queries=t_q,
+                max_download_items=t_dl,
                 is_absolute=True,
                 allow_counter_arguments=True,
                 allow_honest_gap=True,
@@ -658,6 +746,11 @@ class TaskContractExtractor:
             )
 
         if any(k in lower_q for k in ["bandingkan", "komparasi", "perbandingan", "vs", "versus", "perbedaan"]):
+            eff_lvl = "extra" if (explicit_min and explicit_min >= 3) else "medium"
+            t_min, t_max, t_q, t_dl = self._get_tier_config(eff_lvl)
+            base_min = max(2, t_min) if eff_lvl == "medium" else t_min
+            min_s = max(base_min, explicit_min if explicit_min is not None else base_min)
+            max_s = max(t_max, min_s + 2)
             return TaskContract(
                 archetype="COMPARISON",
                 primary_goal=f"Analisis komparasi dan perbandingan analitis {topic_str}",
@@ -667,9 +760,11 @@ class TaskContractExtractor:
                 format_requirements="Analisis komparatif terstruktur (disarankan tabel perbandingan atau poin-poin parameter komparasi).",
                 min_words=300,
                 max_words=700,
-                target_output_tokens=560,
-                token_margin_pct=margin_pct,
-                unlimited_tokens=unlimited,
+                effort_level=eff_lvl,
+                min_sources=min_s,
+                max_sources=max_s,
+                max_search_queries=t_q,
+                max_download_items=t_dl,
                 is_absolute=True,
                 allow_counter_arguments=True,
                 allow_honest_gap=True,
@@ -700,7 +795,10 @@ class TaskContractExtractor:
                 ],
             )
 
-        if any(k in lower_q for k in ["tinjauan pustaka", "bab 2", "bab 1", "bab 3", "draf lengkap", "sintesis komprehensif"]):
+        if any(k in lower_q for k in INTENT_CATEGORIES["literature_review"]):
+            t_min, t_max, t_q, t_dl = self._get_tier_config("extra")
+            min_s = max(t_min, explicit_min if explicit_min is not None else t_min)
+            max_s = max(t_max, min_s + 2)
             return TaskContract(
                 archetype="LITERATURE_SYNTHESIS",
                 primary_goal=f"Penyusunan tinjauan pustaka dan sintesis komprehensif {topic_str}",
@@ -709,15 +807,17 @@ class TaskContractExtractor:
                 format_requirements="Tinjauan akademis terstruktur dengan sub-heading bertahap.",
                 min_words=800,
                 max_words=1600,
-                target_output_tokens=1200,
-                token_margin_pct=margin_pct,
-                unlimited_tokens=unlimited,
+                effort_level="extra",
+                min_sources=min_s,
+                max_sources=max_s,
+                max_search_queries=t_q,
+                max_download_items=t_dl,
                 is_absolute=True,
                 allow_counter_arguments=True,
                 allow_honest_gap=True,
                 definition_of_done=[
                     "Menyusun kerangka sub-topik yang koheren.",
-                    "Menyintesis minimal 3-5 temuan paper aktif di vault.",
+                    "Menyintesis temuan paper aktif di vault.",
                     "Setiap klaim metodologis dan konseptual memiliki sitasi APA.",
                     "Menyajikan sintesis kritis, bukan sekadar ringkasan terpisah per paper.",
                 ],
@@ -743,6 +843,9 @@ class TaskContractExtractor:
             )
 
         if _has_factual_data_signal(lower_q):
+            t_min, t_max, t_q, t_dl = self._get_tier_config("medium")
+            min_s = max(t_min, explicit_min if explicit_min is not None else t_min)
+            max_s = max(t_max, min_s + 2)
             return TaskContract(
                 archetype="DATA_FACTUAL",
                 primary_goal=f"Verifikasi data dan fakta spesifik mengenai {topic_str}",
@@ -755,9 +858,11 @@ class TaskContractExtractor:
                 format_requirements="Jawaban langsung, ringkas, dan presisi (poin/tabel data disertai sitasi, maksimal 1-3 paragraf pendukung).",
                 min_words=50,
                 max_words=350,
-                target_output_tokens=280,
-                token_margin_pct=margin_pct,
-                unlimited_tokens=unlimited,
+                effort_level="medium",
+                min_sources=min_s,
+                max_sources=max_s,
+                max_search_queries=t_q,
+                max_download_items=t_dl,
                 is_absolute=True,
                 allow_counter_arguments=False,
                 allow_honest_gap=True,
@@ -788,6 +893,15 @@ class TaskContractExtractor:
                 ],
             )
 
+        # Check if purely deductive, stylistic, or formatting query
+        is_deductive_or_format = any(
+            k in lower_q for k in ("tata bahasa", "perbaiki kalimat", "paragraf", "format", "deduksi murni", "tanpa jurnal", "edit gaya")
+        )
+        eff_lvl: Literal["low", "medium", "extra"] = "low" if is_deductive_or_format else "medium"
+        t_min, t_max, t_q, t_dl = self._get_tier_config(eff_lvl)
+        min_s = 0 if is_deductive_or_format else max(t_min, explicit_min if explicit_min is not None else t_min)
+        max_s = 1 if is_deductive_or_format else max(t_max, min_s + 2)
+
         return TaskContract(
             archetype="FOCUSED_QA",
             primary_goal=f"Analisis akademis kontekstual mengenai: {q_clean[:100]}",
@@ -797,9 +911,11 @@ class TaskContractExtractor:
             format_requirements="Respons akademis berdensitas tinggi, langsung menjawab inti pertanyaan tanpa basa-basi.",
             min_words=50,
             max_words=600,
-            target_output_tokens=420,
-            token_margin_pct=margin_pct,
-            unlimited_tokens=unlimited,
+            effort_level=eff_lvl,
+            min_sources=min_s,
+            max_sources=max_s,
+            max_search_queries=1 if is_deductive_or_format else t_q,
+            max_download_items=1 if is_deductive_or_format else t_dl,
             is_absolute=True,
             allow_counter_arguments=False,
             allow_honest_gap=True,
@@ -831,9 +947,23 @@ class TaskContractExtractor:
 
     def extract(self, query: str) -> TaskContract:
         """Extract an AI-First Absolute TaskContract, falling back to heuristics when offline/mock."""
+        contract: TaskContract | None = None
         if self.llm_completion_fn is not None or self.engine is not None:
-            ai_contract = self._extract_via_llm(query)
-            if ai_contract:
-                return ai_contract
+            contract = self._extract_via_llm(query)
 
-        return self.extract_heuristic(query)
+        if not contract:
+            contract = self.extract_heuristic(query)
+
+        # Ensure search_blueprint has fallback values populated
+        if not contract.search_blueprint.queries_local:
+            contract.search_blueprint.queries_local = [query]
+        if not contract.search_blueprint.canonical_entities:
+            contract.search_blueprint.canonical_entities = self._extract_topics(query)
+        if not contract.search_blueprint.queries_en_exact:
+            contract.search_blueprint.queries_en_exact = (
+                [" ".join(contract.search_blueprint.canonical_entities[:3])]
+                if contract.search_blueprint.canonical_entities
+                else [query]
+            )
+
+        return contract

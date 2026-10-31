@@ -56,12 +56,14 @@ INVIOLABLE CONSTRAINTS & STYLOMETRIC DIRECTIVES:
 class AcademicPolisher:
     """Refines AI academic synthesis into human-like prose without altering citations or technical facts."""
 
-    # In-text APA and bracketed citations: (Author et al., 2026), [1], [Vaswani2017], (Author, 2024, p. 12)
+    # In-text APA, Harvard, Vancouver, superscripts, and bracketed citations
     CITE_PATTERNS = [
-        re.compile(r"\([A-Z][a-zA-Z\s\.\&]+,\s*(?:19|20)\d{2}[a-z]?(?:,\s*p{1,2}\.\s*\d+)?\)", re.UNICODE),
+        re.compile(r"\([A-Z][a-zA-Z\s\.\&]+,\s*(?:19|20)\d{2}[a-z]?(?::\s*\d+(?:[\-–—]\d+)?|,\s*p{1,2}\.\s*\d+(?:[\-–—]\d+)?)?\)", re.UNICODE),
         re.compile(r"\b[A-Z][a-zA-Z]+(?:\s+et\s+al\.)?\s*\((?:19|20)\d{2}[a-z]?\)", re.UNICODE),
         re.compile(r"\[([A-Za-z0-9_,\s-]+(?:\s+et\s+al\.)?(?:,\s*\d{4})?)\](?!\()", re.UNICODE),
         re.compile(r"\[\^[0-9]+\]"),  # Footnote citations like [^1], [^2]
+        re.compile(r"\[\d+(?:\s*[\-–—,]\s*\d+)*\]"),  # Vancouver numerical ranges [1-3, 5]
+        re.compile(r"(?<=\S)[¹²³⁴⁵⁶⁷⁸⁹⁰]+(?:[,\-–—\u207b][¹²³⁴⁵⁶⁷⁸⁹⁰]+)*"),  # Nature / Science superscripts
     ]
 
     # Specific numerical metrics, percentages, latencies, p-values, and statistics
@@ -121,20 +123,26 @@ class AcademicPolisher:
 
     @staticmethod
     def extract_citations(text: str) -> list[str]:
-        """Extract academic citation keys like [Vaswani2017], [Page2002], [1], (Author, 2026), [^1]."""
+        """Extract academic citation keys like [Vaswani2017], [Page2002], [1], (Author, 2026), [^1], [1-3], Author¹."""
         found = []
         # Bracketed citations
         for m in re.findall(r"\[([A-Za-z0-9_,\s-]+(?:\s+et\s+al\.)?(?:,\s*\d{4})?)\](?!\()", text):
             if m.strip():
                 found.append(f"[{m.strip()}]")
         # Parenthetical citations
-        for m in re.findall(r"\(([A-Z][a-zA-Z\s\.\&]+,\s*(?:19|20)\d{2}[a-z]?)\)", text):
+        for m in re.findall(r"\(([A-Z][a-zA-Z\s\.\&]+,\s*(?:19|20)\d{2}[a-z]?(?::\s*\d+(?:[\-–—]\d+)?|,\s*p{1,2}\.\s*\d+(?:[\-–—]\d+)?)?)\)", text):
             if m.strip():
                 found.append(f"({m.strip()})")
         # Footnote citations
         for m in re.findall(r"\[\^[0-9]+\]", text):
-            found.append(m)
-        return found
+            found.append(m.strip())
+        # Vancouver ranges
+        for m in re.findall(r"\[\d+(?:\s*[\-–—,]\s*\d+)*\]", text):
+            found.append(m.strip())
+        # Superscripts
+        for m in re.findall(r"(?<=\S)[¹²³⁴⁵⁶⁷⁸⁹⁰]+(?:[,\-–—\u207b][¹²³⁴⁵⁶⁷⁸⁹⁰]+)*", text):
+            found.append(m.strip())
+        return list(dict.fromkeys(found))
 
     @staticmethod
     def extract_numbers(text: str) -> set[str]:
@@ -305,7 +313,12 @@ class AcademicPolisher:
 
         return True, "Integrity verified: all citations and metrics intact."
 
-    async def polish_async(self, text: str, query: str = "") -> PolishResult:
+    async def polish_async(
+        self,
+        text: str,
+        query: str = "",
+        style_tone: str | None = None,
+    ) -> PolishResult:
         """Asynchronously polish text via LLM with deterministic pre/post validation and token masking."""
         burst_before = self.calculate_burstiness(text)
 
@@ -331,8 +344,10 @@ class AcademicPolisher:
                 model_name = getattr(self.engine.config, "default_model", "gemini-2.5-pro")
                 api_key = self.engine.config.get_api_key_for_model(model_name)
                 if api_key and not api_key.startswith("mock") and getattr(self.engine, "_acompletion_fn", None) is None:
+                    tone_note = f"Target Tone Directive: {style_tone}\n" if style_tone else ""
                     prompt = (
                         f"Please polish this academic text to elevate natural cadence, maximize syntactic burstiness, and eliminate mechanical AI phrasing.\n\n"
+                        f"{tone_note}"
                         f"Research Context Query: \"{query}\"\n\n"
                         f"Original Academic Text (Masked Sensitive Entities):\n```markdown\n{masked_input}\n```"
                     )

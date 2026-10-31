@@ -22,6 +22,7 @@ from rich.table import Table
 from rich.text import Text
 
 from scripcy.core.chats import ChatManager, ChatSession, SessionEvent, SessionRuntime
+from scripcy.core.clarifier import QueryClarifier
 from scripcy.core.config import ConfigManager, ScripcyConfig, detect_9router_key, fetch_9router_models
 from scripcy.core.contracts import AdaptiveCriticVerdict, TaskContract, TaskContractExtractor
 from scripcy.core.critic import CritiqueReport, DevilsAdvocate
@@ -129,6 +130,7 @@ class StudioBase:
         self.scout: LiteratureScout | None = None
         self.web_scout: WebScout | None = None
         self.contract_extractor: TaskContractExtractor | None = None
+        self.clarifier: QueryClarifier | None = None
 
         # If a workspace was explicitly provided, bind it
         if workspace:
@@ -158,8 +160,11 @@ class StudioBase:
         )
         self.engine.default_model = self.get_active_project_model()
         self.scout = LiteratureScout(workspace=self.workspace, parser=self.parser)
+        self.scout.engine = self.engine
         self.web_scout = WebScout(workspace=self.workspace)
+        self.web_scout.engine = self.engine
         self.vault_manager = VaultManager(workspace=self.workspace)
+        self.vault_manager.engine = self.engine
         self.chat_manager = ChatManager(self.workspace.root_dir / "chats.db")
         existing_sessions = self.chat_manager.list_sessions()
         self.active_chat_session = existing_sessions[0] if existing_sessions else None
@@ -169,6 +174,7 @@ class StudioBase:
         self.fact_checker = FactChecker(engine=self.engine)
         self.devils_advocate = DevilsAdvocate(engine=self.engine)
         self.contract_extractor = TaskContractExtractor(engine=self.engine)
+        self.clarifier = QueryClarifier(engine=self.engine)
         self.polisher = AcademicPolisher(engine=self.engine)
         self.active_documents.clear()
         self._sync_vault_cache()

@@ -157,6 +157,7 @@ def resolve_vault_reference_entries(
         return f"[{v_item.cite_key or target_stem}]"
 
     # Match in-text citations to vault items
+    unmatched_citations: list[tuple[str, str]] = []
     for raw_k, disp_label in extracted_citations:
         k_lower = raw_k.lower().strip()
 
@@ -190,11 +191,14 @@ def resolve_vault_reference_entries(
                         try:
                             c_text = c_path.read_text(encoding="utf-8", errors="replace")[:2500]
                             h_meta = vault_manager.pdf_parser._heuristic_extract_metadata(c_text, v_item.path)
-                            if h_meta.authors:
-                                meta.authors = h_meta.authors
-                            if not meta.year and h_meta.year:
-                                meta.year = h_meta.year
-                            if not meta.doi and h_meta.doi:
+                            if getattr(h_meta, "authors", None) and isinstance(h_meta.authors, list):
+                                meta.authors = [str(a) for a in h_meta.authors if isinstance(a, str)]
+                            if not meta.year and getattr(h_meta, "year", None) and isinstance(h_meta.year, (int, str)):
+                                try:
+                                    meta.year = int(h_meta.year)
+                                except Exception:
+                                    pass
+                            if not meta.doi and getattr(h_meta, "doi", None) and isinstance(h_meta.doi, str):
                                 meta.doi = h_meta.doi
                         except Exception:
                             pass
@@ -220,9 +224,13 @@ def resolve_vault_reference_entries(
 
                 year_match = False
                 if meta.year:
-                    if k_year:
-                        year_match = (meta.year == k_year or abs(meta.year - k_year) <= 1)
-                    else:
+                    try:
+                        m_yr = int(meta.year)
+                        if k_year:
+                            year_match = (m_yr == k_year or abs(m_yr - k_year) <= 1)
+                        else:
+                            year_match = str(m_yr) in k_lower
+                    except Exception:
                         year_match = str(meta.year) in k_lower
 
                 if ((author_match or title_keyword_match) and (year_match or not k_year)) or (author_match and len(item_by_stem) == 1):
@@ -233,6 +241,10 @@ def resolve_vault_reference_entries(
                     break
         if found:
             continue
+
+        # Track unmatched academic citation for APA 7th secondary source resolution
+        if not raw_k.isdigit():
+            unmatched_citations.append((raw_k, disp_label))
 
         # Handle numeric citation like [1], [2] matching evidence order
         if raw_k.isdigit():
@@ -260,6 +272,32 @@ def resolve_vault_reference_entries(
                 matched_stems.append((stem_norm, label))
                 seen_stems.add(stem_norm)
 
+    # Resolve secondary source citations (APA 7th Sec 8.6)
+    secondary_notes: list[dict[str, str]] = []
+    if unmatched_citations and vault_manager:
+        for raw_k, disp_label in unmatched_citations:
+            k_author = raw_k.split(",")[0].replace("et al.", "").strip()
+            k_year_match = re.search(r"\b(19\d{2}|20\d{2})\b", raw_k)
+            k_year_str = k_year_match.group(1) if k_year_match else ""
+            if len(k_author) < 3:
+                continue
+            for stem, v_item in item_by_stem.items():
+                c_path = vault_manager.workspace.get_cache_path(f"{v_item.stem}.md")
+                if c_path.exists():
+                    try:
+                        c_text = c_path.read_text(encoding="utf-8", errors="replace")
+                        if (k_author.lower() in c_text.lower()) and (not k_year_str or k_year_str in c_text):
+                            meta = meta_by_stem.get(stem)
+                            host_cite = meta.cite_key if meta and meta.cite_key else v_item.stem
+                            secondary_notes.append({
+                                "primary_cite": raw_k,
+                                "secondary_source": host_cite,
+                                "filename": v_item.filename,
+                            })
+                            break
+                    except Exception:
+                        pass
+
     # Format bibliographic entries
     entries: list[dict[str, Any]] = []
     norm_style = style.lower().strip()
@@ -276,13 +314,16 @@ def resolve_vault_reference_entries(
         else:
             formatted = format_reference_entry_apa(cite_item)
 
-        entries.append({
+        entry_dict: dict[str, Any] = {
             "key": label,
             "citation_item": cite_item,
             "formatted_entry": formatted,
             "filename": v_item.filename,
             "path": v_item.path,
-        })
+        }
+        if idx == 1 and secondary_notes:
+            entry_dict["secondary_notes"] = secondary_notes
+        entries.append(entry_dict)
 
     return entries
 
@@ -512,5 +553,17 @@ def append_vault_bibliography(
             lines.append(f"{ref_text}{proof_str}")
         else:
             lines.append(f"{idx}. **{key}** {ref_text}{proof_str}")
+
+    # Append transparent secondary reference notes (APA 7th Sec 8.6)
+    all_sec_notes: list[dict[str, str]] = []
+    for entry in entries:
+        if "secondary_notes" in entry:
+            all_sec_notes.extend(entry["secondary_notes"])
+
+    if all_sec_notes:
+        lines.append("")
+        lines.append("#### 📖 Catatan Rujukan Sekunder (APA 7th):")
+        for sn in all_sec_notes:
+            lines.append(f"- **{sn['primary_cite']}** dirujuk sebagaimana dikutip dalam **{sn['secondary_source']}** (`vault/{sn['filename']}`).")
 
     return cleaned_text.rstrip() + "\n" + "\n".join(lines) + "\n"

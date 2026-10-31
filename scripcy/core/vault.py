@@ -92,6 +92,7 @@ class VaultManager:
         self.history_file = self.vault_dir / ".history.jsonl"
         self.pdf_parser = DocumentParser(workspace=workspace)
         self._markitdown = None
+        self.engine: Any = None
         self.ensure_directories()
         self.vector_vault = ProjectVectorVault(
             db_path=self.vault_dir / "project_vault.db",
@@ -600,7 +601,13 @@ class VaultManager:
             pass
         return None
 
-    def convert_file(self, file_path: Path, force: bool = False) -> Path:
+    def convert_file(
+        self,
+        file_path: Path,
+        force: bool = False,
+        engine: Any = None,
+        model_name: str | None = None,
+    ) -> Path:
         """Convert any vault document into Markdown and save to cache/."""
         cache_path = self.workspace.get_cache_path(f"{file_path.stem}.md")
         if cache_path.exists() and not force:
@@ -611,10 +618,14 @@ class VaultManager:
         if file_path.suffix.lower() == ".pdf":
             try:
                 try:
+                    active_eng = engine or getattr(self, "engine", None)
+                    active_mod = model_name or (getattr(active_eng, "default_model", None) if active_eng else None)
                     self.vector_vault.ingest_paper_pdf(
                         pdf_path=file_path,
                         paper_id=file_path.stem,
                         title=file_path.stem.replace("_", " ").title(),
+                        engine=active_eng,
+                        model_name=str(active_mod) if active_mod else None,
                     )
                 except Exception as vec_err:
                     logger.debug(f"Vector vault ingestion skipped/failed for {file_path.name}: {vec_err}")

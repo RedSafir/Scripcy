@@ -150,6 +150,7 @@ class SubagentOrchestrator:
         session_id: str | None = None,
         cancel_event: threading.Event | None = None,
         on_agent_status_change: Callable[[str, str, str], None] | None = None,
+        contract: Any | None = None,
     ) -> list[str]:
         """Run WebScout and LitScout subcontracts in parallel and coalesce document ingestion into a single batch."""
         if not scout_subcontracts:
@@ -157,6 +158,10 @@ class SubagentOrchestrator:
 
         is_mock = self._is_mock_test_env()
         ingested_stems: list[str] = []
+
+        max_queries = getattr(contract, "max_search_queries", 4) if contract else 4
+        target_min = getattr(contract, "min_sources", 3) if contract else 3
+        max_downloads = getattr(contract, "max_download_items", 5) if contract else 5
 
         async def _run_web(sc: SubContract) -> list[str]:
             stems: list[str] = []
@@ -176,26 +181,31 @@ class SubagentOrchestrator:
                 return stems
 
             vec_vault = getattr(self.vault_manager, "vector_vault", None) if self.vault_manager else None
-            for q in sc.search_queries[:2]:
-                if cancel_event and cancel_event.is_set():
-                    if on_agent_status_change:
+            for q in sc.search_queries[:max_queries]:
+                if cancel_event and cancel_event.is_set() or len(stems) >= max_downloads:
+                    if on_agent_status_change and cancel_event and cancel_event.is_set():
                         on_agent_status_change("Agent Download Web", "cancelled", "Dibatalkan oleh pengguna")
                     break
                 try:
                     if on_agent_status_change:
                         on_agent_status_change("Agent Download Web", "running", f"Mencari web resmi: '{q[:30]}...'")
-                    hits = await self.web_scout.search_official_web(q, limit=2, require_official=True)
-                    for hit in (hits or [])[:2]:
-                        if cancel_event and cancel_event.is_set():
+                    fetch_limit = max(3, target_min)
+                    hits = await self.web_scout.search_official_web(q, limit=fetch_limit, require_official=True)
+                    for hit in (hits or []):
+                        if cancel_event and cancel_event.is_set() or len(stems) >= max_downloads:
                             break
                         domain = urllib.parse.urlparse(hit.url).netloc or "web"
                         if on_agent_status_change:
                             on_agent_status_change("Agent Download Web", "running", f"Mengunduh web [{domain}]: '{hit.title[:30]}...'")
                         parsed = await self.web_scout.ingest_url(hit.url, vector_vault=vec_vault)
                         if parsed and getattr(parsed, "metadata", None) and parsed.metadata.cite_key:
-                            stems.append(parsed.metadata.cite_key)
+                            ckey = parsed.metadata.cite_key
+                            if ckey not in stems:
+                                stems.append(ckey)
                             if on_agent_status_change:
                                 on_agent_status_change("Agent Download Web", "running", f"Mengekstrak visual & teks ({len(stems)} sumber)")
+                        if len(stems) >= target_min:
+                            break
                 except Exception:
                     continue
             if on_agent_status_change:
@@ -220,26 +230,31 @@ class SubagentOrchestrator:
                 return stems
 
             from scripcy.core.scout import ScoutQuery
-            for q in sc.search_queries[:2]:
-                if cancel_event and cancel_event.is_set():
-                    if on_agent_status_change:
+            for q in sc.search_queries[:max_queries]:
+                if cancel_event and cancel_event.is_set() or len(stems) >= max_downloads:
+                    if on_agent_status_change and cancel_event and cancel_event.is_set():
                         on_agent_status_change("Agent Download Journal", "cancelled", "Dibatalkan oleh pengguna")
                     break
                 try:
                     if on_agent_status_change:
                         on_agent_status_change("Agent Download Journal", "running", f"Mencari repositori jurnal: '{q[:30]}...'")
-                    sq = ScoutQuery(keywords=q, limit=3)
-                    papers = await self.scout.search_multi_source(sq, limit=3)
-                    for p in (papers or [])[:2]:
-                        if cancel_event and cancel_event.is_set():
+                    search_limit = max(5, target_min + 2)
+                    sq = ScoutQuery(keywords=q, limit=search_limit)
+                    papers = await self.scout.search_multi_source(sq, limit=search_limit)
+                    for p in (papers or []):
+                        if cancel_event and cancel_event.is_set() or len(stems) >= max_downloads:
                             break
                         stem = sanitize_filename(p.title)
+                        if stem in stems:
+                            continue
                         if p.has_pdf and p.pdf_url:
                             try:
                                 if on_agent_status_change:
                                     on_agent_status_change("Agent Download Journal", "running", f"Mengunduh PDF: '{p.title[:35]}...'")
                                 await self.scout.download_scout_paper(p)
                                 stems.append(stem)
+                                if len(stems) >= target_min:
+                                    break
                                 continue
                             except Exception:
                                 pass
@@ -247,6 +262,8 @@ class SubagentOrchestrator:
                             on_agent_status_change("Agent Download Journal", "running", f"Mengindeks abstrak: '{p.title[:35]}...'")
                         await asyncio.to_thread(self.scout.ingest_abstract_paper, p)
                         stems.append(stem)
+                        if len(stems) >= target_min:
+                            break
                 except Exception:
                     continue
             if on_agent_status_change:
@@ -311,12 +328,13 @@ class SubagentOrchestrator:
                 f"```tsv\n{tsv_ledger}\n```"
             )
 
-        if not getattr(contract, "unlimited_tokens", True):
-            margin_disp = int(round(contract.token_margin_pct * 100))
+        if getattr(contract, "min_words", 0) or getattr(contract, "max_words", 0):
             parts.append(
-                f"[ALOKASI KUOTA TOKEN KONTRAK ABSOLUT]:\n"
-                f"- Target Token Output: ~{contract.target_output_tokens} token "
-                f"(Margin +-{margin_disp}% -> {contract.effective_min_tokens} s/d {contract.effective_max_tokens} token)."
+                f"[TARGET PANJANG NASKAH & EFFORT KONTRAK]:\n"
+                f"- Rekomendasi kata: ~{contract.min_words} s/d {contract.max_words} kata "
+                f"(Toleransi: {contract.effective_min_words} - {contract.effective_max_words} kata).\n"
+                f"- Tingkat Effort: {getattr(contract, 'effort_level', 'medium').upper()} "
+                f"(Minimal {getattr(contract, 'min_sources', 1)} sumber independen)."
             )
 
         if contract.archetype == "DATA_FACTUAL":
@@ -359,6 +377,7 @@ class SubagentOrchestrator:
         enable_autonomous_scout: bool = True,
         cancel_event: threading.Event | None = None,
         on_tree_update: Callable[[str], None] | None = None,
+        on_source_exhausted_confirmation: Callable[[dict[str, Any]], str] | None = None,
     ) -> OrchestrationResult:
         """Execute Fan-Out subagents, Single Batch Write Barrier, and Fan-In Scope Audit."""
         # 1. Dynamic decomposition into granular small contracts
@@ -445,6 +464,7 @@ class SubagentOrchestrator:
             session_id=session_id,
             cancel_event=cancel_event,
             on_agent_status_change=_on_scout_agent_status,
+            contract=contract,
         )
 
         local_artifacts, newly_ingested_stems = await asyncio.gather(local_future, scout_future)
@@ -567,6 +587,7 @@ class SubagentOrchestrator:
                 session_id=session_id,
                 cancel_event=cancel_event,
                 on_agent_status_change=_on_scout_agent_status,
+                contract=contract,
             )
             for sc in follow_scouts:
                 states[f"Worker [{sc.role}]"] = ("done", f"{len(follow_stems)} sumber baru diindeks" if follow_stems else "Selesai")
@@ -622,6 +643,48 @@ class SubagentOrchestrator:
         if plan.has_evidence_gap and plan.gap_reason and not newly_ingested_stems:
             if plan.gap_reason not in missing_notes:
                 missing_notes.insert(0, plan.gap_reason)
+
+        # Check source count compliance against contract.min_sources
+        cited_sources: set[str] = set()
+        for f in verified_facts:
+            if getattr(f, "citation_stem", None) and str(f.citation_stem) != "unknown":
+                cited_sources.add(str(f.citation_stem))
+        for stem in newly_ingested_stems:
+            cited_sources.add(str(stem))
+        for c in evidence:
+            if getattr(c, "source", None) and str(c.source) != "unknown":
+                cited_sources.add(str(c.source))
+
+        min_sources = getattr(contract, "min_sources", 1)
+        if min_sources > 0 and len(cited_sources) < min_sources:
+            exhausted_info = {
+                "found_count": len(cited_sources),
+                "min_sources": min_sources,
+                "sources": sorted(list(cited_sources)),
+                "effort_level": getattr(contract, "effort_level", "medium"),
+                "query": query,
+            }
+            user_choice = "continue"
+            if on_source_exhausted_confirmation:
+                try:
+                    user_choice = on_source_exhausted_confirmation(exhausted_info)
+                except Exception:
+                    user_choice = "continue"
+
+            if user_choice == "cancel":
+                from scripcy.exceptions import ScripcyError
+                raise ScripcyError(
+                    f"Pencarian dibatalkan oleh pengguna: Hanya {len(cited_sources)} dari target "
+                    f"minimal {min_sources} sumber independen yang berhasil ditemukan."
+                )
+            else:
+                contract.allow_honest_gap = True
+                gap_msg = (
+                    f"Pencarian dengan effort '{getattr(contract, 'effort_level', 'medium')}' telah menelusuri seluruh kanal mandatori, "
+                    f"namun hanya {len(cited_sources)} dari target minimal {min_sources} sumber independen yang ditemukan."
+                )
+                if gap_msg not in missing_notes:
+                    missing_notes.insert(0, gap_msg)
 
         total_raw_facts = len(verified_facts) + audit_res.get("dropped_count", 0)
         deterministic_grounding = round(len(verified_facts) / total_raw_facts, 2) if total_raw_facts > 0 else 1.0

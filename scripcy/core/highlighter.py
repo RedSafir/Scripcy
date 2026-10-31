@@ -105,6 +105,33 @@ class EvidenceHighlighter:
                 best_page = item["page_num"]
                 best_sent = item["sentence"]
 
+        if best_score <= 0:
+            # Semantic cross-lingual matching via FastEmbed ONNX when lexical overlap is empty
+            try:
+                from scripcy.core.vector_vault import get_shared_embedder
+                import numpy as np
+                embedder = get_shared_embedder()
+                if embedder and sentence_index:
+                    claim_vec = list(embedder.embed([claim_text]))[0]
+                    claim_norm = np.linalg.norm(claim_vec)
+                    if claim_norm > 1e-6:
+                        claim_unit = claim_vec / claim_norm
+                        sentences_text = [item["sentence"] for item in sentence_index]
+                        sent_vectors = list(embedder.embed(sentences_text))
+                        best_sim = -1.0
+                        best_item = None
+                        for item, s_vec in zip(sentence_index, sent_vectors):
+                            s_norm = np.linalg.norm(s_vec)
+                            if s_norm > 1e-6:
+                                sim = float(np.dot(claim_unit, s_vec / s_norm))
+                                if sim > best_sim:
+                                    best_sim = sim
+                                    best_item = item
+                        if best_item and best_sim >= 0.45:
+                            return best_item["page_num"], best_item["sentence"]
+            except Exception as e:
+                logger.debug(f"Cross-lingual sentence match fallback: {e}")
+
         if best_score <= 0 and fallback_chunks:
             return fallback_chunks[0]["page_num"], fallback_chunks[0]["quote"]
 

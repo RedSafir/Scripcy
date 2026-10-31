@@ -1275,9 +1275,9 @@ class StudioVaultMixin:
         if not self.vault_manager:
             self.console.print("[red][x] Tidak ada vault aktif.[/red]\n")
             return
-        self.console.print("[bold cyan]● Memulai pembersihan & pengindeksan ulang visual ilmiah...[/bold cyan]")
         model_name = self.get_active_project_model()
-        res = self.vault_manager.clean_and_reindex_visuals(engine=self.engine, model_name=model_name)
+        with self.console.status("[bold cyan]Membersihkan dan mengindeks ulang visual ilmiah di vault...[/bold cyan]"):
+            res = self.vault_manager.clean_and_reindex_visuals(engine=self.engine, model_name=model_name)
         self.console.print(f"[bold green][✓] Pembersihan visual tuntas: {res.get('papers', 0)} paper diproses, {res.get('images', 0)} gambar informatif terindeks, {res.get('tables', 0)} tabel terindeks.[/bold green]\n")
 
     def print_vault_help(self) -> None:

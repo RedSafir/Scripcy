@@ -69,7 +69,9 @@ class FactChecker:
                 continue
             salient_claims.append(s_clean)
 
-        return salient_claims[:15]  # Cap at 15 claims for performance
+        total_words = len(clean.split())
+        claim_budget = max(15, min(60, total_words // 35))
+        return salient_claims[:claim_budget]
 
     def verify_claims_llm(
         self,
@@ -155,9 +157,21 @@ class FactChecker:
             return None, 0, 0
 
     def verify_claims_lexical(self, claims: list[str], evidence_chunks: list[EvidenceChunk]) -> list[ClaimVerification]:
-        """Fast rule-based / lexical overlap check of claims against evidence chunks."""
+        """Fast rule-based and multilingual semantic embedding check of claims against evidence chunks."""
         results: list[ClaimVerification] = []
         combined_evidence = " ".join(c.text.lower() for c in evidence_chunks)
+
+        # Pre-extract embedder for semantic cross-lingual matching if lexical overlap fails
+        embedder = None
+        chunk_embeddings = None
+        try:
+            from scripcy.core.vector_vault import get_shared_embedder
+            embedder = get_shared_embedder()
+            if embedder and evidence_chunks:
+                chunk_texts = [c.text for c in evidence_chunks]
+                chunk_embeddings = list(embedder.embed(chunk_texts))
+        except Exception:
+            embedder = None
 
         for claim in claims:
             words = [w.lower() for w in re.findall(r"\b\w{4,}\b", claim)]
@@ -190,18 +204,59 @@ class FactChecker:
                 results.append(ClaimVerification(
                     claim=claim,
                     status="weak",
-                    supporting_source=best_source,
+                    supporting_source=best_source or (evidence_chunks[0].source if evidence_chunks else "vault"),
                     confidence=0.5,
                     reason="Partial evidence match in vault.",
                 ))
             else:
-                results.append(ClaimVerification(
-                    claim=claim,
-                    status="unsupported",
-                    supporting_source=None,
-                    confidence=0.2,
-                    reason="No direct grounding found in active vault evidence passages.",
-                ))
+                # Cross-Lingual Semantic Fallback via FastEmbed ONNX
+                semantic_matched = False
+                if embedder is not None and chunk_embeddings:
+                    try:
+                        import numpy as np
+                        claim_vec = list(embedder.embed([claim]))[0]
+                        claim_norm = np.linalg.norm(claim_vec)
+                        if claim_norm > 1e-6:
+                            claim_unit = claim_vec / claim_norm
+                            best_sim = -1.0
+                            best_c_idx = 0
+                            for idx, c_vec in enumerate(chunk_embeddings):
+                                c_norm = np.linalg.norm(c_vec)
+                                if c_norm > 1e-6:
+                                    sim = float(np.dot(claim_unit, c_vec / c_norm))
+                                    if sim > best_sim:
+                                        best_sim = sim
+                                        best_c_idx = idx
+
+                            if best_sim >= 0.58:
+                                semantic_matched = True
+                                results.append(ClaimVerification(
+                                    claim=claim,
+                                    status="supported",
+                                    supporting_source=evidence_chunks[best_c_idx].source,
+                                    confidence=min(1.0, 0.60 + (best_sim - 0.58) * 0.9),
+                                    reason=f"Cross-lingual semantic verification via FastEmbed (cos_sim={best_sim:.2f}).",
+                                ))
+                            elif best_sim >= 0.42:
+                                semantic_matched = True
+                                results.append(ClaimVerification(
+                                    claim=claim,
+                                    status="weak",
+                                    supporting_source=evidence_chunks[best_c_idx].source,
+                                    confidence=0.50,
+                                    reason=f"Weak cross-lingual semantic alignment via FastEmbed (cos_sim={best_sim:.2f}).",
+                                ))
+                    except Exception:
+                        semantic_matched = False
+
+                if not semantic_matched:
+                    results.append(ClaimVerification(
+                        claim=claim,
+                        status="unsupported",
+                        supporting_source=None,
+                        confidence=0.2,
+                        reason="No direct grounding found in active vault evidence passages.",
+                    ))
 
         return results
 

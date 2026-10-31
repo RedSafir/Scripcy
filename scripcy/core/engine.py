@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 from collections.abc import AsyncGenerator
 import logging
@@ -95,43 +96,132 @@ class EvidenceSynthesizer:
         self.default_token_budget = default_token_budget
 
     def chunk_document(self, text: str, source_name: str) -> list[EvidenceChunk]:
-        """Split document text into overlapping windows of words."""
+        """Split document text into structural markdown blocks and overlapping windows of words."""
         clean_text = text.strip()
         if not clean_text:
             return []
 
-        words = clean_text.split()
-        if len(words) <= self.chunk_size_words:
-            chunk_content = " ".join(words)
-            return [
-                EvidenceChunk(
-                    chunk_id=f"{source_name}_c0",
-                    source=source_name,
-                    text=chunk_content,
-                    token_estimate=estimate_tokens(chunk_content),
-                )
-            ]
+        # Split into structural markdown sections / blocks
+        raw_paragraphs = re.split(r"\n\s*\n", clean_text)
+        blocks: list[str] = []
+        for p in raw_paragraphs:
+            p_strip = p.strip()
+            if not p_strip:
+                continue
+            blocks.append(p_strip)
+
+        if not blocks:
+            blocks = [clean_text]
 
         chunks: list[EvidenceChunk] = []
-        step = max(1, self.chunk_size_words - self.chunk_overlap_words)
+        curr_block_acc: list[str] = []
+        curr_word_count = 0
         idx = 0
 
-        for start in range(0, len(words), step):
-            window = words[start : start + self.chunk_size_words]
-            chunk_text = " ".join(window)
+        for b in blocks:
+            b_words = len(b.split())
+            # If block alone exceeds chunk size (e.g. large table or long section)
+            if b_words > self.chunk_size_words:
+                if curr_block_acc:
+                    chunk_str = "\n\n".join(curr_block_acc)
+                    chunks.append(
+                        EvidenceChunk(
+                            chunk_id=f"{source_name}_c{idx}",
+                            source=source_name,
+                            text=chunk_str,
+                            token_estimate=estimate_tokens(chunk_str),
+                        )
+                    )
+                    idx += 1
+                    curr_block_acc = []
+                    curr_word_count = 0
+
+                # Split big block by lines, preserving table header if it's a markdown table
+                lines = b.splitlines()
+                is_table = any(l.strip().startswith("|") for l in lines[:3])
+                header_lines = lines[:2] if (is_table and len(lines) >= 2) else []
+                data_lines = lines[2:] if header_lines else lines
+
+                sub_lines: list[str] = list(header_lines)
+                sub_words = sum(len(l.split()) for l in sub_lines)
+                for line in data_lines:
+                    lw = len(line.split())
+                    if sub_words + lw > self.chunk_size_words and len(sub_lines) > len(header_lines):
+                        chunk_str = "\n".join(sub_lines)
+                        chunks.append(
+                            EvidenceChunk(
+                                chunk_id=f"{source_name}_c{idx}",
+                                source=source_name,
+                                text=chunk_str,
+                                token_estimate=estimate_tokens(chunk_str),
+                            )
+                        )
+                        idx += 1
+                        sub_lines = list(header_lines)
+                        sub_words = sum(len(l.split()) for l in sub_lines)
+                    sub_lines.append(line)
+                    sub_words += lw
+
+                if sub_lines:
+                    chunk_str = "\n".join(sub_lines)
+                    chunks.append(
+                        EvidenceChunk(
+                            chunk_id=f"{source_name}_c{idx}",
+                            source=source_name,
+                            text=chunk_str,
+                            token_estimate=estimate_tokens(chunk_str),
+                        )
+                    )
+                    idx += 1
+                continue
+
+            if curr_word_count + b_words > self.chunk_size_words:
+                if curr_block_acc:
+                    chunk_str = "\n\n".join(curr_block_acc)
+                    chunks.append(
+                        EvidenceChunk(
+                            chunk_id=f"{source_name}_c{idx}",
+                            source=source_name,
+                            text=chunk_str,
+                            token_estimate=estimate_tokens(chunk_str),
+                        )
+                    )
+                    idx += 1
+                    # Small overlap: keep the last small block if overlap permitted
+                    overlap_acc = []
+                    overlap_w = 0
+                    for prev_b in reversed(curr_block_acc):
+                        pw = len(prev_b.split())
+                        if overlap_w + pw <= self.chunk_overlap_words:
+                            overlap_acc.insert(0, prev_b)
+                            overlap_w += pw
+                        else:
+                            break
+                    curr_block_acc = overlap_acc
+                    curr_word_count = overlap_w
+
+            curr_block_acc.append(b)
+            curr_word_count += b_words
+
+        if curr_block_acc:
+            chunk_str = "\n\n".join(curr_block_acc)
             chunks.append(
                 EvidenceChunk(
                     chunk_id=f"{source_name}_c{idx}",
                     source=source_name,
-                    text=chunk_text,
-                    token_estimate=estimate_tokens(chunk_text),
+                    text=chunk_str,
+                    token_estimate=estimate_tokens(chunk_str),
                 )
             )
-            idx += 1
-            if start + self.chunk_size_words >= len(words):
-                break
 
-        return chunks
+        return chunks or [
+            EvidenceChunk(
+                chunk_id=f"{source_name}_c0",
+                source=source_name,
+                text=clean_text[:1200],
+                token_estimate=estimate_tokens(clean_text[:1200]),
+            )
+        ]
 
     def expand_query(self, query: str) -> list[str]:
         """Generate academic synonyms and English technical terminology expansions for cross-lingual hit rate."""
@@ -259,20 +349,24 @@ class EvidenceSynthesizer:
                     active_stems = set()
                     for d in documents:
                         if isinstance(d, Path):
-                            active_stems.add(d.stem)
+                            active_stems.add(d.stem.lower())
                         elif hasattr(d, "stem"):
-                            active_stems.add(d.stem)
-                        elif hasattr(d, "metadata") and getattr(d.metadata, "cite_key", None):
-                            active_stems.add(d.metadata.cite_key)
-                        elif isinstance(d, str):
-                            active_stems.add(Path(d).stem)
+                            active_stems.add(str(d.stem).lower())
+                        if hasattr(d, "metadata"):
+                            if getattr(d.metadata, "cite_key", None):
+                                active_stems.add(str(d.metadata.cite_key).lower().strip("[]"))
+                            if getattr(d.metadata, "title", None):
+                                active_stems.add(str(d.metadata.title).lower())
+                        if isinstance(d, str):
+                            active_stems.add(Path(d).stem.lower())
 
                     matched_chunks = []
                     # Track seen parents to merge and prevent token explosion
                     seen_parents: set[str] = set()
 
                     for h in hybrid_res:
-                        if active_stems and h.paper_id not in active_stems:
+                        h_id = h.paper_id.lower().strip("[]")
+                        if active_stems and h_id not in active_stems and not any(h_id in s or s in h_id for s in active_stems):
                             continue
                         
                         # Parent-child hierarchical selection: use parent context if not already covered
@@ -364,27 +458,21 @@ class EvidenceSynthesizer:
         is_factual_q = any(
             w in clean_q for w in (
                 "data", "angka", "berapa", "statistik", "jumlah", "luas", "tahun",
-                "tabel", "bps", "kementerian", "resmi", "pemerintah", "nasional", "hektar", "ha"
+                "tabel", "resmi", "pemerintah", "nasional", "statistics", "report", "metrics"
             )
         )
+        official_domains = (".go.id", ".gov", ".bund.de", ".admin.ch", ".overheid.nl", ".europa.eu", ".int")
         for chunk in all_chunks:
             chunk.score = self.score_chunk(query_terms, query, chunk.text)
             src_lower = chunk.source.lower()
             text_lower = chunk.text.lower()
             has_official_signal = (
                 src_lower.startswith("web_")
-                or "go_id" in src_lower
-                or "gov" in src_lower
-                or "bps" in src_lower
-                or "menlhk" in src_lower
-                or "klhk" in text_lower
-                or "bps" in text_lower
-                or ".go.id" in text_lower
-                or "kementerian" in text_lower
-                or "sipongi" in text_lower
+                or any(dom in src_lower for dom in ("gov", "bund_de", "admin_ch", "overheid_nl", "europa_eu", "_int"))
+                or any(dom in text_lower for dom in official_domains)
             )
             if is_factual_q and has_official_signal:
-                chunk.score = chunk.score * 1.6 + 2.0
+                chunk.score = chunk.score * 1.25 + 0.5
 
             if is_corpus_query:
                 # In corpus summary mode, chunk 0 (title/abstract/intro) is crucial for every document
@@ -669,6 +757,7 @@ class LLMEngine:
 
         messages.append({"role": "user", "content": user_msg_content})
 
+        effective_timeout = float(getattr(self.config, "llm_timeout", 120.0) or 120.0)
         kwargs: dict[str, Any] = {
             "model": effective_model,
             "messages": messages,
@@ -676,6 +765,8 @@ class LLMEngine:
             "presence_penalty": getattr(self.config, "presence_penalty", 0.25),
             "frequency_penalty": getattr(self.config, "frequency_penalty", 0.15),
             "stream": True,
+            "timeout": effective_timeout,
+            "request_timeout": effective_timeout,
         }
         if api_key:
             kwargs["api_key"] = api_key
@@ -688,26 +779,38 @@ class LLMEngine:
         accumulated_output: list[str] = []
         input_tokens_est = estimate_tokens(user_content + sys_prompt)
 
+        max_retries = 2
         try:
-            response_stream = await self._invoke_acompletion(**kwargs)
-            async for chunk in response_stream:
-                delta = None
+            for attempt in range(max_retries + 1):
                 try:
-                    delta = chunk.choices[0].delta.content
-                except (AttributeError, IndexError):
-                    delta = None
+                    response_stream = await self._invoke_acompletion(**kwargs)
+                    async for chunk in response_stream:
+                        delta = None
+                        try:
+                            delta = chunk.choices[0].delta.content
+                        except (AttributeError, IndexError):
+                            delta = None
 
-                if delta:
-                    accumulated_output.append(delta)
-                    yield delta
-        except Exception as exc:
-            err_msg = str(exc)
-            if "9router" in active_model.lower() and ("AuthenticationError" in type(exc).__name__ or "invalid_api_key" in str(exc).lower()):
-                err_msg += (
-                    "\n[Hint] 9Router authentication failed. Set your 9Router API key using: "
-                    "'models set-key 9router <key>' (or check http://localhost:20128)"
-                )
-            raise EngineError(f"Streaming query failed with model '{active_model}': {err_msg}") from exc
+                        if delta:
+                            accumulated_output.append(delta)
+                            yield delta
+                    break  # Stream completed successfully
+                except Exception as exc:
+                    is_transient = any(
+                        sig in str(exc).lower() or sig in type(exc).__name__.lower()
+                        for sig in ("connection", "timeout", "internalserver", "500", "502", "503", "rate_limit", "429")
+                    )
+                    if is_transient and attempt < max_retries and len(accumulated_output) == 0:
+                        await asyncio.sleep(1.5 * (attempt + 1))
+                        continue
+
+                    err_msg = str(exc)
+                    if "9router" in active_model.lower() and ("AuthenticationError" in type(exc).__name__ or "invalid_api_key" in str(exc).lower()):
+                        err_msg += (
+                            "\n[Hint] 9Router authentication failed. Set your 9Router API key using: "
+                            "'models set-key 9router <key>' (or check http://localhost:20128)"
+                        )
+                    raise EngineError(f"Streaming query failed with model '{active_model}': {err_msg}") from exc
         finally:
             # Track tokens even if partially streamed or completed
             output_tokens_est = estimate_tokens("".join(accumulated_output))

@@ -6,7 +6,7 @@ import json
 import os
 from pathlib import Path
 import sqlite3
-from typing import Any
+from typing import Any, Literal
 import urllib.request
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -65,6 +65,15 @@ def fetch_9router_models(base_url: str = "http://localhost:20128/v1", timeout: f
     return []
 
 
+class EffortTierConfig(BaseModel):
+    """Configuration bounds for a specific worker search effort tier."""
+
+    min_sources: int = Field(default=1, ge=0, description="Minimum distinct literature sources required.")
+    max_sources: int = Field(default=3, ge=1, description="Upper bound of literature sources to fetch.")
+    max_search_queries: int = Field(default=3, ge=1, le=20, description="Maximum external search queries allowed.")
+    max_download_items: int = Field(default=3, ge=0, le=20, description="Maximum new documents allowed to download.")
+
+
 class CitationPreferences(BaseModel):
     """Preferences for evidence synthesis and reference citation."""
 
@@ -119,15 +128,44 @@ class ScripcyConfig(BaseModel):
         le=65536,
         description="Maximum output token generation limit (prevents truncated responses).",
     )
-    contract_token_margin_pct: float = Field(
-        default=0.30,
-        ge=0.05,
-        le=0.50,
-        description="Margin of error percentage for AI TaskContract token budget (default 0.30 = +-30%).",
-    )
     contract_unlimited_tokens: bool = Field(
         default=True,
-        description="Whether to disable token budget limits (unlimited output tokens for TaskContract and Gatekeeper).",
+        description="Backward compatible toggle for unlimited token contracts.",
+    )
+    default_effort_tier: Literal["low", "medium", "extra"] = Field(
+        default="medium",
+        description="Default baseline worker search effort tier (low, medium, extra).",
+    )
+    effort_tier_low: EffortTierConfig = Field(
+        default_factory=lambda: EffortTierConfig(
+            min_sources=0,
+            max_sources=1,
+            max_search_queries=1,
+            max_download_items=1,
+        ),
+        description="Low effort tier bounds: primarily local vault or deductive reasoning (0-1 sources).",
+    )
+    effort_tier_medium: EffortTierConfig = Field(
+        default_factory=lambda: EffortTierConfig(
+            min_sources=1,
+            max_sources=3,
+            max_search_queries=3,
+            max_download_items=3,
+        ),
+        description="Medium effort tier bounds: standard empirical search (1-3 sources).",
+    )
+    effort_tier_extra: EffortTierConfig = Field(
+        default_factory=lambda: EffortTierConfig(
+            min_sources=3,
+            max_sources=7,
+            max_search_queries=6,
+            max_download_items=6,
+        ),
+        description="Extra effort tier bounds: comprehensive multi-channel synthesis (3-7 sources).",
+    )
+    enable_query_clarification: bool = Field(
+        default=True,
+        description="Whether to clarify vague or under-specified queries before Promisor dispatch.",
     )
     max_worker_expansions: int = Field(
         default=1,
@@ -337,3 +375,30 @@ class ConfigManager:
             raise ConfigError(f"Configuration update validation failed: {exc}") from exc
         self.save()
         return self.config
+
+    def update_effort_tier(
+        self,
+        tier: str,
+        min_sources: int,
+        max_sources: int | None = None,
+        max_search_queries: int | None = None,
+        max_download_items: int | None = None,
+    ) -> ScripcyConfig:
+        """Update source limits for a specific effort tier and persist changes."""
+        tier_clean = tier.strip().lower()
+        attr_name = f"effort_tier_{tier_clean}"
+        if not hasattr(self.config, attr_name):
+            raise ConfigError(f"Tingkat effort '{tier}' tidak valid. Pilih: 'low', 'medium', atau 'extra'.")
+        curr_tier: EffortTierConfig = getattr(self.config, attr_name)
+        new_min = max(0, int(min_sources))
+        new_max = max(new_min, int(max_sources)) if max_sources is not None else max(new_min + 1, curr_tier.max_sources)
+        new_queries = int(max_search_queries) if max_search_queries is not None else curr_tier.max_search_queries
+        new_downloads = int(max_download_items) if max_download_items is not None else curr_tier.max_download_items
+
+        new_tier_obj = EffortTierConfig(
+            min_sources=new_min,
+            max_sources=new_max,
+            max_search_queries=new_queries,
+            max_download_items=new_downloads,
+        )
+        return self.update(**{attr_name: new_tier_obj})

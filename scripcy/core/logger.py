@@ -332,37 +332,32 @@ class StudioLogger:
         session_id: str,
         archetype: str,
         primary_goal: str,
-        target_tokens: int,
-        token_margin_pct: float,
-        effective_min_tokens: int,
-        effective_max_tokens: int,
         in_scope: list[str],
         out_of_scope: list[str],
         search_channels: list[str],
         duration_s: float,
-        unlimited_tokens: bool = False,
+        effort_level: str = "medium",
+        min_sources: int = 1,
+        max_sources: int = 3,
+        **kwargs: Any,
     ) -> None:
-        margin_disp = int(round(token_margin_pct * 100))
-        budget_disp = "UNLIMITED" if unlimited_tokens else f"+-{margin_disp}% -> {effective_min_tokens}-{effective_max_tokens}"
         msg = (
-            f"[TASK_CONTRACT] Archetype={archetype} Goal='{primary_goal}' "
-            f"TargetTokens={target_tokens} ({budget_disp}) "
+            f"[TASK_CONTRACT] Archetype={archetype} Effort={effort_level} MinSources={min_sources} Goal='{primary_goal}' "
             f"InScope={in_scope[:3]} OutOfScope={out_of_scope[:2]} Elapsed={duration_s:.2f}s"
         )
         self._logger.info(msg)
-        self._write_jsonl_event("TASK_CONTRACT", session_id, {
+        payload = {
             "archetype": archetype,
             "primary_goal": primary_goal,
-            "target_tokens": target_tokens,
-            "token_margin_pct": token_margin_pct,
-            "unlimited_tokens": unlimited_tokens,
-            "effective_min_tokens": effective_min_tokens,
-            "effective_max_tokens": effective_max_tokens,
+            "effort_level": effort_level,
+            "min_sources": min_sources,
+            "max_sources": max_sources,
             "in_scope": in_scope,
             "out_of_scope": out_of_scope,
             "search_channels": search_channels,
             "duration_seconds": round(duration_s, 2),
-        })
+        }
+        self._write_jsonl_event("TASK_CONTRACT", session_id, payload)
 
     def log_subagent_orchestration(
         self,

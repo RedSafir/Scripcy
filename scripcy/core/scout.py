@@ -714,9 +714,24 @@ class LiteratureScout:
         all_candidates: list[ScoutResult] = []
         seen = {s.lower() for s in vault_stems}
 
-        seeds = vault_stems[:3]
+        seeds = vault_stems[:max(3, len(vault_stems))]
         for stem in seeds:
-            clean_seed = stem.replace("_", " ").strip()
+            clean_seed = stem
+            if self.workspace:
+                cache_md = self.workspace.get_cache_path(f"{stem}.md")
+                if cache_md.exists():
+                    try:
+                        content = cache_md.read_text(encoding="utf-8", errors="replace")
+                        doi_m = re.search(r"(?:^|\n)doi:\s*[\"']?([^\s\n\r\"']+)[\"']?", content, re.IGNORECASE)
+                        title_m = re.search(r"(?:^|\n)title:\s*[\"']?([^\n\r\"']+)[\"']?", content, re.IGNORECASE)
+                        if doi_m and doi_m.group(1).strip() and doi_m.group(1).strip() != "None":
+                            clean_seed = doi_m.group(1).strip()
+                        elif title_m and title_m.group(1).strip() and title_m.group(1).strip() != "None":
+                            clean_seed = title_m.group(1).strip()
+                    except Exception:
+                        pass
+            if clean_seed == stem:
+                clean_seed = stem.replace("_", " ").strip()
             network = await self.traverse_citation_network(clean_seed, direction=direction, limit=limit)
             for paper in network:
                 t_slug = re.sub(r"[^\w]", "", paper.title.lower())

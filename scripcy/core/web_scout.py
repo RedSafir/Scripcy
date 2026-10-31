@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 from datetime import datetime
+import inspect
 from io import BytesIO
 import json
 import logging
@@ -23,24 +25,27 @@ from scripcy.exceptions import OfficialSourceRejectedError, WebScoutError
 
 logger = logging.getLogger(__name__)
 
-# Multi-part Sovereign Government & Public Suffix TLDs
+# Multi-part Sovereign Government & Public Suffix TLDs (Universal Global Coverage)
 OFFICIAL_GOV_SUFFIXES = {
     "go.id", "gov", "gov.uk", "gov.au", "mil.id", "mil",
     "desa.id", "asn.id", "gc.ca", "go.jp", "gob.es", "gouv.fr",
     "gov.br", "gov.in", "gov.za", "gov.sg", "govt.nz",
+    "bund.de", "admin.ch", "overheid.nl", "europa.eu",
+    "gov.pl", "gov.it", "gov.de", "gov.tr", "gov.ru", "gov.cn", "gov.ca",
 }
 
 # Accredited Academic & Research Suffixes
 OFFICIAL_EDU_SUFFIXES = {
     "ac.id", "edu", "edu.au", "ac.uk", "edu.sg",
-    "ac.jp", "edu.my", "ac.nz", "edu.cn",
+    "ac.jp", "edu.my", "ac.nz", "edu.cn", "edu.br", "edu.in",
+    "ac.in", "ac.nz", "ac.za", "ac.kr", "edu.kr", "edu.ph",
 }
 
 OFFICIAL_IGO_DOMAINS = {
     "who.int", "worldbank.org", "un.org", "imf.org", "oecd.org",
     "adb.org", "wto.org", "unesco.org", "ipcc.ch", "cern.ch",
     "fao.org", "wipo.int", "itu.int", "ilo.org", "unicef.org",
-    "unep.org", "undp.org", "wmo.int",
+    "unep.org", "undp.org", "wmo.int", "europa.eu", "ec.europa.eu",
 }
 
 OFFICIAL_STANDARDS_DOMAINS = {
@@ -337,21 +342,24 @@ class QueryDisambiguator:
         clean_topic = " ".join(core_terms + context_terms)
         core_quoted = f'"{core_terms[0]}"' if core_terms else clean_topic
 
-        # Formulate targeted query list (Stanford STORM perspective pattern)
-        metrics_str = f"({' OR '.join(metric_terms[:3])})" if metric_terms else "luas OR angka"
+        # Formulate targeted query list (Stanford STORM perspective pattern, universally adaptive)
+        metrics_str = f"({' OR '.join(metric_terms[:3])})" if metric_terms else ""
         ctx_str = " ".join(context_terms)
 
         targeted: list[str] = []
-        # Target 1: Official government scoped query with metric expansion & definition exclusion
-        targeted.append(f"{core_quoted} {metrics_str} {ctx_str} site:go.id -pengertian -definisi -kamus".strip())
-
-        # Target 2: Anchored primary portal query (if known authority exists)
+        # Target 1: Anchored primary portal query (if known authority exists)
         if anchored_domains:
             prim_dom = anchored_domains[0]
             targeted.append(f"site:{prim_dom} {core_quoted} {ctx_str}".strip())
 
-        # Target 3: Broad official fallback
-        targeted.append(f"{core_quoted} {clean_topic} resmi".strip())
+        # Target 2: Targeted empirical query with metric expansion
+        if metrics_str:
+            targeted.append(f"{core_quoted} {metrics_str} {ctx_str}".strip())
+        else:
+            targeted.append(f"{core_quoted} {clean_topic}".strip())
+
+        # Target 3: Broad official/institutional query
+        targeted.append(f"{core_quoted} {ctx_str} official OR data".strip())
 
         return DisambiguatedQuery(
             raw_query=raw_query,
@@ -374,7 +382,8 @@ class OfficialDomainScorer:
         "gov.au", "edu.au", "com.au", "org.au",
         "gc.ca", "gov.br", "gov.in", "gov.za", "gov.sg", "edu.sg", "govt.nz", "ac.nz",
         "go.jp", "ac.jp", "co.jp",
-        "gob.es", "gouv.fr", "gov.pl", "gov.it",
+        "gob.es", "gouv.fr", "gov.pl", "gov.it", "bund.de", "admin.ch", "overheid.nl", "europa.eu",
+        "gov.de", "gov.tr", "gov.ru", "gov.cn", "gov.ca",
     ]
 
     @classmethod
@@ -459,17 +468,33 @@ class OfficialDomainScorer:
                     reasons.append(f"Official institution registry match: {known_inst}")
                 break
 
-        # 3. Sovereign Government & Public Suffix Scoring
+        # 3. Sovereign Government & Public Suffix Scoring (Universal Global)
         if score < 1.0:
-            if suffix in OFFICIAL_GOV_SUFFIXES or hostname.endswith(".gov"):
+            is_sov = (
+                suffix in OFFICIAL_GOV_SUFFIXES
+                or hostname.endswith(".gov")
+                or bool(re.search(r"(?:\.gov|\.gob|\.gouv|\.go|\.govt|\.bund|\.admin|\.overheid)\.[a-z]{2,3}$", hostname))
+            )
+            is_edu = (
+                suffix in OFFICIAL_EDU_SUFFIXES
+                or hostname.endswith(".edu")
+                or bool(re.search(r"(?:\.edu|\.ac)\.[a-z]{2,3}$", hostname))
+            )
+            is_igo = (
+                any(hostname == igo or hostname.endswith("." + igo) for igo in OFFICIAL_IGO_DOMAINS)
+                or hostname == "int"
+                or hostname.endswith(".int")
+            )
+
+            if is_sov:
                 score += 0.55
                 tier = min(tier, 1)
                 reasons.append(f"Sovereign government TLD authority: .{suffix or 'gov'}")
-            elif suffix in OFFICIAL_EDU_SUFFIXES or hostname.endswith(".edu"):
+            elif is_edu:
                 score += 0.50
                 tier = min(tier, 1)
                 reasons.append(f"Accredited academic or higher education institution TLD: .{suffix or 'edu'}")
-            elif any(hostname == igo or hostname.endswith("." + igo) for igo in OFFICIAL_IGO_DOMAINS):
+            elif is_igo:
                 score += 0.50
                 tier = min(tier, 1)
                 reasons.append("Official intergovernmental organization domain")
@@ -861,6 +886,7 @@ class WebScout:
         require_official: bool = True,
         target_official_domains: set[str] | None = None,
         custom_whitelist: set[str] | None = None,
+        llm_client: Any | None = None,
     ) -> list[WebSearchResult]:
         """Search authoritative web resources using QueryDisambiguator, Cascaded Waterfall filtering,
         and multi-engine fallbacks (Bing, Yahoo, DuckDuckGo)."""
@@ -968,11 +994,106 @@ class WebScout:
 
         if require_official:
             official_candidates = [c for c in candidates if c.is_official and c.final_score > 0.0]
-            if official_candidates:
-                return official_candidates[:limit]
-            return [c for c in candidates if c.authority_score >= 0.50 and c.final_score > 0.0][:limit]
+            if not official_candidates:
+                official_candidates = [c for c in candidates if c.authority_score >= 0.50 and c.final_score > 0.0]
+            candidates = official_candidates if official_candidates else candidates
+
+        if llm_client is not None and candidates:
+            return await self.select_authoritative_candidates_with_ai(
+                candidates,
+                topic=query,
+                llm_client=llm_client,
+                max_select=limit,
+            )
 
         return candidates[:limit]
+
+    async def select_authoritative_candidates_with_ai(
+        self,
+        candidates: list[WebSearchResult],
+        topic: str,
+        llm_client: Any | None = None,
+        max_select: int = 3,
+    ) -> list[WebSearchResult]:
+        """Stage 2: AI Candidate Evaluation & Reranking.
+        
+        Evaluates candidate domain reputations, titles, and snippets/highlights with an LLM,
+        selecting up to max_select authoritative primary sources to fetch.
+        """
+        if not candidates:
+            return []
+        if len(candidates) <= max_select or llm_client is None:
+            return candidates[:max_select]
+
+        candidate_summaries = []
+        for i, c in enumerate(candidates):
+            candidate_summaries.append(
+                f"[{i+1}] Domain: {c.domain} | Title: {c.title}\n"
+                f"     Snippet: {c.snippet[:200]}\n"
+                f"     URL: {c.url}"
+            )
+        candidate_block = "\n".join(candidate_summaries)
+
+        prompt = (
+            f"You are an expert academic research librarian evaluating web search candidates.\n"
+            f"Research Topic: \"{topic}\"\n\n"
+            f"Evaluate the following web search candidates for authority, factual credibility, and direct relevance to the research topic.\n"
+            f"Prefer sovereign government agencies, national statistical offices, international intergovernmental bodies (WHO, OECD, World Bank), "
+            f"accredited university repositories, and official standards organizations.\n"
+            f"Ignore commercial content farms, informal blogs, and clickbait aggregators.\n\n"
+            f"CANDIDATES:\n{candidate_block}\n\n"
+            f"Select up to {max_select} most authoritative and relevant candidate IDs.\n"
+            f"Respond ONLY in valid JSON matching this schema:\n"
+            f'{{"selected_ids": [1, 2], "reason": "brief rationale"}}\n'
+        )
+
+        try:
+            raw_resp = ""
+            if hasattr(llm_client, "generate_content"):
+                resp = await asyncio.to_thread(llm_client.generate_content, prompt)
+                raw_resp = getattr(resp, "text", "") or ""
+            elif hasattr(llm_client, "completion") or hasattr(llm_client, "acompletion"):
+                if hasattr(llm_client, "acompletion"):
+                    resp = await llm_client.acompletion(
+                        model=getattr(llm_client, "model", "gemini/gemini-2.5-flash"),
+                        messages=[{"role": "user", "content": prompt}],
+                        temperature=0.1,
+                    )
+                else:
+                    resp = await asyncio.to_thread(
+                        llm_client.completion,
+                        model=getattr(llm_client, "model", "gemini/gemini-2.5-flash"),
+                        messages=[{"role": "user", "content": prompt}],
+                        temperature=0.1,
+                    )
+                raw_resp = resp.choices[0].message.content or ""
+            elif callable(llm_client):
+                if inspect.iscoroutinefunction(llm_client):
+                    raw_resp = await llm_client(prompt)
+                else:
+                    raw_resp = await asyncio.to_thread(llm_client, prompt)
+
+            clean_json = raw_resp.strip()
+            if "```" in clean_json:
+                clean_json = re.sub(r"^```[a-zA-Z]*\r?\n", "", clean_json)
+                clean_json = re.sub(r"\r?\n```$", "", clean_json)
+            m_json = re.search(r"\{.*\}", clean_json, re.DOTALL)
+            if m_json:
+                clean_json = m_json.group(0)
+
+            data = json.loads(clean_json)
+            selected_ids = data.get("selected_ids", [])
+            selected_candidates = []
+            for sid in selected_ids:
+                if isinstance(sid, int) and 1 <= sid <= len(candidates):
+                    selected_candidates.append(candidates[sid - 1])
+
+            if selected_candidates:
+                return selected_candidates[:max_select]
+        except Exception as e:
+            logger.debug(f"AI candidate selection fallback: {e}")
+
+        return candidates[:max_select]
 
     async def ingest_url(
         self,

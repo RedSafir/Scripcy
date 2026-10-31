@@ -25,7 +25,8 @@ class SessionContextManager:
     """Manages session-level working memory and constructs targeted context prompts."""
 
     REVISION_PATTERN = re.compile(
-        r"\b(perbaiki|revisi|koreksi|ubah|tambahkan|update|tulis\s+ulang|edit|kurang\s+detail|ganti\s+bagian)\b",
+        r"\b(perbaiki|revisi|koreksi|ubah|tambahkan|update|tulis\s+ulang|edit|kurang\s+detail|ganti\s+bagian|"
+        r"refine|revise|rewrite|modify|correct|expand|shorten|elaborate|add\s+details|replace|change)\b",
         re.IGNORECASE,
     )
 

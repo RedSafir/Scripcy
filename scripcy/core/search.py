@@ -34,6 +34,10 @@ CS_AI_KEYWORDS = {
     "generative ai", "image processing", "graph neural", "information retrieval",
     "benchmark", "convolutional", "recurrent", "lstm", "encoder", "decoder", "arxiv",
     "network", "networks", "residual", "resnet",
+    "yolo", "yolos", "vit", "vision transformer", "detr", "rcnn", "cnn", "attention",
+    "deteksi objek", "kecerdasan buatan", "pembelajaran mesin", "pembelajaran mendalam",
+    "penglihatan komputer", "klasifikasi citra", "segmentasi citra", "jaringan saraf",
+    "object detection", "image classification", "feature extraction",
 }
 
 
@@ -149,10 +153,19 @@ class PaperSearcher:
             return await self.search_semantic_scholar(clean_query, limit=limit)
         if source == "arxiv":
             return await self.search_arxiv(clean_query, limit=limit)
+        if source == "openalex":
+            return await self.search_openalex(clean_query, limit=limit)
 
-        # Automatic fallback: try Semantic Scholar, fallback to ArXiv ONLY if CS/AI domain
+        # Automatic fallback: 1) Semantic Scholar, 2) OpenAlex global catalog, 3) ArXiv
         try:
             results = await self.search_semantic_scholar(clean_query, limit=limit)
+            if results:
+                return results
+        except Exception:
+            pass
+
+        try:
+            results = await self.search_openalex(clean_query, limit=limit)
             if results:
                 return results
         except Exception:
@@ -422,6 +435,78 @@ class PaperSearcher:
                 pdf_url=pdf_url,
                 source_api="semantic_scholar_references",
                 paper_id=item.get("paperId"),
+            )
+            res.ensure_cite_key()
+            results.append(res)
+        return results
+
+    async def search_openalex(
+        self,
+        query: str,
+        limit: int = 10,
+    ) -> list[SearchResult]:
+        """Query OpenAlex works API for global literature discovery with inverted-index abstract reconstruction."""
+        client = await self._get_client()
+        clean = query.strip()
+        params = {
+            "search": clean,
+            "per_page": min(limit, 25),
+        }
+        headers = {
+            "User-Agent": "Scripcy/2.0 (mailto:scholar@scripcy.local)",
+        }
+        try:
+            resp = await client.get("https://api.openalex.org/works", params=params, headers=headers, timeout=12)
+            if resp.status_code != 200:
+                return []
+            data = resp.json()
+            raw_works = data.get("results", [])
+        except Exception:
+            return []
+
+        results: list[SearchResult] = []
+        for w in raw_works[:limit]:
+            title = (w.get("title") or "").strip()
+            if not title:
+                continue
+            authors = [
+                a.get("author", {}).get("display_name")
+                for a in w.get("authorships", [])
+                if a.get("author", {}).get("display_name")
+            ]
+            year = w.get("publication_year")
+            doi_raw = w.get("doi")
+            doi_clean = doi_raw.replace("https://doi.org/", "") if doi_raw else None
+
+            oa_info = w.get("open_access", {}) or {}
+            pdf_url = oa_info.get("oa_url")
+            if not pdf_url:
+                best_loc = w.get("best_oa_location") or {}
+                pdf_url = best_loc.get("pdf_url")
+
+            # Reconstruct abstract from inverted index
+            inverted = w.get("abstract_inverted_index")
+            abstract = None
+            if inverted and isinstance(inverted, dict):
+                try:
+                    words_pos: list[tuple[int, str]] = []
+                    for word, positions in inverted.items():
+                        for pos in positions:
+                            words_pos.append((pos, word))
+                    words_pos.sort(key=lambda x: x[0])
+                    abstract = " ".join(word for _, word in words_pos)
+                except Exception:
+                    abstract = None
+
+            res = SearchResult(
+                title=title,
+                authors=authors,
+                year=year,
+                doi=doi_clean,
+                abstract=abstract,
+                pdf_url=pdf_url,
+                source_api="openalex",
+                paper_id=w.get("id"),
             )
             res.ensure_cite_key()
             results.append(res)

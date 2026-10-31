@@ -41,20 +41,22 @@ async def test_paper_searcher_arxiv_fallback_guard() -> None:
     """Ensure PaperSearcher falls back to arXiv ONLY if the domain is CS/AI."""
     searcher = PaperSearcher()
 
-    # When Semantic Scholar fails, non-CS query returns empty list instead of irrelevant arXiv papers
+    # When Semantic Scholar and OpenAlex fail, non-CS query returns empty list instead of irrelevant arXiv papers
     with patch.object(searcher, "search_semantic_scholar", side_effect=Exception("S2 429")):
-        with patch.object(searcher, "search_arxiv", new_callable=AsyncMock) as mock_arxiv:
-            results = await searcher.search("karhutla di indonesia")
-            assert results == []
-            mock_arxiv.assert_not_called()
+        with patch.object(searcher, "search_openalex", new_callable=AsyncMock, return_value=[]):
+            with patch.object(searcher, "search_arxiv", new_callable=AsyncMock) as mock_arxiv:
+                results = await searcher.search("karhutla di indonesia")
+                assert results == []
+                mock_arxiv.assert_not_called()
 
-    # When Semantic Scholar fails, CS query DOES fall back to arXiv
+    # When Semantic Scholar and OpenAlex fail, CS query DOES fall back to arXiv
     with patch.object(searcher, "search_semantic_scholar", side_effect=Exception("S2 429")):
-        with patch.object(searcher, "search_arxiv", new_callable=AsyncMock) as mock_arxiv:
-            mock_arxiv.return_value = [SearchResult(title="Transformer Models", authors=["Author"])]
-            results = await searcher.search("transformers for deep learning")
-            assert len(results) == 1
-            mock_arxiv.assert_called_once()
+        with patch.object(searcher, "search_openalex", new_callable=AsyncMock, return_value=[]):
+            with patch.object(searcher, "search_arxiv", new_callable=AsyncMock) as mock_arxiv:
+                mock_arxiv.return_value = [SearchResult(title="Transformer Models", authors=["Author"])]
+                results = await searcher.search("transformers for deep learning")
+                assert len(results) == 1
+                mock_arxiv.assert_called_once()
 
 
 @pytest.mark.asyncio

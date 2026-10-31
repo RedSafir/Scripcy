@@ -280,13 +280,12 @@ def test_orchestrator_autonomous_fan_out_and_fan_in(tmp_path) -> None:
 
 
 def test_contract_token_margin_pct_and_ai_first_extraction() -> None:
-    """AI-First contract extraction estimates target_output_tokens with configurable +-30% margin and search policy."""
+    """AI-First contract extraction resolves effort level, min_sources, and natural word limits."""
     from scripcy.core.config import ScripcyConfig
     from scripcy.core.engine import LLMEngine
 
     cfg = ScripcyConfig()
-    cfg.contract_unlimited_tokens = False
-    assert cfg.contract_token_margin_pct == 0.30
+    cfg.default_effort_tier = "medium"
 
     def fake_ai_contract_fn(sys_prompt: str, user_query: str) -> dict[str, Any]:
         return {
@@ -296,7 +295,9 @@ def test_contract_token_margin_pct_and_ai_first_extraction() -> None:
             "out_of_scope": ["Tinjauan pustaka Bab 2", "Analisis sosiologis birokrasi"],
             "forbidden_drift_topics": ["Pembahasan konflik kelembagaan", "Sejarah regulasi kehutanan"],
             "format_requirements": "Tabel ringkas + 1 paragraf catatan cakupan data",
-            "target_output_tokens": 300,
+            "effort_level": "medium",
+            "min_sources": 1,
+            "max_sources": 3,
             "min_words": 80,
             "max_words": 350,
             "allow_counter_arguments": False,
@@ -323,21 +324,14 @@ def test_contract_token_margin_pct_and_ai_first_extraction() -> None:
 
     assert contract.is_absolute is True
     assert contract.archetype == "DATA_FACTUAL"
-    assert contract.target_output_tokens == 300
-    assert contract.token_margin_pct == 0.30
-    assert contract.effective_min_tokens == 210
-    assert contract.effective_max_tokens == 390
-    assert contract.is_token_count_acceptable(280) is True
-    assert contract.is_token_count_acceptable(450) is False
+    assert contract.effort_level == "medium"
+    assert contract.min_sources == 1
+    assert contract.max_sources == 3
+    assert contract.min_words == 80
+    assert contract.max_words == 350
+    assert contract.is_word_count_acceptable(200) is True
     assert "reference_mapping_snowballing_backward_forward" in contract.required_search_channels
     assert "Snowballing" in contract.search_exhaustion_policy
-
-    # Verify custom margin from config (e.g. +-20%)
-    cfg.contract_token_margin_pct = 0.20
-    contract_20 = extractor.extract("carikan data karhutla 5 tahun terakhir")
-    assert contract_20.token_margin_pct == 0.20
-    assert contract_20.effective_min_tokens == 240
-    assert contract_20.effective_max_tokens == 360
 
 
 def test_contractor_gatekeeper_vetoes_devil_advocate_out_of_scope_and_exhausted_search() -> None:
@@ -470,7 +464,8 @@ def test_ai_contract_extraction_coerces_nonstandard_json_types() -> None:
     assert contract.primary_goal == "Menyajikan data luas karhutla di Indonesia 2020-2024 dari sumber resmi"
     assert "Tabel komparatif tahunan" in contract.format_requirements
     assert len(contract.definition_of_done) == 2
-    assert contract.target_output_tokens == 320
+    assert contract.min_words == 100
+    assert contract.max_words == 400
     assert "reference_mapping_snowballing_backward_forward" in contract.required_search_channels
 
 

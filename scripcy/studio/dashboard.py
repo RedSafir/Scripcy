@@ -252,9 +252,9 @@ class StudioDashboardMixin:
 
                 return
 
-            p_info = self.project_manager.create_project(name=p_name)
-
-            self.open_project(p_info, show_banner=False)
+            with self.console.status(f"[bold cyan]Menyiapkan struktur master project '{p_name}'...[/bold cyan]"):
+                p_info = self.project_manager.create_project(name=p_name)
+                self.open_project(p_info, show_banner=False)
 
         except (KeyboardInterrupt, EOFError):
 
@@ -267,7 +267,7 @@ class StudioDashboardMixin:
         while True:
             cur_m_raw = self.get_active_project_model() if self.current_project else self.config.default_model
             cur_m = _format_model_display_name(cur_m_raw)
-            cur_eff = self.get_active_project_effort() if self.current_project else "high"
+            cur_eff = self.get_active_project_effort() if self.current_project else getattr(self.config, "default_effort_tier", "medium")
             cur_cit = self.config.citation.style.upper()
 
             header = Text()
@@ -276,11 +276,18 @@ class StudioDashboardMixin:
             header.append("Pengaturan & Konfigurasi\n", style="bold bright_white")
             header.append(f"Model: {cur_m} ({cur_eff}) · Sitasi: {cur_cit} · Pencarian: OpenAlex (Utama)", style="dim")
 
+            low_cfg = getattr(self.config, "effort_tier_low", None)
+            med_cfg = getattr(self.config, "effort_tier_medium", None)
+            ext_cfg = getattr(self.config, "effort_tier_extra", None)
+            low_s = f"{low_cfg.min_sources}-{low_cfg.max_sources}" if low_cfg else "0-1"
+            med_s = f"{med_cfg.min_sources}-{med_cfg.max_sources}" if med_cfg else "1-3"
+            ext_s = f"{ext_cfg.min_sources}-{ext_cfg.max_sources}" if ext_cfg else "3-7"
+
             opts = [
                 ("model", f"Model & Penalaran AI ({cur_m} · upaya {cur_eff})"),
                 ("federation", "Pencarian Akademik & Provider (OpenAlex, S2, CrossRef, Unpaywall)"),
                 ("citation", f"Format Sitasi & Bibliografi ({cur_cit})"),
-                ("agent", f"Batas Putaran Riset & Token (Turn: {getattr(self.config, 'max_agent_turns', 15)}, Token: {getattr(self.config, 'max_output_tokens', 8192)})"),
+                ("tier", f"Effort Tiers & Kuota Jurnal (Low: {low_s} · Med: {med_s} · Extra: {ext_s})"),
                 ("keys", "Manajemen API Key (Kredensial BYOK)"),
                 ("back", "Kembali ke " + (f"Proyek '{self.current_project.name}'" if self.current_project else "Dashboard")),
             ]
@@ -301,8 +308,8 @@ class StudioDashboardMixin:
                 self._run_interactive_federation_settings()
             elif ch == "citation":
                 self.run_interactive_citation_settings()
-            elif ch == "agent":
-                self._run_interactive_agent_limits_settings()
+            elif ch in ("tier", "agent"):
+                self._run_interactive_tier_settings()
             elif ch == "keys":
                 self._run_interactive_keys_settings()
 
@@ -460,21 +467,33 @@ class StudioDashboardMixin:
                 self.config.citation.include_doi = not inc_doi
                 self.config.save()
 
-    def _run_interactive_agent_limits_settings(self) -> None:
-        """Configure agent loop turn limits and token budget."""
+    def _run_interactive_tier_settings(self) -> None:
+        """Configure academic search effort tiers and journal quotas (low, medium, extra)."""
         while True:
-            turns = getattr(self.config, "max_agent_turns", 15)
-            refine = getattr(self.config, "max_refinement_turns", 8)
-            tokens = getattr(self.config, "max_output_tokens", 8192)
+            cur_eff = self.get_active_project_effort() if self.current_project else getattr(self.config, "default_effort_tier", "medium")
+            low_cfg = getattr(self.config, "effort_tier_low", None)
+            med_cfg = getattr(self.config, "effort_tier_medium", None)
+            ext_cfg = getattr(self.config, "effort_tier_extra", None)
+
+            low_min = low_cfg.min_sources if low_cfg else 0
+            low_max = low_cfg.max_sources if low_cfg else 1
+            med_min = med_cfg.min_sources if med_cfg else 1
+            med_max = med_cfg.max_sources if med_cfg else 3
+            ext_min = ext_cfg.min_sources if ext_cfg else 3
+            ext_max = ext_cfg.max_sources if ext_cfg else 7
 
             header = Text()
-            header.append("Agent Loop & Research Limits\n", style="bold bright_white")
-            header.append(f"Maksimal Turn: {turns} · Batas Refinement: {refine} · Plafon Token: {tokens}", style="dim")
+            header.append("Effort Tiers & Kuota Sumber Jurnal\n", style="bold bright_white")
+            header.append(f"Effort Aktif: {cur_eff.upper()} · Atur batas minimal & maksimal jurnal untuk tiap tingkat pencarian.", style="dim")
+
+            def _mark(t: str) -> str:
+                return " [bold green](Aktif)[/bold green]" if cur_eff.lower() == t else ""
 
             opts = [
-                ("turns", f"Maksimal Agent Loop Turns: {turns} turns"),
-                ("refine", f"Maksimal Refinement Rounds (Devil's Advocate): {refine} rounds"),
-                ("tokens", f"Maksimal Output Tokens: {tokens} tokens"),
+                ("low", f"Low Effort Tier    : Min {low_min} s/d Max {low_max} jurnal (Deduktif/QA ringkas){_mark('low')}"),
+                ("medium", f"Medium Effort Tier : Min {med_min} s/d Max {med_max} jurnal (QA Faktual/Standar){_mark('medium')}"),
+                ("extra", f"Extra Effort Tier  : Min {ext_min} s/d Max {ext_max} jurnal (Tinjauan Pustaka/Komparasi){_mark('extra')}"),
+                ("switch_active", f"Ganti Effort Aktif : {cur_eff.upper()} (Tekan untuk mengubah default)"),
                 ("back", "Back to Settings"),
             ]
 
@@ -482,42 +501,150 @@ class StudioDashboardMixin:
             if ch in ("back", None):
                 return
 
+            if ch == "switch_active":
+                sw_opts = [
+                    ("low", f"LOW    - Min {low_min} s/d Max {low_max} jurnal (Eksplorasi cepat & deduktif)"),
+                    ("medium", f"MEDIUM - Min {med_min} s/d Max {med_max} jurnal (Standar empiris terarah)"),
+                    ("extra", f"EXTRA  - Min {ext_min} s/d Max {ext_max} jurnal (Riset komparatif & literatur mendalam)"),
+                    ("back", "Back"),
+                ]
+                sw_ch = interactive_menu(sw_opts, header="Pilih Default Effort Tier:", console=self.console, allow_back=True)
+                if sw_ch and sw_ch != "back":
+                    if self.current_project:
+                        self.project_manager.set_project_effort(self.current_project.name, sw_ch)
+                    self.config_manager.update(default_effort_tier=sw_ch)
+                    self.config = self.config_manager.config
+            elif ch in ("low", "medium", "extra"):
+                self._configure_single_tier(ch)
+
+    def _configure_single_tier(self, tier: str) -> None:
+        """Sub-menu to configure min and max sources for a specific effort tier."""
+        tier_names = {
+            "low": "LOW Effort (Penalaran Konseptual & Deduktif)",
+            "medium": "MEDIUM Effort (QA Faktual & Riset Standar)",
+            "extra": "EXTRA Effort (Tinjauan Pustaka Komprehensif)",
+        }
+        title = tier_names.get(tier, f"{tier.upper()} Effort")
+
+        while True:
+            t_cfg = getattr(self.config, f"effort_tier_{tier}", None)
+            cur_min = t_cfg.min_sources if t_cfg else (0 if tier == "low" else (1 if tier == "medium" else 3))
+            cur_max = t_cfg.max_sources if t_cfg else (1 if tier == "low" else (3 if tier == "medium" else 7))
+
+            header = Text()
+            header.append(f"Konfigurasi Kuota: {title}\n", style="bold bright_white")
+            header.append(f"Saat ini: Min {cur_min} s/d Max {cur_max} jurnal", style="dim")
+
+            if tier == "low":
+                presets = [
+                    ("p1", "Preset: Min 0 s/d Max 1 jurnal (Default Scripcy)"),
+                    ("p2", "Preset: Min 0 s/d Max 2 jurnal (Fleksibel)"),
+                    ("p3", "Preset: Min 1 s/d Max 2 jurnal (Wajib minimal 1 paper)"),
+                ]
+            elif tier == "medium":
+                presets = [
+                    ("p1", "Preset: Min 1 s/d Max 3 jurnal (Default Standar)"),
+                    ("p2", "Preset: Min 2 s/d Max 4 jurnal (Lebih komprehensif)"),
+                    ("p3", "Preset: Min 2 s/d Max 5 jurnal (Multi-source kuat)"),
+                ]
+            else:
+                presets = [
+                    ("p1", "Preset: Min 3 s/d Max 7 jurnal (Default Extra)"),
+                    ("p2", "Preset: Min 4 s/d Max 8 jurnal (Mendalam)"),
+                    ("p3", "Preset: Min 5 s/d Max 10 jurnal (Ekstensif)"),
+                ]
+
+            opts = [
+                ("min", f"Ubah Batas Minimal Jurnal (Saat ini: {cur_min})"),
+                ("max", f"Ubah Batas Maksimal Jurnal (Saat ini: {cur_max})"),
+                *presets,
+                ("back", "Back"),
+            ]
+
+            sub_ch = interactive_menu(opts, header=header, console=self.console, allow_back=True)
+            if sub_ch in ("back", None):
+                return
+
+            if sub_ch == "min":
+                val_str = interactive_input_prompt(
+                    console=self.console,
+                    prompt_label=f"Batas Minimal Jurnal ({tier.upper()}) > ",
+                    initial_buffer=str(cur_min),
+                ).strip()
+                if val_str.isdigit():
+                    new_min = int(val_str)
+                    new_max = max(cur_max, new_min)
+                    self.config_manager.update_effort_tier(tier, min_sources=new_min, max_sources=new_max)
+                    self.config = self.config_manager.config
+                    if hasattr(self, "engine") and self.engine:
+                        self.engine.config = self.config
+                    if hasattr(self, "contract_extractor") and self.contract_extractor:
+                        self.contract_extractor.engine = self.engine
+            elif sub_ch == "max":
+                val_str = interactive_input_prompt(
+                    console=self.console,
+                    prompt_label=f"Batas Maksimal Jurnal ({tier.upper()}) > ",
+                    initial_buffer=str(cur_max),
+                ).strip()
+                if val_str.isdigit():
+                    new_max = int(val_str)
+                    new_min = min(cur_min, new_max)
+                    self.config_manager.update_effort_tier(tier, min_sources=new_min, max_sources=new_max)
+                    self.config = self.config_manager.config
+                    if hasattr(self, "engine") and self.engine:
+                        self.engine.config = self.config
+                    if hasattr(self, "contract_extractor") and self.contract_extractor:
+                        self.contract_extractor.engine = self.engine
+            elif sub_ch == "p1":
+                p_min, p_max = (0, 1) if tier == "low" else ((1, 3) if tier == "medium" else (3, 7))
+                self.config_manager.update_effort_tier(tier, min_sources=p_min, max_sources=p_max)
+                self.config = self.config_manager.config
+                if hasattr(self, "engine") and self.engine:
+                    self.engine.config = self.config
+                if hasattr(self, "contract_extractor") and self.contract_extractor:
+                    self.contract_extractor.engine = self.engine
+            elif sub_ch == "p2":
+                p_min, p_max = (0, 2) if tier == "low" else ((2, 4) if tier == "medium" else (4, 8))
+                self.config_manager.update_effort_tier(tier, min_sources=p_min, max_sources=p_max)
+                self.config = self.config_manager.config
+                if hasattr(self, "engine") and self.engine:
+                    self.engine.config = self.config
+                if hasattr(self, "contract_extractor") and self.contract_extractor:
+                    self.contract_extractor.engine = self.engine
+            elif sub_ch == "p3":
+                p_min, p_max = (1, 2) if tier == "low" else ((2, 5) if tier == "medium" else (5, 10))
+                self.config_manager.update_effort_tier(tier, min_sources=p_min, max_sources=p_max)
+                self.config = self.config_manager.config
+                if hasattr(self, "engine") and self.engine:
+                    self.engine.config = self.config
+                if hasattr(self, "contract_extractor") and self.contract_extractor:
+                    self.contract_extractor.engine = self.engine
+
+    def _run_interactive_agent_limits_settings(self) -> None:
+        """Manage agent limits: max agent turns, refinement turns, output tokens."""
+        while True:
+            header = Text()
+            header.append("Agent Limits & Execution Bounds\n", style="bold bright_white")
+            opts = [
+                ("turns", f"Max Agent Turns : {self.config.max_agent_turns}"),
+                ("tokens", f"Max Output Tokens : {self.config.max_output_tokens}"),
+                ("back", "Back"),
+            ]
+            ch = interactive_menu(opts, header=header, console=self.console, allow_back=True)
+            if ch in ("back", None):
+                return
             if ch == "turns":
-                t_opts = [
-                    ("5", "5 turns   - Sangat cepat, eksplorasi singkat"),
-                    ("10", "10 turns  - Standar responsif"),
-                    ("15", "15 turns  - Mendalam / Deep Analysis (default)"),
-                    ("25", "25 turns  - Riset ekstensif multi-paper"),
-                    ("back", "Back"),
-                ]
-                t_ch = interactive_menu(t_opts, header="Pilih Batas Maksimal Agent Turns:", console=self.console, allow_back=True)
-                if t_ch and t_ch != "back":
-                    self.config_manager.update(max_agent_turns=int(t_ch))
-                    self.config = self.config_manager.config
-            elif ch == "refine":
-                r_opts = [
-                    ("3", "3 rounds  - Cepat"),
-                    ("5", "5 rounds  - Standar"),
-                    ("8", "8 rounds  - Rigorous Fact-Checking (default)"),
-                    ("12", "12 rounds - Maksimum validasi dialektis"),
-                    ("back", "Back"),
-                ]
-                r_ch = interactive_menu(r_opts, header="Pilih Batas Putaran Refinement:", console=self.console, allow_back=True)
-                if r_ch and r_ch != "back":
-                    self.config_manager.update(max_refinement_turns=int(r_ch))
-                    self.config = self.config_manager.config
+                turns_opts = [("15", "15 turns"), ("25", "25 turns"), ("35", "35 turns"), ("back", "Back")]
+                t_ch = interactive_menu(turns_opts, header=header, console=self.console, allow_back=True)
+                if t_ch and t_ch.isdigit():
+                    self.config.max_agent_turns = int(t_ch)
+                    self.config_manager.save()
             elif ch == "tokens":
-                tok_opts = [
-                    ("4096", "4,096 tokens  (~3,000 kata)"),
-                    ("8192", "8,192 tokens  (~6,000 kata - Default)"),
-                    ("16384", "16,384 tokens (~12,000 kata - Bab Lengkap)"),
-                    ("32768", "32,768 tokens (~24,000 kata - Naskah Ekstensif)"),
-                    ("back", "Back"),
-                ]
-                tok_ch = interactive_menu(tok_opts, header="Pilih Plafon Output Tokens:", console=self.console, allow_back=True)
-                if tok_ch and tok_ch != "back":
-                    self.config_manager.update(max_output_tokens=int(tok_ch))
-                    self.config = self.config_manager.config
+                tok_opts = [("4096", "4k tokens"), ("8192", "8k tokens"), ("16384", "16k tokens"), ("back", "Back")]
+                t_ch = interactive_menu(tok_opts, header=header, console=self.console, allow_back=True)
+                if t_ch and t_ch.isdigit():
+                    self.config.max_output_tokens = int(t_ch)
+                    self.config_manager.save()
 
     def _run_interactive_keys_settings(self) -> None:
         """Manage API keys for LLM and Academic Search providers."""
@@ -826,7 +953,8 @@ class StudioDashboardMixin:
             self.scout = None
             self.active_documents.clear()
 
-        removed = self.project_manager.remove_project(project_info.name)
+        with self.console.status(f"[bold cyan]Menghapus project '{project_info.name}' dari registry...[/bold cyan]"):
+            removed = self.project_manager.remove_project(project_info.name)
         if removed:
             self.console.print(f"[bold green][✓] Project '{project_info.name}' removed from Scripcy.[/bold green]")
             self.console.print(f"[dim]Note: Your master files at '{project_info.path}' remain safe and untouched on disk.[/dim]\n")
@@ -879,7 +1007,8 @@ class StudioDashboardMixin:
             self.scout = None
             self.active_documents.clear()
 
-        removed = self.project_manager.remove_project(project_info.name)
+        with self.console.status(f"[bold cyan]Menghapus project '{project_info.name}' dari registry...[/bold cyan]"):
+            removed = self.project_manager.remove_project(project_info.name)
         if removed:
             self.console.print(f"[bold green][✓] Project '{project_info.name}' removed from Scripcy.[/bold green]")
             self.console.print(f"[dim]Note: Your master files at '{project_info.path}' remain safe and untouched on disk.[/dim]\n")

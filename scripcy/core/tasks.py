@@ -780,6 +780,11 @@ class TaskManager:
 
     def request_checkpoint(self, task_id: str, prompt_data: dict[str, Any], timeout: float = 300.0) -> Any:
         """Called by background worker thread to pause and ask user for decision."""
+        import os
+        import sys
+        if "PYTEST_CURRENT_TEST" in os.environ or not sys.stdin.isatty():
+            return prompt_data.get("default_choice") or prompt_data.get("default") or "continue"
+
         req = CheckpointRequest(task_id, prompt_data)
         with self._lock:
             self._checkpoints[task_id] = req

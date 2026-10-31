@@ -166,39 +166,101 @@ class ContractDecomposer:
         Returns (has_gap, gap_reason, web_queries, lit_queries).
         """
         lower_q = query.lower()
-        clean_words = [
-            w for w in re.findall(r"\b\w{4,}\b", lower_q)
-            if w not in {
-                "yang", "untuk", "dengan", "dalam", "pada", "oleh", "dari", "tentang",
-                "bagaimana", "apakah", "berapa", "carikan", "tolong", "buatkan", "data",
-                "tahun", "terakhir",
-            }
+        meta_academic_words = {
+            "yang", "untuk", "dengan", "dalam", "pada", "oleh", "dari", "tentang",
+            "bagaimana", "apakah", "berapa", "carikan", "tolong", "buatkan", "data",
+            "tahun", "terakhir", "perkembangan", "penelitian", "terbaru", "kajian",
+            "studi", "analisis", "penerapan", "implementasi", "pengaruh", "faktor",
+            "jurnal", "paper", "artikel", "mutakhir", "tinjauan", "pustaka", "konsep",
+            "model", "metode", "arsitektur", "sistem", "terhadap", "mengenai",
+        }
+        substantive_tokens = [
+            w for w in re.findall(r"\b[a-zA-Z0-9_\-]{3,}\b", query)
+            if w.lower() not in meta_academic_words
         ]
-        base_topic = " ".join(clean_words[:5]) if clean_words else query[:50]
+        core_topic = " ".join(substantive_tokens) if substantive_tokens else query[:50]
+        base_topic = core_topic
+
+        # Formulate high-precision academic literature queries via search blueprint or universal semantics
+        bp = getattr(contract, "search_blueprint", None)
+        expanded_lit: list[str] = []
+        if bp and getattr(bp, "queries_en_exact", None):
+            expanded_lit.extend(bp.queries_en_exact)
+        if bp and getattr(bp, "queries_en_broad", None):
+            expanded_lit.extend(bp.queries_en_broad)
+        if bp and getattr(bp, "canonical_entities", None):
+            for ent in bp.canonical_entities:
+                if ent and f"{ent} benchmark" not in expanded_lit:
+                    expanded_lit.append(f"{ent} benchmark")
+                    expanded_lit.append(f"{ent} empirical review")
+        if not expanded_lit:
+            if len(substantive_tokens) <= 2:
+                expanded_lit = [
+                    f"{core_topic} review",
+                    f"{core_topic} empirical benchmark",
+                    f"{core_topic} state of the art",
+                ]
+            else:
+                expanded_lit = [
+                    f"{core_topic} research literature",
+                    f"{core_topic} empirical evidence",
+                    f"{core_topic} review",
+                ]
+
+        web_candidates: list[str] = []
+        if bp and getattr(bp, "target_authority_domains", None):
+            for dom in bp.target_authority_domains:
+                web_candidates.append(f"site:{dom} {base_topic}")
+        if not web_candidates:
+            web_candidates = [f"{base_topic} official statistics data", f"{base_topic} data resmi"]
+
+        is_web_relevant = (
+            contract.archetype in ("DATA_FACTUAL", "COMPARISON")
+            or "web_resmi" in getattr(contract, "required_search_channels", [])
+            or bool(bp and getattr(bp, "target_authority_domains", None))
+        )
 
         if not evidence:
-            web_q = [f"{base_topic} data resmi statistik"] if contract.archetype == "DATA_FACTUAL" else []
-            lit_q = [f"{base_topic} empirical study review"]
-            return True, "Vault lokal belum memiliki potongan bukti yang cocok.", web_q, lit_q
+            if getattr(contract, "min_sources", 1) == 0 and getattr(contract, "effort_level", "medium") == "low":
+                return False, None, [], []
+            web_q = web_candidates if is_web_relevant else []
+            lit_q = expanded_lit
+            max_q = getattr(contract, "max_search_queries", 4)
+            return True, "Vault lokal belum memiliki potongan bukti yang cocok.", web_q[:max_q], lit_q[:max_q]
+
+        # Check distinct source requirement
+        distinct_sources = len({c.source for c in evidence if getattr(c, "source", None) and str(c.source) != "unknown"})
+        if getattr(contract, "min_sources", 1) > 0 and distinct_sources < getattr(contract, "min_sources", 1):
+            reason = (
+                f"Bukti lokal hanya mencakup {distinct_sources} sumber, "
+                f"sedangkan kontrak menetapkan minimal {contract.min_sources} sumber independen."
+            )
+            web_q = web_candidates if is_web_relevant else []
+            lit_q = expanded_lit
+            max_q = getattr(contract, "max_search_queries", 4)
+            return True, reason, web_q[:max_q], lit_q[:max_q]
+
+        if getattr(contract, "effort_level", "medium") == "low":
+            return False, None, [], []
 
         combined_text = " ".join(c.text.lower() for c in evidence)
         coverage = self._synthesizer.compute_coverage_score(query, evidence)
 
         # Check official primary source gap for factual data / official web channel
+        official_markers = (".go.id", ".gov", ".bund.de", ".admin.ch", ".overheid.nl", ".europa.eu", ".int")
         has_official_source = any(
             (
                 hasattr(c, "source")
                 and (
                     str(c.source).startswith("web_")
-                    or ".go.id" in str(c.source).lower()
-                    or ".gov" in str(c.source).lower()
+                    or any(sfx in str(c.source).lower() for sfx in official_markers)
                 )
             )
             or (
                 hasattr(c, "text")
                 and any(
                     domain_marker in c.text.lower()
-                    for domain_marker in (".go.id", ".gov")
+                    for domain_marker in official_markers
                 )
             )
             for c in evidence
@@ -383,6 +445,7 @@ class ContractDecomposer:
 
         upstream_scout_ids: list[str] = []
         if has_gap and enable_external_scout:
+            max_q = getattr(contract, "max_search_queries", 4)
             if web_queries:
                 subcontracts.append(
                     SubContract(
@@ -391,10 +454,10 @@ class ContractDecomposer:
                         objective=f"Cari data resmi portal pemerintah/institusi untuk menutup gap: {gap_reason}",
                         allowed_scope=contract.in_scope,
                         forbidden_scope=forbidden,
-                        search_queries=web_queries[:2],
+                        search_queries=web_queries[:max_q],
                         target_channel="web_resmi",
                         dos=[
-                            "Fokus pada portal resmi .go.id, lembaga pemerintah, atau badan internasional.",
+                            "Fokus pada portal resmi pemerintah (.gov, .go.id, .bund.de, dll.), lembaga riset, atau badan internasional.",
                             "Ambil tabel data dan siaran pers statistik resmi.",
                         ],
                         donts=[
@@ -413,7 +476,7 @@ class ContractDecomposer:
                         objective=f"Cari literatur akademik terbaru untuk menutup gap: {gap_reason}",
                         allowed_scope=contract.in_scope,
                         forbidden_scope=forbidden,
-                        search_queries=lit_queries[:2],
+                        search_queries=lit_queries[:max_q],
                         target_channel="repositori_jurnal",
                         dos=[
                             "Prioritaskan jurnal bereputasi dengan peer-review dan DOI resmi.",
@@ -595,7 +658,7 @@ class ContractDecomposer:
                 "Dilarang mengambil blog opini pribadi atau forum komunitas.",
                 "Jangan mengulang kueri persis yang sudah terbukti nihil.",
             ],
-            search_queries=suggested_queries[:2] or [f"{query} data resmi"],
+            search_queries=suggested_queries[:getattr(contract, "max_search_queries", 4)] or [f"{query} data resmi"],
             max_output_tokens=180,
         )
 
@@ -622,7 +685,13 @@ class ContractDecomposer:
             ),
         )
 
-    def _is_critique_out_of_contract(self, item: str, contract: TaskContract, draft_tokens: int) -> tuple[bool, str]:
+    def _is_critique_out_of_contract(
+        self,
+        item: str,
+        contract: TaskContract,
+        draft_tokens: int = 0,
+        draft_words: int = 0,
+    ) -> tuple[bool, str]:
         """Check whether a single Devil's Advocate complaint violates the Absolute Contract."""
         lower_item = item.lower()
 
@@ -651,8 +720,9 @@ class ContractDecomposer:
             if any(m in lower_item for m in dialectic_markers):
                 return True, "Menuntut argumen tandingan padahal allow_counter_arguments=False"
 
-        # 3. Token budget ceiling check: reject demands to expand/elaborate when draft already hits effective_max_tokens
-        if not getattr(contract, "unlimited_tokens", False) and draft_tokens >= contract.effective_max_tokens:
+        # 3. Word limit ceiling check: reject demands to expand/elaborate when draft already hits effective_max_words
+        eff_words = draft_words if draft_words > 0 else max(1, int(draft_tokens * 0.75))
+        if eff_words >= contract.effective_max_words:
             expansion_markers = (
                 "perluas", "lebih mendalam", "lebih komprehensif", "tambahkan pembahasan",
                 "uraikan lebih lanjut", "elaborasi", "kurang panjang", "terlalu singkat",
@@ -660,8 +730,8 @@ class ContractDecomposer:
             )
             if any(m in lower_item for m in expansion_markers):
                 return True, (
-                    f"Menuntut perluasan teks padahal draf ({draft_tokens} tok) telah mencapai "
-                    f"batas atas kuota kontrak ({contract.effective_max_tokens} tok)"
+                    f"Menuntut perluasan teks padahal draf ({eff_words} kata) telah mencapai "
+                    f"batas atas kata kontrak ({contract.effective_max_words} kata)"
                 )
 
         return False, ""
@@ -732,8 +802,9 @@ class ContractDecomposer:
             "lima tahun", "5 tahun", "rekapitulasi", "cakupan", "referensi tambahan",
             "literatur tambahan", "data empiris", "studi kasus", "kurang mutakhir",
         )
+        draft_words = len(draft.split())
         for wk in raw_weaknesses:
-            is_out, reason = self._is_critique_out_of_contract(wk, contract, draft_tokens)
+            is_out, reason = self._is_critique_out_of_contract(wk, contract, draft_tokens, draft_words)
             if is_out:
                 rejected.append(f"[Ditolak - {reason}] {wk}")
                 continue
@@ -746,9 +817,10 @@ class ContractDecomposer:
                 )
                 continue
 
-            if not getattr(contract, "unlimited_tokens", False) and draft_tokens >= contract.effective_max_tokens and not has_hallucination:
+            draft_words = len(draft.split())
+            if draft_words >= contract.effective_max_words and not has_hallucination:
                 rejected.append(
-                    f"[Ditolak - Kuota token kontrak ({draft_tokens}/{contract.effective_max_tokens} tok) sudah penuh] {wk}"
+                    f"[Ditolak - Batas kata kontrak ({draft_words}/{contract.effective_max_words} kata) sudah penuh] {wk}"
                 )
                 continue
 
@@ -788,8 +860,8 @@ class ContractDecomposer:
             if rejected:
                 summary = (
                     f"Contractor memveto {len(rejected)} komplain Devil's Advocate karena melanggar "
-                    f"Kontrak Absolut ({contract.archetype}, budget {contract.effective_min_tokens}-"
-                    f"{contract.effective_max_tokens} tok) atau pencarian telah tuntas."
+                    f"Kontrak Absolut ({contract.archetype}, rekomendasi {contract.effective_min_words}-"
+                    f"{contract.effective_max_words} kata) atau pencarian telah tuntas."
                 )
             else:
                 summary = "Draf telah memenuhi Kontrak Absolut; tidak diperlukan revisi."

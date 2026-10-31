@@ -172,6 +172,10 @@ class StudioCommandsMixin:
             self.cmd_models(args)
         elif cmd in ("/tokens", "/usage"):
             self.cmd_models(f"tokens {args}".strip())
+        elif cmd in ("/retry",):
+            self.cmd_retry(args)
+        elif cmd in ("/effort",):
+            self.cmd_effort(args)
         elif cmd in ("/gdrive",):
             self.cmd_vault_gdrive(args)
         elif cmd in ("/settings", "/setting", "/style"):
@@ -1090,23 +1094,31 @@ class StudioCommandsMixin:
             s_table.add_row("  Citation Style", self.config.citation.style.upper())
             s_table.add_row("  Include DOI", str(self.config.citation.include_doi))
             s_table.add_row("  Max Evidence", f"{self.config.citation.max_evidence_chunks} chunks")
-            s_table.add_row("  Max Agent Turns", f"{getattr(self.config, 'max_agent_turns', 15)} turns")
-            s_table.add_row("  Refinement Rounds", f"{getattr(self.config, 'max_refinement_turns', 8)} rounds")
-            s_table.add_row("  Max Output Tokens", f"{getattr(self.config, 'max_output_tokens', 8192)} tokens")
-            unlimited_mode = getattr(self.config, "contract_unlimited_tokens", False)
-            limit_status = "[bold green]Tanpa Batas (Unlimited)[/bold green]" if unlimited_mode else "[cyan]Aktif (Dibatasi Kontrak)[/cyan]"
-            s_table.add_row("  Token Limitation", limit_status)
-            margin_pct = int(round(getattr(self.config, "contract_token_margin_pct", 0.30) * 100))
-            margin_str = f"+-{margin_pct}% (Contract Gatekeeper)" if not unlimited_mode else f"+-{margin_pct}% [dim](Diabaikan saat Unlimited)[/dim]"
-            s_table.add_row("  Token Margin Error", margin_str)
+            s_table.add_row("  Max Agent Turns", f"{self.config.max_agent_turns} turns")
+            s_table.add_row("  Refinement Rounds", f"{self.config.max_refinement_turns} rounds")
+            s_table.add_row("  Max Output Tokens", f"{self.config.max_output_tokens} tokens")
+
+            s_table.add_row("", "")
+            s_table.add_row("[bold cyan]Target Pencarian Literatur per Tingkat Effort[/bold cyan]", "")
+            effort_tier = getattr(self.config, "default_effort_tier", "medium")
+            s_table.add_row("  Default Active Effort", f"[bold green]{effort_tier.upper()}[/bold green]")
+            low_cfg = getattr(self.config, "effort_tier_low", None)
+            med_cfg = getattr(self.config, "effort_tier_medium", None)
+            ext_cfg = getattr(self.config, "effort_tier_extra", None)
+            low_str = f"Min {low_cfg.min_sources} s/d Max {low_cfg.max_sources} jurnal" if low_cfg else "0 s/d 1 jurnal"
+            med_str = f"Min {med_cfg.min_sources} s/d Max {med_cfg.max_sources} jurnal" if med_cfg else "1 s/d 3 jurnal"
+            ext_str = f"Min {ext_cfg.min_sources} s/d Max {ext_cfg.max_sources} jurnal" if ext_cfg else "3 s/d 7 jurnal"
+            s_table.add_row("  • Low Effort Tier", f"[cyan]{low_str}[/cyan] [dim](Penalaran konseptual / deduktif)[/dim]")
+            s_table.add_row("  • Medium Effort Tier", f"[cyan]{med_str}[/cyan] [dim](QA / Faktual terarah standar)[/dim]")
+            s_table.add_row("  • Extra Effort Tier", f"[cyan]{ext_str}[/cyan] [dim](Tinjauan pustaka & komparasi mendalam)[/dim]")
             self.console.print(s_table)
             self.console.print("\n[dim]Perintah pengaturan:[/dim]")
-            self.console.print("  [cyan]/settings toggle <semantic_scholar | crossref | opencitations | unlimited-tokens>[/cyan]  [dim]Aktif/nonaktifkan opsi[/dim]")
+            self.console.print("  [cyan]/settings toggle <semantic_scholar | crossref | opencitations | clarification>[/cyan]  [dim]Aktif/nonaktifkan opsi[/dim]")
             self.console.print("  [cyan]/settings set-key <openalex | semantic_scholar | opencitations> <key>[/cyan]  [dim]Atur API Key[/dim]")
             self.console.print("  [cyan]/settings set-email <alamat@email.com>[/cyan]  [dim]Email Unpaywall Green OA[/dim]")
             self.console.print("  [cyan]/settings set-citation <apa | ieee | bibtex>[/cyan]  [dim]Gaya sitasi bibliografi[/dim]")
-            self.console.print("  [cyan]/settings set-turns <1-50>[/cyan] | [cyan]/settings set-refinement <2-25>[/cyan] | [cyan]/settings set-max-tokens <512-65536>[/cyan]")
-            self.console.print("  [cyan]/settings set-token-margin <5-50 | unlimited>[/cyan] | [cyan]/settings set-unlimited-tokens <on | off>[/cyan]\n")
+            self.console.print("  [cyan]/settings set-effort <low | medium | extra>[/cyan]  [dim]Pilih tingkat effort aktif[/dim]")
+            self.console.print("  [cyan]/settings set-tier <low | medium | extra> <min_sources> [max_sources][/cyan]  [dim]Atur kuota jurnal per tier[/dim]\n")
             return
 
         if sub in ("toggle", "enable", "disable"):
@@ -1141,17 +1153,15 @@ class StudioCommandsMixin:
                     self.scout.config = self.config
                 status_str = "[bold cyan]Aktif[/bold cyan]" if new_val else "[dim]Nonaktif[/dim]"
                 self.console.print(f"[bold green][✓] OpenCitations berhasil diubah ke:[/bold green] {status_str}\n")
-            elif target in ("unlimited_tokens", "unlimited-tokens", "unlimited", "token_unlimited"):
-                current = getattr(self.config, "contract_unlimited_tokens", False)
+            elif target in ("clarification", "clarify", "pre-promisor"):
+                current = getattr(self.config, "enable_query_clarification", True)
                 new_val = not current
-                self.config_manager.update(contract_unlimited_tokens=new_val)
+                self.config_manager.update(enable_query_clarification=new_val)
                 self.config = self.config_manager.config
-                if getattr(self, "engine", None):
-                    self.engine.config = self.config
-                status_str = "[bold green]Aktif (Tanpa Batas Token)[/bold green]" if new_val else "[cyan]Nonaktif (Token Dibatasi Kontrak)[/cyan]"
-                self.console.print(f"[bold green][✓] Opsi Tanpa Limitasi Token berhasil diubah ke:[/bold green] {status_str}\n")
+                status_str = "[bold cyan]Aktif[/bold cyan]" if new_val else "[dim]Nonaktif[/dim]"
+                self.console.print(f"[bold green][✓] Pre-Promisor Query Clarification Gate berhasil diubah ke:[/bold green] {status_str}\n")
             else:
-                self.console.print("[yellow]Target tidak valid. Pilih: semantic_scholar, crossref, opencitations, atau unlimited-tokens.[/yellow]\n")
+                self.console.print("[yellow]Target tidak valid. Pilih: semantic_scholar, crossref, opencitations, atau clarification.[/yellow]\n")
 
         elif sub in ("set-key", "key", "api-key", "apikey"):
             if len(parts) < 3:
@@ -1230,130 +1240,168 @@ class StudioCommandsMixin:
             self.console.print(f"[bold green][✓] Workspace path set to:[/bold green] [bold cyan]{new_path}[/bold cyan]\n")
 
         elif sub in ("set-turns", "turns", "turn"):
-            if len(parts) < 2:
-                self.console.print("[yellow]Usage: /settings set-turns <1-50>[/yellow]\n")
-                return
-            try:
-                val = int(parts[1].strip())
-                if not (1 <= val <= 50):
-                    self.console.print("[yellow]Turns must be between 1 and 50.[/yellow]\n")
-                    return
-                self.config_manager.update(max_agent_turns=val)
-                self.config = self.config_manager.config
-                self.console.print(f"[bold green][✓] Max agent turns set to:[/bold green] [bold cyan]{val}[/bold cyan]\n")
-            except ValueError:
-                self.console.print("[yellow]Invalid turns value. Enter an integer between 1 and 50.[/yellow]\n")
-
-        elif sub in ("set-max-tokens", "max-tokens", "max_tokens"):
-            if len(parts) < 2:
-                self.console.print("[yellow]Usage: /settings set-max-tokens <512-65536>[/yellow]\n")
-                return
-            try:
-                val = int(parts[1].strip())
-                if not (512 <= val <= 65536):
-                    self.console.print("[yellow]Max output tokens must be between 512 and 65536.[/yellow]\n")
-                    return
-                self.config_manager.update(max_output_tokens=val)
-                self.config = self.config_manager.config
-                if getattr(self, "engine", None):
-                    self.engine.config = self.config
-                self.console.print(f"[bold green][✓] Max output tokens set to:[/bold green] [bold cyan]{val}[/bold cyan]\n")
-            except ValueError:
-                self.console.print("[yellow]Invalid value. Enter an integer between 512 and 65536.[/yellow]\n")
+            self.console.print("[dim]Batas agent turns manual telah digantikan oleh Kontrak Tugas & Effort Tier otomatis.[/dim]")
+            if len(parts) >= 2:
+                try:
+                    val = int(parts[1].strip())
+                    self.config_manager.update(max_agent_turns=val)
+                    self.config = self.config_manager.config
+                    self.console.print(f"[bold green][✓] Internal turn ceiling disetel ke:[/bold green] [bold cyan]{val}[/bold cyan]\n")
+                except ValueError:
+                    pass
+            return
 
         elif sub in ("set-refinement", "set-refinement-rounds", "refinement"):
-            if len(parts) < 2:
-                self.console.print("[yellow]Usage: /settings set-refinement <2-25>[/yellow]\n")
+            self.console.print("[dim]Batas refinement rounds telah digantikan oleh verifikasi dan penjaminan mutu otomatis.[/dim]")
+            if len(parts) >= 2:
+                try:
+                    val = int(parts[1].strip())
+                    self.config_manager.update(max_refinement_turns=val)
+                    self.config = self.config_manager.config
+                    self.console.print(f"[bold green][✓] Internal refinement ceiling disetel ke:[/bold green] [bold cyan]{val}[/bold cyan]\n")
+                except ValueError:
+                    pass
+            return
+
+        elif sub in ("set-max-tokens", "max-tokens", "max_tokens"):
+            if len(parts) >= 2:
+                try:
+                    val = int(parts[1].strip())
+                    self.config_manager.update(max_output_tokens=val)
+                    self.config = self.config_manager.config
+                    if hasattr(self, "engine") and self.engine:
+                        self.engine.config = self.config
+                    self.console.print(f"[bold green][✓] Plafon output tokens disetel ke:[/bold green] [bold cyan]{val}[/bold cyan]\n")
+                except ValueError:
+                    pass
+            return
+
+        elif sub in ("set-tier", "tier", "set-tier-sources", "tier-sources"):
+            if len(parts) < 3:
+                self.console.print("[yellow]Penggunaan: /settings set-tier <low | medium | extra> <min_sources> [max_sources][/yellow]\n")
+                return
+            target_tier = parts[1].strip().lower()
+            if target_tier not in ("low", "medium", "extra"):
+                self.console.print("[yellow]Tingkat tier harus salah satu dari: 'low', 'medium', atau 'extra'.[/yellow]\n")
                 return
             try:
-                val = int(parts[1].strip())
-                if not (2 <= val <= 25):
-                    self.console.print("[yellow]Refinement rounds must be between 2 and 25.[/yellow]\n")
-                    return
-                self.config_manager.update(max_refinement_turns=val)
+                min_s = int(parts[2].strip())
+                max_s = int(parts[3].strip()) if len(parts) >= 4 else None
+                self.config_manager.update_effort_tier(target_tier, min_sources=min_s, max_sources=max_s)
                 self.config = self.config_manager.config
-                if getattr(self, "engine", None):
+                if hasattr(self, "engine") and self.engine:
                     self.engine.config = self.config
-                self.console.print(f"[bold green][✓] Max refinement rounds set to:[/bold green] [bold cyan]{val}[/bold cyan]\n")
-            except ValueError:
-                self.console.print("[yellow]Invalid value. Enter an integer between 2 and 25.[/yellow]\n")
-
-        elif sub in ("set-token-margin", "token-margin", "token_margin", "margin"):
-            if len(parts) < 2:
-                self.console.print("[yellow]Usage: /settings set-token-margin <5-50 | unlimited>[/yellow]\n")
-                return
-            raw_arg = parts[1].strip().lower()
-            if raw_arg in ("unlimited", "none", "tanpa-batas", "bebas", "off"):
-                self.config_manager.update(contract_unlimited_tokens=True)
-                self.config = self.config_manager.config
-                if getattr(self, "engine", None):
-                    self.engine.config = self.config
+                if hasattr(self, "contract_extractor") and self.contract_extractor:
+                    self.contract_extractor.engine = self.engine
+                tier_obj = getattr(self.config, f"effort_tier_{target_tier}")
                 self.console.print(
-                    "[bold green][✓] Limitasi token dinonaktifkan:[/bold green] "
-                    "[bold cyan]Tanpa Batas Token (Unlimited Mode)[/bold cyan]\n"
-                )
-                return
-            try:
-                raw_val = parts[1].strip().rstrip("%").lstrip("+-")
-                num = float(raw_val)
-                pct_float = num / 100.0 if num > 1.0 else num
-                if not (0.05 <= pct_float <= 0.50):
-                    self.console.print("[yellow]Token margin of error must be between 5% and 50% (0.05 - 0.50).[/yellow]\n")
-                    return
-                self.config_manager.update(
-                    contract_token_margin_pct=round(pct_float, 4),
-                    contract_unlimited_tokens=False,
-                )
-                self.config = self.config_manager.config
-                if getattr(self, "engine", None):
-                    self.engine.config = self.config
-                disp_pct = int(round(pct_float * 100))
-                self.console.print(
-                    f"[bold green][✓] Contract token margin of error set to:[/bold green] "
-                    f"[bold cyan]+-{disp_pct}%[/bold cyan] [dim](Limitasi token aktif)[/dim]\n"
+                    f"[bold green][✓] Kuota sumber untuk tier '{target_tier.upper()}' berhasil diatur ke:[/bold green] "
+                    f"[bold cyan]Min {tier_obj.min_sources} s/d Max {tier_obj.max_sources} jurnal[/bold cyan]\n"
                 )
             except ValueError:
-                self.console.print("[yellow]Invalid value. Enter a percentage between 5 and 50, or 'unlimited'.[/yellow]\n")
+                self.console.print("[yellow]Batas jumlah sumber harus berupa bilangan bulat non-negatif.[/yellow]\n")
 
-        elif sub in ("set-unlimited-tokens", "unlimited-tokens", "set-unlimited", "unlimited"):
+        elif sub in ("set-effort", "effort"):
             if len(parts) < 2:
-                self.console.print("[yellow]Usage: /settings set-unlimited-tokens <on | off | true | false>[/yellow]\n")
+                self.console.print("[yellow]Usage: /settings set-effort <low | medium | extra>[/yellow]\n")
                 return
-            raw_arg = parts[1].lower().strip()
-            new_val = raw_arg in ("on", "true", "1", "yes", "ya", "aktif", "enable")
-            self.config_manager.update(contract_unlimited_tokens=new_val)
+            target_effort = parts[1].strip().lower()
+            if target_effort not in ("low", "medium", "extra"):
+                self.console.print("[yellow]Tingkat effort harus salah satu dari: 'low', 'medium', atau 'extra'.[/yellow]\n")
+                return
+            self.config_manager.update(default_effort_tier=target_effort)
             self.config = self.config_manager.config
-            if getattr(self, "engine", None):
-                self.engine.config = self.config
-            status_str = "[bold green]Aktif (Tanpa Batas Token)[/bold green]" if new_val else "[cyan]Nonaktif (Token Dibatasi Kontrak)[/cyan]"
-            self.console.print(f"[bold green][✓] Opsi Tanpa Limitasi Token berhasil diatur ke:[/bold green] {status_str}\n")
+            self.console.print(
+                f"[bold green][✓] Default worker effort tier berhasil diatur ke:[/bold green] "
+                f"[bold cyan]{target_effort.upper()}[/bold cyan]\n"
+            )
 
         else:
-            self.console.print("[yellow]Penggunaan: /settings [show | toggle <provider|unlimited-tokens> | set-token-margin <5-50|unlimited> | set-unlimited-tokens <on|off> | set-turns <1-50>][/yellow]\n")
+            self.console.print("[yellow]Penggunaan: /settings [show | toggle <provider> | set-effort <low|medium|extra> | set-tier <low|medium|extra> <min> [max]][/yellow]\n")
+
+    def cmd_effort(self, arg: str) -> None:
+        """Set active effort tier or configure source quota per tier: /effort <low|medium|extra> [min] [max]."""
+        parts = arg.strip().split()
+        if not parts:
+            curr = getattr(self.config, "default_effort_tier", "medium")
+            low_cfg = getattr(self.config, "effort_tier_low", None)
+            med_cfg = getattr(self.config, "effort_tier_medium", None)
+            ext_cfg = getattr(self.config, "effort_tier_extra", None)
+            self.console.print(f"[cyan]Current effort tier:[/cyan] [bold green]{curr.upper()}[/bold green]\n")
+            self.console.print("  • Low:    " + (f"Min {low_cfg.min_sources} s/d Max {low_cfg.max_sources} jurnal" if low_cfg else "0 s/d 1"))
+            self.console.print("  • Medium: " + (f"Min {med_cfg.min_sources} s/d Max {med_cfg.max_sources} jurnal" if med_cfg else "1 s/d 3"))
+            self.console.print("  • Extra:  " + (f"Min {ext_cfg.min_sources} s/d Max {ext_cfg.max_sources} jurnal" if ext_cfg else "3 s/d 7"))
+            self.console.print("\n[dim]Gunakan '/effort <low|medium|extra>' untuk beralih tier, atau '/effort <tier> <min> <max>' untuk mengatur kuota jurnal.[/dim]\n")
+            return
+
+        val = parts[0].lower().strip()
+        if val not in ("low", "medium", "extra"):
+            self.console.print("[yellow]Usage: /effort <low | medium | extra> [min_sources] [max_sources][/yellow]\n")
+            return
+
+        if len(parts) >= 2:
+            try:
+                min_s = int(parts[1])
+                max_s = int(parts[2]) if len(parts) >= 3 else None
+                self.config_manager.update_effort_tier(val, min_sources=min_s, max_sources=max_s)
+                self.config = self.config_manager.config
+                if hasattr(self, "engine") and self.engine:
+                    self.engine.config = self.config
+                if hasattr(self, "contract_extractor") and self.contract_extractor:
+                    self.contract_extractor.engine = self.engine
+                tier_obj = getattr(self.config, f"effort_tier_{val}")
+                self.console.print(
+                    f"[bold green][✓] Kuota tier '{val.upper()}' diatur ke:[/bold green] "
+                    f"[bold cyan]Min {tier_obj.min_sources} s/d Max {tier_obj.max_sources} jurnal[/bold cyan]\n"
+                )
+                return
+            except ValueError:
+                self.console.print("[yellow]Batas jumlah sumber harus bilangan bulat non-negatif.[/yellow]\n")
+                return
+
+        self.config_manager.update(default_effort_tier=val)
+        self.config = self.config_manager.config
+        self.console.print(f"[bold green][✓] Worker search effort tier diatur ke:[/bold green] [bold cyan]{val.upper()}[/bold cyan]\n")
+
+    def cmd_retry(self, arg: str = "") -> None:
+        """Retry synthesis for a pending contract in the active session."""
+        session = getattr(self, "active_chat_session", None)
+        if not session:
+            self.console.print("[yellow]Tidak ada sesi chat yang aktif. Buka atau buat sesi chat terlebih dahulu.[/yellow]\n")
+            return
+        runtime = self.get_session_runtime(session.id)
+        pending = getattr(runtime, "pending_contract_payload", None)
+        if not pending:
+            self.console.print("[dim]Tidak ada kontrak tugas yang tertunda dalam sesi ini.[/dim]\n")
+            return
+        p_contract = pending.get("contract")
+        p_goal = getattr(p_contract, "primary_goal", "Sintesis Tertunda")
+        self.console.print(f"[bold cyan]● Memulihkan kontrak tertunda:[/bold cyan] [bright_white]{p_goal}[/bright_white]\n")
+        if hasattr(self, "_resume_pending_contract"):
+            self._resume_pending_contract(session.id)
 
     def cmd_config(self, arg: str) -> None:
         """Alias for backward compatibility directing to cmd_models."""
         self.cmd_models(arg)
 
     def cmd_turns(self, arg: str = "") -> None:
-        """View or configure the maximum agent loop turns (default 15, range 1-50)."""
-        clean = arg.strip()
-        if not clean:
-            current_turns = getattr(self.config, "max_agent_turns", 15)
-            self.console.print(f"\n[bold bright_white]Agent Loop Turn Limit:[/bold bright_white] [bold cyan]{current_turns}[/bold cyan] turn (batas maksimal loop sintesis, verifikasi, dan sitasi).")
-            self.console.print("[dim]Gunakan: /turns <angka 1-50> (contoh: /turns 15 atau /turns 20)[/dim]\n")
+        """View or configure the maximum agent loop turns (deprecated in favor of Task Contracts)."""
+        parts = arg.strip().split()
+        if parts:
+            try:
+                val = int(parts[0])
+                self.config_manager.update(max_agent_turns=val)
+                self.config = self.config_manager.config
+                self.console.print(f"[bold green][✓] Max agent turns disetel ke:[/bold green] [bold cyan]{val} turns[/bold cyan]\n")
+            except ValueError:
+                pass
             return
-
-        try:
-            val = int(clean)
-            if not (1 <= val <= 50):
-                self.console.print("[yellow]Batas turn harus bernilai antara 1 sampai 50.[/yellow]\n")
-                return
-            self.config_manager.update(max_agent_turns=val)
-            self.config = self.config_manager.config
-            self.console.print(f"[bold green][✓] Batas agent turn berhasil diatur ke:[/bold green] [bold cyan]{val} turn[/bold cyan]\n")
-        except ValueError:
-            self.console.print(f"[yellow]Nilai turn tidak valid: '{clean}'. Masukkan angka bulat (1-50).\n[/yellow]")
+        cur_turns = getattr(self.config, "max_agent_turns", 15)
+        self.console.print(f"\n[bold cyan]● Max Agent Turns:[/bold cyan] [bold white]{cur_turns} turns[/bold white]\n")
+        self.console.print(
+            "[dim]Sistem turn manual telah digantikan oleh Kontrak Tugas Otomatis & Effort Tiers.[/dim]\n"
+            "[dim]Gunakan [bold cyan]/effort <low|medium|extra>[/bold cyan] atau [bold cyan]/settings set-tier[/bold cyan] untuk mengatur kedalaman riset dan kuota jurnal.[/dim]\n"
+        )
 
     def cmd_docx(self, arg: str, in_background: bool = False) -> None:
         """Export current research synthesis session into a Word (.docx) manuscript."""

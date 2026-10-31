@@ -24,6 +24,7 @@ from rich.text import Text
 logger = logging.getLogger("scripcy.studio.agent_loop")
 
 from scripcy.core.chats import ChatManager, ChatSession
+from scripcy.core.clarifier import ClarificationVerdict, QueryClarifier
 from scripcy.core.config import ConfigManager, ScripcyConfig, detect_9router_key, fetch_9router_models
 from scripcy.core.contracts import AdaptiveCriticVerdict, TaskContract, TaskContractExtractor
 from scripcy.core.contractor import ContractDecomposer, CritiqueAdjudication, SubContract
@@ -610,41 +611,170 @@ class StudioAgentLoopMixin:
                 self.handle_project_command(clean)
             return
 
-        # Promisor: Heuristic Intent & Action Routing
-        # Determine whether input is an administrative/system tool action (zero token cost)
-        # or an AI conversational question before proceeding to TaskContract & AI synthesis.
-        promisor: Promisor = getattr(self, "promisor", None) or Promisor()
-        sess_id = self.active_chat_session.id if self.active_chat_session else None
-        decision = promisor.evaluate(clean, session_id=sess_id)
+        # Immediate Responsive Feedback: Start prompt processing spinner right away
+        stop_prompt_spinner = threading.Event()
+        prompt_status = ["[Scripcy] Menganalisis kueri & memeriksa konteks..."]
+        prompt_spinner_thread: threading.Thread | None = None
 
-        # 1. Entry Point: Direct Fast Reply (0 Token - Casual / Chit-chat)
-        if decision.entry_point == "direct" and decision.direct_reply:
-            session = self._ensure_active_chat_session()
-            if session and self.chat_manager:
-                self.chat_manager.add_message(session.id, "user", clean)
-                self.chat_manager.add_message(session.id, "assistant", decision.direct_reply)
-            self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Scripcy[/bold bright_white] [dim](Direct Fast Reply • 0 tok)[/dim]\n{decision.direct_reply}\n")
-            return
+        is_test_env = "PYTEST_CURRENT_TEST" in os.environ or hasattr(self, "_is_mock")
+        is_terminal = (sys.stdout.isatty() or getattr(self.console, "is_terminal", False) or sys.stdin.isatty()) and not is_test_env
+        if is_terminal:
+            def _prompt_spinner_loop() -> None:
+                frames = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
+                idx = 0
+                t_start = time.monotonic()
+                while not stop_prompt_spinner.is_set():
+                    elapsed = time.monotonic() - t_start
+                    desc = prompt_status[0]
+                    frame = frames[idx % len(frames)]
+                    idx += 1
+                    line = f"\r\x1b[2K\033[1;36m{frame}\033[0m \033[1;37m{desc}\033[0m \033[2;37m({elapsed:.1f}s · Ctrl+C: batal)\033[0m"
+                    sys.stdout.write(line)
+                    sys.stdout.flush()
+                    stop_prompt_spinner.wait(0.06)
+                sys.stdout.write("\r\x1b[2K")
+                sys.stdout.flush()
 
-        if decision.is_system_tool:
-            handled = self._dispatch_promisor_action(decision, original_prompt=clean)
-            if handled:
+            prompt_spinner_thread = threading.Thread(target=_prompt_spinner_loop, daemon=True)
+            prompt_spinner_thread.start()
+
+        def _stop_prompt_spinner() -> None:
+            stop_prompt_spinner.set()
+            if prompt_spinner_thread:
+                prompt_spinner_thread.join(timeout=0.2)
+
+        def _pause_prompt_spinner() -> None:
+            _stop_prompt_spinner()
+
+        try:
+            # Promisor: Heuristic Intent & Action Routing
+            # Determine whether input is an administrative/system tool action (zero token cost)
+            # or an AI conversational question before proceeding to TaskContract & AI synthesis.
+            promisor: Promisor = getattr(self, "promisor", None) or Promisor()
+            sess_id = self.active_chat_session.id if self.active_chat_session else None
+            prompt_status[0] = "[Promisor] Memeriksa intent & perutean tindakan..."
+            decision = promisor.evaluate(clean, session_id=sess_id)
+
+            # 1. Entry Point: Direct Fast Reply (0 Token - Casual / Chit-chat)
+            if decision.entry_point == "direct" and decision.direct_reply:
+                _stop_prompt_spinner()
+                session = self._ensure_active_chat_session()
+                if session and self.chat_manager:
+                    self.chat_manager.add_message(session.id, "user", clean)
+                    self.chat_manager.add_message(session.id, "assistant", decision.direct_reply)
+                self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Scripcy[/bold bright_white] [dim](Direct Fast Reply • 0 tok)[/dim]\n{decision.direct_reply}\n")
                 return
 
-        # Serialized Turn Lane Coordination:
-        # If another synthesis turn (lane == "turn") is already running in this session,
-        # queue this prompt onto the session's serialized turn lane (depends_on) instead of dropping it.
-        if self.active_chat_session and self.task_manager:
-            active_turns = self.task_manager.list_active_tasks_for_session(
-                self.active_chat_session.id,
-                lane="turn",
+            if decision.is_system_tool:
+                _stop_prompt_spinner()
+                handled = self._dispatch_promisor_action(decision, original_prompt=clean)
+                if handled:
+                    return
+
+            # Pre-Promisor Query Clarification Gate:
+            # Ensure user research intent is crisp and unambiguous before Promisor and TaskContract synthesis.
+            if getattr(self.config, "enable_query_clarification", True):
+                prompt_status[0] = "[Clarifier] Memeriksa kejelasan fokus riset..."
+                clarified = self._clarify_user_query_if_needed(clean, on_need_interaction=_pause_prompt_spinner)
+                if clarified is None:
+                    _stop_prompt_spinner()
+                    return
+                clean = clarified
+                prompt_status[0] = "[Promisor] Memeriksa intent & perutean tindakan..."
+                decision = promisor.evaluate(clean, session_id=sess_id)
+
+            # Serialized Turn Lane Coordination:
+            # If another synthesis turn (lane == "turn") is already running in this session,
+            # queue this prompt onto the session's serialized turn lane (depends_on) instead of dropping it.
+            if self.active_chat_session and self.task_manager:
+                active_turns = self.task_manager.list_active_tasks_for_session(
+                    self.active_chat_session.id,
+                    lane="turn",
+                )
+                if active_turns:
+                    _stop_prompt_spinner()
+                    self.submit_chat_background(clean, depends_on=[t.id for t in active_turns])
+                    return
+
+            # Pass active prompt spinner directly into handle_chat so there is ZERO GAP or flicker
+            if prompt_spinner_thread is not None:
+                self.handle_chat(
+                    clean,
+                    preflight_spinner=(prompt_status, stop_prompt_spinner, prompt_spinner_thread),
+                )
+            else:
+                self.handle_chat(clean)
+        finally:
+            _stop_prompt_spinner()
+
+    def _clarify_user_query_if_needed(
+        self,
+        query: str,
+        on_need_interaction: Callable[[], None] | None = None,
+    ) -> str | None:
+        """Evaluate query ambiguity via cascading clarifier and resolve with user if needed."""
+        clarifier: QueryClarifier = getattr(self, "clarifier", None) or QueryClarifier(engine=self.engine)
+        if self.engine:
+            clarifier.engine = self.engine
+
+        sess_docs = self.get_session_active_documents() if hasattr(self, "get_session_active_documents") else list(self.active_documents)
+        history_len = len(self.conversation_history) if hasattr(self, "conversation_history") else 0
+
+        verdict = clarifier.clarify(
+            query=query,
+            active_vault_count=len(sess_docs),
+            history_len=history_len,
+        )
+
+        if not verdict.is_ambiguous:
+            return query
+
+        import sys
+        # In non-interactive/automated mode, do not block
+        if not sys.stdin.isatty():
+            return query
+
+        if on_need_interaction:
+            on_need_interaction()
+
+        if verdict.suggested_action == "menu_select" and verdict.options:
+            header = Text()
+            header.append("\n❓ ", style="bold yellow")
+            header.append("Klarifikasi Fokus Penelitian\n", style="bold bright_white")
+            header.append(f"  {verdict.question}\n", style="dim")
+
+            ch = interactive_menu(
+                verdict.options,
+                header=header,
+                console=self.console,
+                footer_hint="↑/↓ Pilih fokus · enter Konfirmasi · esc Batal",
+                allow_back=True,
             )
-            if active_turns:
-                self.submit_chat_background(clean, depends_on=[t.id for t in active_turns])
-                return
 
-        # Any input without leading "/" in chat mode is strictly treated as an AI conversation prompt
-        self.handle_chat(clean)
+            if ch in ("reinput", "back", None):
+                self.console.print("\n[dim]Pencarian dibatalkan. Silakan ketik kueri dengan perintah lebih spesifik.[/dim]\n")
+                return None
+
+            selected_label = dict(verdict.options).get(ch, ch)
+            self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Fokus Dipilih:[/bold bright_white] [cyan]{selected_label}[/cyan]\n")
+            return f"{query} (Fokus spesifik: {selected_label})"
+
+        elif verdict.suggested_action == "input_prompt":
+            self.console.print(f"\n[bold yellow]❓ {verdict.question}[/bold yellow]")
+            prompt_label = "Sebutkan topik / domain spesifik > "
+            topic_in = interactive_input_prompt(
+                console=self.console,
+                prompt_label=prompt_label,
+            ).strip()
+
+            if not topic_in:
+                self.console.print("\n[dim]Pencarian dibatalkan (topik belum ditentukan).[/dim]\n")
+                return None
+
+            self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Topik Riset:[/bold bright_white] [cyan]{topic_in}[/cyan]\n")
+            return f"{query} seputar {topic_in}"
+
+        return query
 
     def _dispatch_promisor_action(self, decision: PromisorDecision, original_prompt: str) -> bool:
         """Handle a system/tool action identified by Promisor with short interactive confirmation.
@@ -1039,10 +1169,19 @@ class StudioAgentLoopMixin:
 
         has_ok_signal = "[status: ok]" in text.lower()
 
-        # 1. Clean code blocks containing internal tools
+        # 1. Clean code blocks containing internal tools or mislabelled diagrams
         def _clean_block(m: re.Match) -> str:
             content = m.group(1)
-            lines = [l.strip() for l in content.splitlines() if l.strip()]
+            raw_lines = content.splitlines()
+            # If the block contains ASCII art / box drawing / flowcharts, retag as ```text
+            is_diagram = any(
+                l.strip().startswith(("+", "|")) or "-->" in l or "->" in l or "| ▼ |" in l
+                for l in raw_lines if l.strip()
+            )
+            if is_diagram:
+                return f"```text\n{content}\n```"
+
+            lines = [l.strip() for l in raw_lines if l.strip()]
             filtered = []
             for l in lines:
                 is_internal = re.match(r"^/(?:vault\s+(?:read|view|list)|read|view|list)\b", l, re.IGNORECASE)
@@ -1397,16 +1536,61 @@ class StudioAgentLoopMixin:
                     if hasattr(self, "task_manager") and self.task_manager and task_id:
                         pending_cp = self.task_manager.get_pending_checkpoint(task_id)
                         if pending_cp:
+                            cp_data = pending_cp.prompt_data
+                            cp_type = cp_data.get("type")
+
                             if not sys.stdin.isatty():
-                                comp_turns = pending_cp.prompt_data.get("completed_turns", 3)
-                                decision = "finalize" if comp_turns >= 15 else "continue"
+                                if cp_type == "source_exhausted":
+                                    decision = "continue"
+                                else:
+                                    comp_turns = cp_data.get("completed_turns", 3)
+                                    decision = "finalize" if comp_turns >= 15 else "continue"
                                 self.task_manager.resolve_checkpoint(task_id, decision)
                                 continue
 
-                            sys.stdout.write("\r\x1b[2K")
+                            # Fully clear rendered spinner lines before opening interactive menu
+                            if last_rendered_line_count > 1:
+                                sys.stdout.write(f"\x1b[{last_rendered_line_count - 1}A")
+                            for _ in range(last_rendered_line_count):
+                                sys.stdout.write("\r\x1b[2K\n")
+                            if last_rendered_line_count > 0:
+                                sys.stdout.write(f"\x1b[{last_rendered_line_count}A\r")
                             sys.stdout.flush()
+                            last_rendered_line_count = 0
 
-                            cp_data = pending_cp.prompt_data
+                            if cp_type == "source_exhausted":
+                                found = cp_data.get("found_count", 0)
+                                needed = cp_data.get("min_sources", 1)
+                                effort = str(cp_data.get("effort_level", "medium")).upper()
+
+                                card_header = Text()
+                                card_header.append("\n⚠ ", style="bold yellow")
+                                card_header.append(f"Peringatan Kelangkaan Sumber ({effort} Effort)\n", style="bold bright_white")
+                                card_header.append(
+                                    f"  Pencarian telah menelusuri seluruh kanal mandatori.\n"
+                                    f"  Hanya ditemukan {found} dari target minimal {needed} sumber independen.\n",
+                                    style="dim",
+                                )
+
+                                cp_opts = [
+                                    ("continue", f"Lanjutkan dengan {found} sumber yang ada (+ Catatan Data Gap)"),
+                                    ("cancel", "Batalkan proses sintesis tugas ini"),
+                                ]
+
+                                ch = interactive_menu(
+                                    cp_opts,
+                                    header=card_header,
+                                    console=self.console,
+                                    footer_hint="↑/↓ Pilih · enter Konfirmasi",
+                                    allow_back=False,
+                                )
+
+                                decision = "cancel" if ch == "cancel" else "continue"
+                                self.task_manager.resolve_checkpoint(task_id, decision)
+                                last_spin = time.time()
+                                last_rendered_line_count = 0
+                                continue
+
                             comp_turns = cp_data.get("completed_turns", 3)
                             bg_score = cp_data.get("best_grounding", 0.0)
                             bc_score = cp_data.get("best_critic", 0)
@@ -1443,26 +1627,24 @@ class StudioAgentLoopMixin:
                             decision = "continue" if ch == "continue" else "finalize"
                             self.task_manager.resolve_checkpoint(task_id, decision)
                             last_spin = time.time()
+                            last_rendered_line_count = 0
                             continue
                     if now - last_spin >= 0.10:
                         frame_idx = (frame_idx + 1) % len(SPINNER_FRAMES)
                         last_spin = now
                         need_redraw = True
 
-                    if sys.platform == "win32":
-                        import msvcrt
-                        while msvcrt.kbhit():
-                            ch = msvcrt.getwch()
-                            if ch == "\x03":  # Ctrl+C
-                                t.cancel()
-                                if hasattr(self, "task_manager") and self.task_manager and task_id:
-                                    self.task_manager.cancel_task(task_id)
-                                    self.task_manager.log(task_id, "[✗] Worker dibatalkan: Operasi dihentikan oleh pengguna.")
-                                    self.task_manager.update_progress(task_id, "[✗] Worker dibatalkan: Operasi dihentikan oleh pengguna.")
-                                raise asyncio.CancelledError("cancel")
-                            elif ch == "\x1b":  # Esc
-                                raise SessionDetachSignal("detach")
-                            # User input is disabled during processing per user UX preference
+                    from scripcy.ui.interactive import _poll_key
+                    k = _poll_key()
+                    if k in ("ESC", "esc"):
+                        raise SessionDetachSignal("detach")
+                    elif k == "\x03":  # Ctrl+C
+                        t.cancel()
+                        if hasattr(self, "task_manager") and self.task_manager and task_id:
+                            self.task_manager.cancel_task(task_id)
+                            self.task_manager.log(task_id, "[✗] Worker dibatalkan: Operasi dihentikan oleh pengguna.")
+                            self.task_manager.update_progress(task_id, "[✗] Worker dibatalkan: Operasi dihentikan oleh pengguna.")
+                        raise asyncio.CancelledError("cancel")
 
                     if need_redraw:
                         elapsed_sec = int(now - start_turn_time)
@@ -1600,7 +1782,12 @@ class StudioAgentLoopMixin:
                 self.task_manager.cancel_task(task.id)
             self.console.print(f"\n[dim][x] Tugas {task.id} dibatalkan oleh pengguna.[/dim]\n")
 
-    def handle_chat(self, query: str) -> None:
+    def handle_chat(
+        self,
+        query: str,
+        resume_payload: dict[str, Any] | None = None,
+        preflight_spinner: tuple[list[str], threading.Event, threading.Thread | None] | None = None,
+    ) -> None:
         """Process research query with evidence synthesis and real-time streaming output."""
         if not self.workspace or not self.engine:
             self.console.print("[red][x] No active project workspace loaded.[/red]\n")
@@ -1611,9 +1798,20 @@ class StudioAgentLoopMixin:
         effort = self.get_active_project_effort()
         model_label = _format_model_display_name(model_name)
 
+        session_runtime = self.get_session_runtime(session.id if session else None)
+        if resume_payload is None and session_runtime:
+            pending = session_runtime.get_pending_contract()
+            if pending and (query.strip().lower() in ("retry", "/retry", "coba lagi")):
+                resume_payload = pending
+                query = pending.get("query", query)
+
         # Check if user query in chat explicitly contains a Google Drive link or download intent
         gdrive_id = extract_drive_file_id(query)
         if gdrive_id and ("download" in query.lower() or "unduh" in query.lower() or "ingest" in query.lower() or "masuk" in query.lower() or query.strip().startswith("http")):
+            if preflight_spinner:
+                preflight_spinner[1].set()
+                if preflight_spinner[2]:
+                    preflight_spinner[2].join(timeout=0.2)
             self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Mendeteksi link Google Drive[/bold bright_white] [cyan]ID: {gdrive_id[:12]}...[/cyan]")
             task = self.task_manager.submit(
                 name=f"Google Drive Ingest: {gdrive_id[:12]}...",
@@ -1630,106 +1828,138 @@ class StudioAgentLoopMixin:
             self.console.print(" [dim]• Ketik [bold cyan]/proc[/bold cyan] untuk memantau status atau log.[/dim]\n")
             return
 
-        preflight_status = ["[Vault] Memeriksa indeks dokumen di Vault lokal..."]
-        stop_preflight_spinner = threading.Event()
-        spinner_thread: threading.Thread | None = None
+        if preflight_spinner is not None:
+            preflight_status, stop_preflight_spinner, spinner_thread = preflight_spinner
+        else:
+            preflight_status = ["[Vault] Memeriksa indeks dokumen di Vault lokal..."]
+            stop_preflight_spinner = threading.Event()
+            spinner_thread = None
 
-        if sys.stdin.isatty():
-            def _preflight_spinner_loop() -> None:
-                frames = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
-                idx = 0
-                t_start = time.monotonic()
-                while not stop_preflight_spinner.is_set():
-                    elapsed = time.monotonic() - t_start
-                    desc = preflight_status[0]
-                    frame = frames[idx % len(frames)]
-                    idx += 1
-                    line = (
-                        f"\r\x1b[2K\033[1;36m{frame}\033[0m "
-                        f"\033[1;37m{desc}\033[0m "
-                        f"\033[2;37m({elapsed:.1f}s · Ctrl+C: batal)\033[0m"
-                    )
-                    sys.stdout.write(line)
+            is_test_env = "PYTEST_CURRENT_TEST" in os.environ or hasattr(self, "_is_mock")
+            is_terminal = (sys.stdout.isatty() or getattr(self.console, "is_terminal", False) or sys.stdin.isatty()) and not is_test_env
+            if is_terminal:
+                def _preflight_spinner_loop() -> None:
+                    frames = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
+                    idx = 0
+                    t_start = time.monotonic()
+                    while not stop_preflight_spinner.is_set():
+                        elapsed = time.monotonic() - t_start
+                        desc = preflight_status[0]
+                        frame = frames[idx % len(frames)]
+                        idx += 1
+                        line = (
+                            f"\r\x1b[2K\033[1;36m{frame}\033[0m "
+                            f"\033[1;37m{desc}\033[0m "
+                            f"\033[2;37m({elapsed:.1f}s · Ctrl+C: batal)\033[0m"
+                        )
+                        sys.stdout.write(line)
+                        sys.stdout.flush()
+                        stop_preflight_spinner.wait(0.06)
+                    sys.stdout.write("\r\x1b[2K")
                     sys.stdout.flush()
-                    stop_preflight_spinner.wait(0.06)
-                sys.stdout.write("\r\x1b[2K")
-                sys.stdout.flush()
 
-            spinner_thread = threading.Thread(target=_preflight_spinner_loop, daemon=True)
-            spinner_thread.start()
+                spinner_thread = threading.Thread(target=_preflight_spinner_loop, daemon=True)
+                spinner_thread.start()
 
         try:
-            if self.vault_manager:
-                try:
-                    self.vault_manager.reload_vault()
-                except Exception:
-                    pass
-            self._sync_vault_cache(session_id=session.id if session else None)
-
-            sess_docs = self.get_session_active_documents(session.id if session else None)
-            active_paths = [self.workspace.get_cache_path(f"{s}.md") for s in sess_docs]
-            existing_paths = [p for p in active_paths if p.exists()]
-
-            preflight_status[0] = (
-                f"[AI Contract] Merumuskan Kontrak Tugas Absolut & estimasi token ({model_label})..."
-            )
-            t_contract_s = time.time()
-            contract_extractor = self.contract_extractor or TaskContractExtractor(engine=self.engine)
-            promisor_decision = getattr(self, "promisor", Promisor()).evaluate(query, session_id=session.id if session else None)
-            
-            # Short-circuit Archetype if dispatched directly to Direct Reply, Examiner, or Manager
-            if promisor_decision.entry_point == "direct" and promisor_decision.direct_reply:
-                if session and self.chat_manager:
-                    self.chat_manager.add_message(session.id, "user", query)
-                    self.chat_manager.add_message(session.id, "assistant", promisor_decision.direct_reply)
-                self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Scripcy[/bold bright_white] [dim](Direct Fast Reply • 0 tok)[/dim]\n{promisor_decision.direct_reply}\n")
-                return
-
-            if promisor_decision.entry_point == "examiner":
-                task_contract = TaskContract(
-                    archetype="DIALECTICAL_CRITIQUE",
-                    primary_goal=f"Audit dan verifikasi ketahanan hipotesis ilmiah: {query[:120]}",
-                    in_scope=["Verifikasi klaim empiris", "Counter-evidence dan batasan metodologi"],
-                    out_of_scope=["Tinjauan pustaka umum yang tidak membantah/mendukung hipotesis"],
-                    format_requirements="Audit dialektis terstruktur (Status Hipotesis, Bukti Pendukung, Counter-Evidence, Batasan).",
-                    allow_counter_arguments=True,
-                    unlimited_tokens=True,
-                )
-            elif promisor_decision.entry_point == "manager":
-                task_contract = TaskContract(
-                    archetype="FOCUSED_QA",
-                    primary_goal=f"Penyempurnaan dan perbaikan draf berdasarkan masukan pengguna: {query[:120]}",
-                    in_scope=["Perbaikan spesifik sesuai masukan pengguna", "Retensi fakta sahih yang telah terverifikasi"],
-                    out_of_scope=["Menulis ulang pembahasan dari nol di luar konteks revisi"],
-                    format_requirements="Draf hasil perbaikan presisi dan terstruktur.",
-                    unlimited_tokens=True,
-                )
+            if resume_payload:
+                preflight_status[0] = "[Recovery] Memulihkan kontrak & mengambil evidence chunks..."
+                task_contract = resume_payload["contract"]
+                self._sync_vault_cache(session_id=session.id if session else None)
+                sess_docs = self.get_session_active_documents(session.id if session else None)
+                active_paths = [self.workspace.get_cache_path(f"{s}.md") for s in sess_docs]
+                existing_paths = list(set([p for p in active_paths if p.exists()] + [p for p in resume_payload.get("current_docs", []) if p.exists()]))
+                evidence = resume_payload.get("evidence", [])
+                if not evidence and existing_paths:
+                    evidence = self.engine.evidence_synthesizer.retrieve_evidence(
+                        query=query,
+                        documents=existing_paths,
+                        max_chunks=self.config.citation.max_evidence_chunks,
+                        vector_vault=getattr(self.vault_manager, "vector_vault", None),
+                    )
             else:
-                task_contract = contract_extractor.extract(query)
-            t_contract_dur = time.time() - t_contract_s
-            if hasattr(self, "logger") and self.logger:
-                self.logger.log_task_contract(
-                    session_id=session.id if session else "default",
-                    archetype=task_contract.archetype,
-                    primary_goal=task_contract.primary_goal,
-                    target_tokens=task_contract.target_output_tokens,
-                    token_margin_pct=task_contract.token_margin_pct,
-                    effective_min_tokens=task_contract.effective_min_tokens,
-                    effective_max_tokens=task_contract.effective_max_tokens,
-                    in_scope=task_contract.in_scope,
-                    out_of_scope=task_contract.out_of_scope,
-                    search_channels=task_contract.required_search_channels,
-                    duration_s=t_contract_dur,
-                    unlimited_tokens=task_contract.unlimited_tokens,
-                )
+                preflight_status[0] = "[Vault] Memeriksa indeks dokumen di Vault lokal..."
+                if self.vault_manager:
+                    try:
+                        self.vault_manager.reload_vault()
+                    except Exception:
+                        pass
+                self._sync_vault_cache(session_id=session.id if session else None)
 
-            preflight_status[0] = "[Vault] Mengambil potongan bukti (evidence chunks) yang relevan..."
-            evidence = self.engine.evidence_synthesizer.retrieve_evidence(
-                query=query,
-                documents=existing_paths,
-                max_chunks=self.config.citation.max_evidence_chunks,
-                vector_vault=getattr(self.vault_manager, "vector_vault", None),
-            )
+                sess_docs = self.get_session_active_documents(session.id if session else None)
+                active_paths = [self.workspace.get_cache_path(f"{s}.md") for s in sess_docs]
+                existing_paths = [p for p in active_paths if p.exists()]
+
+                preflight_status[0] = (
+                    f"[AI Contract] Merumuskan Kontrak Tugas Absolut & estimasi token ({model_label})..."
+                )
+                t_contract_s = time.time()
+                contract_extractor = self.contract_extractor or TaskContractExtractor(engine=self.engine)
+                if self.engine:
+                    self.engine.config = self.config
+                contract_extractor.engine = self.engine
+                promisor_decision = getattr(self, "promisor", Promisor()).evaluate(query, session_id=session.id if session else None)
+                
+                # Short-circuit Archetype if dispatched directly to Direct Reply, Examiner, or Manager
+                if promisor_decision.entry_point == "direct" and promisor_decision.direct_reply:
+                    stop_preflight_spinner.set()
+                    if spinner_thread is not None:
+                        spinner_thread.join(timeout=0.2)
+                    if session and self.chat_manager:
+                        self.chat_manager.add_message(session.id, "user", query)
+                        self.chat_manager.add_message(session.id, "assistant", promisor_decision.direct_reply)
+                    self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Scripcy[/bold bright_white] [dim](Direct Fast Reply • 0 tok)[/dim]\n{promisor_decision.direct_reply}\n")
+                    return
+
+                if promisor_decision.entry_point == "examiner":
+                    t_min, t_max, _, _ = contract_extractor._get_tier_config("medium")
+                    task_contract = TaskContract(
+                        archetype="DIALECTICAL_CRITIQUE",
+                        primary_goal=f"Audit dan verifikasi ketahanan hipotesis ilmiah: {query[:120]}",
+                        in_scope=["Verifikasi klaim empiris", "Counter-evidence dan batasan metodologi"],
+                        out_of_scope=["Tinjauan pustaka umum yang tidak membantah/mendukung hipotesis"],
+                        format_requirements="Audit dialektis terstruktur (Status Hipotesis, Bukti Pendukung, Counter-Evidence, Batasan).",
+                        allow_counter_arguments=True,
+                        effort_level="medium",
+                        min_sources=t_min,
+                        max_sources=t_max,
+                    )
+                elif promisor_decision.entry_point == "manager":
+                    t_min, t_max, _, _ = contract_extractor._get_tier_config("low")
+                    task_contract = TaskContract(
+                        archetype="FOCUSED_QA",
+                        primary_goal=f"Penyempurnaan dan perbaikan draf berdasarkan masukan pengguna: {query[:120]}",
+                        in_scope=["Perbaikan spesifik sesuai masukan pengguna", "Retensi fakta sahih yang telah terverifikasi"],
+                        out_of_scope=["Menulis ulang pembahasan dari nol di luar konteks revisi"],
+                        format_requirements="Draf hasil perbaikan presisi dan terstruktur.",
+                        effort_level="low",
+                        min_sources=t_min,
+                        max_sources=t_max,
+                    )
+                else:
+                    task_contract = contract_extractor.extract(query)
+                t_contract_dur = time.time() - t_contract_s
+                if hasattr(self, "logger") and self.logger:
+                    self.logger.log_task_contract(
+                        session_id=session.id if session else "default",
+                        archetype=task_contract.archetype,
+                        primary_goal=task_contract.primary_goal,
+                        in_scope=task_contract.in_scope,
+                        out_of_scope=task_contract.out_of_scope,
+                        search_channels=task_contract.required_search_channels,
+                        duration_s=t_contract_dur,
+                        effort_level=task_contract.effort_level,
+                        min_sources=task_contract.min_sources,
+                        max_sources=task_contract.max_sources,
+                    )
+
+                preflight_status[0] = "[Vault] Mengambil potongan bukti (evidence chunks) yang relevan..."
+                evidence = self.engine.evidence_synthesizer.retrieve_evidence(
+                    query=query,
+                    documents=existing_paths,
+                    max_chunks=self.config.citation.max_evidence_chunks,
+                    vector_vault=getattr(self.vault_manager, "vector_vault", None),
+                )
         except KeyboardInterrupt:
             stop_preflight_spinner.set()
             if spinner_thread is not None:
@@ -1741,22 +1971,19 @@ class StudioAgentLoopMixin:
             if spinner_thread is not None:
                 spinner_thread.join(timeout=0.3)
 
-        margin_pct_disp = int(round(task_contract.token_margin_pct * 100))
         self.console.print(f"[bold cyan]●[/bold cyan] [bold bright_white]Kontrak Tugas (Absolut):[/bold bright_white] [cyan]{task_contract.primary_goal}[/cyan]")
-        if task_contract.unlimited_tokens:
-            budget_desc = f"~{task_contract.min_words}-{task_contract.max_words} kata | [bold green]Tanpa Limitasi Token (Unlimited)[/bold green]"
-        else:
-            budget_desc = (
-                f"~{task_contract.min_words}-{task_contract.max_words} kata | "
-                f"~{task_contract.target_output_tokens} tok +-{margin_pct_disp}% -> "
-                f"{task_contract.effective_min_tokens}-{task_contract.effective_max_tokens} tok"
-            )
+        budget_desc = (
+            f"~{task_contract.min_words}-{task_contract.max_words} kata | "
+            f"Effort: [bold green]{task_contract.effort_level.upper()}[/bold green] "
+            f"(Min {task_contract.min_sources} sumber)"
+        )
         self.console.print(f"  [dim]• Format: {task_contract.format_requirements} (Target: {budget_desc})[/dim]")
         if task_contract.out_of_scope:
             self.console.print(f"  [dim]• Batasan: Eksklusi {', '.join(task_contract.out_of_scope)}[/dim]")
 
         # High Token Consumption Warning & Confirmation (if > 5 chunks and NOT in unlimited token mode)
-        if len(evidence) > 5 and not task_contract.unlimited_tokens:
+        is_unlimited = getattr(task_contract, "unlimited_tokens", True) and getattr(self.config, "contract_unlimited_tokens", True)
+        if len(evidence) > 5 and not is_unlimited:
             sources = sorted(list({c.source for c in evidence}))
             evidence_tokens = sum(c.token_estimate or estimate_tokens(c.text) for c in evidence)
             est_total_input = estimate_tokens(query) + 250 + evidence_tokens
@@ -1773,8 +2000,7 @@ class StudioAgentLoopMixin:
                 self.console.print("[dim]● Pertanyaan dibatalkan oleh pengguna (hemat token).[/dim]\n")
                 return
             elif choice == "limit":
-                evidence = evidence[:5]
-                self.console.print("[dim]● Dibatasi ke 5 chunks teratas untuk penghematan token.[/dim]")
+                evidence = evidence[:4]
 
         # 1. Action Indicator: Membaca (jika sudah ada bukti)
         if evidence:
@@ -1860,9 +2086,7 @@ class StudioAgentLoopMixin:
 
             # Big Contract (task_contract) is held internally by Scripcy as system state.
             # Only a concise Small Contract directive is dispatched to the model prompt.
-            format_desc = task_contract.format_requirements
-            if not task_contract.unlimited_tokens:
-                format_desc = f"{format_desc} (~{task_contract.min_words}-{task_contract.max_words} kata)"
+            format_desc = f"{task_contract.format_requirements} (~{task_contract.min_words}-{task_contract.max_words} kata)"
             small_contract_directive = (
                 f"\n\n[TUGAS KONTRAK: {task_contract.archetype}]\n"
                 f"Sasaran: {task_contract.primary_goal}\n"
@@ -1963,86 +2187,131 @@ class StudioAgentLoopMixin:
                                 )
 
                     if turn == 0:
-                        self.task_manager.update_progress(
-                            task_id,
-                            "[Contractor] Memecah kontrak ke Worker (Vault, Web, Literatur)...",
-                        )
-
-                        def _on_subagent_tree_update(tree_data: Any) -> None:
-                            if isinstance(tree_data, list):
-                                raw_lines = [str(x) for x in tree_data]
-                            else:
-                                raw_lines = str(tree_data).splitlines()
-
-                            clean_lines: list[str] = []
-                            for raw_line in raw_lines:
-                                plain = re.sub(r"\[/?[^\]]+\]", "", raw_line).strip()
-                                if plain:
-                                    clean_lines.append(plain)
-                            if clean_lines:
-                                formatted_progress = "\n".join(clean_lines)
-                                self.task_manager.update_progress(task_id, formatted_progress)
-
-                        orchestrator = SubagentOrchestrator(
-                            engine=self.engine,
-                            task_manager=self.task_manager,
-                            scout=self.scout,
-                            web_scout=getattr(self, "web_scout", None),
-                            vault_manager=self.vault_manager,
-                            workspace=self.workspace,
-                        )
-                        t_orch_s = time.time()
-                        orch_res = await orchestrator.orchestrate(
-                            query=query,
-                            contract=task_contract,
-                            evidence=curr_evidence,
-                            session_id=session.id if session else None,
-                            enable_autonomous_scout=not is_background_scout_active,
-                            on_tree_update=_on_subagent_tree_update,
-                            cancel_event=cancel_event,
-                        )
-                        t_orch_dur = time.time() - t_orch_s
-                        if hasattr(self, "logger") and self.logger:
-                            self.logger.log_subagent_orchestration(
-                                session_id=session_id,
-                                roles_executed=[art.role for art in orch_res.artifacts],
-                                facts_extracted_count=len(orch_res.verified_facts),
-                                new_stems_count=len(orch_res.newly_ingested_stems),
-                                input_tokens=orch_res.subagent_input_tokens,
-                                output_tokens=orch_res.subagent_output_tokens,
-                                duration_s=t_orch_dur,
-                                channels_attempted=list(orch_res.attempted_search_channels),
+                        if resume_payload is not None:
+                            self.task_manager.log(task_id, "[Recovery] Menggunakan dokumen vault dan fakta yang telah terindeks...")
+                            self.task_manager.update_progress(task_id, "[Recovery] Menghubungi model AI dengan data yang telah siap...")
+                            cached_assembly = resume_payload.get("assembly_directive")
+                            if cached_assembly and cached_assembly not in current_query:
+                                current_query = f"{current_query}\n\n{cached_assembly}"
+                            accumulated_input_tokens += resume_payload.get("subagent_input_tokens", 0)
+                            accumulated_output_tokens += resume_payload.get("subagent_output_tokens", 0)
+                        else:
+                            self.task_manager.update_progress(
+                                task_id,
+                                "[Contractor] Memecah kontrak ke Worker (Vault, Web, Literatur)...",
                             )
-                        accumulated_input_tokens += orch_res.subagent_input_tokens
-                        accumulated_output_tokens += orch_res.subagent_output_tokens
-                        attempted_search_channels.update(orch_res.attempted_search_channels)
-                        for t_line in orch_res.tree_lines:
-                            self.task_manager.log(task_id, re.sub(r"\[/?[^\]]+\]", "", t_line))
-                        if orch_res.newly_ingested_stems:
-                            self._sync_vault_cache(session_id=session.id if session else None)
-                            self.add_session_active_documents(
-                                orch_res.newly_ingested_stems,
-                                session_id=session.id if session else None,
+
+                            def _on_subagent_tree_update(tree_data: Any) -> None:
+                                if isinstance(tree_data, list):
+                                    raw_lines = [str(x) for x in tree_data]
+                                else:
+                                    raw_lines = str(tree_data).splitlines()
+
+                                clean_lines: list[str] = []
+                                for raw_line in raw_lines:
+                                    plain = re.sub(r"\[/?[^\]]+\]", "", raw_line).strip()
+                                    if plain:
+                                        clean_lines.append(plain)
+                                if clean_lines:
+                                    formatted_progress = "\n".join(clean_lines)
+                                    self.task_manager.update_progress(task_id, formatted_progress)
+
+                            orchestrator = SubagentOrchestrator(
+                                engine=self.engine,
+                                task_manager=self.task_manager,
+                                scout=self.scout,
+                                web_scout=getattr(self, "web_scout", None),
+                                vault_manager=self.vault_manager,
+                                workspace=self.workspace,
                             )
-                            sess_docs_now = self.get_session_active_documents(session.id if session else None)
-                            active_paths_now = [self.workspace.get_cache_path(f"{s}.md") for s in sess_docs_now]
-                            current_docs = [p for p in active_paths_now if p.exists()]
-                            curr_evidence = self.engine.evidence_synthesizer.retrieve_evidence(
+                            def _confirm_source_exhausted(info: dict[str, Any]) -> str:
+                                if "PYTEST_CURRENT_TEST" in os.environ or not sys.stdin.isatty():
+                                    return "continue"
+                                found = info.get("found_count", 0)
+                                needed = info.get("min_sources", 1)
+                                effort = str(info.get("effort_level", "medium"))
+                                prompt_data = {
+                                    "type": "source_exhausted",
+                                    "found_count": found,
+                                    "min_sources": needed,
+                                    "effort_level": effort,
+                                }
+                                if hasattr(self, "task_manager") and self.task_manager and task_id:
+                                    res = self.task_manager.request_checkpoint(task_id, prompt_data, timeout=30.0)
+                                    if res:
+                                        return str(res)
+                                return "continue"
+
+                            t_orch_s = time.time()
+                            orch_res = await orchestrator.orchestrate(
                                 query=query,
-                                documents=current_docs,
-                                max_chunks=self.config.citation.max_evidence_chunks,
-                                vector_vault=getattr(self.vault_manager, "vector_vault", None),
+                                contract=task_contract,
+                                evidence=curr_evidence,
+                                session_id=session.id if session else None,
+                                enable_autonomous_scout=not is_background_scout_active,
+                                on_tree_update=_on_subagent_tree_update,
+                                on_source_exhausted_confirmation=_confirm_source_exhausted,
+                                cancel_event=cancel_event,
                             )
-                            citation_guide = self._format_vault_citation_guide(
-                                active_evidence_stems={c.source for c in curr_evidence} if curr_evidence else None
-                            )
-                        if orch_res.assembly_directive:
-                            current_query = f"{current_query}\n\n{orch_res.assembly_directive}"
+                            t_orch_dur = time.time() - t_orch_s
+                            if hasattr(self, "logger") and self.logger:
+                                self.logger.log_subagent_orchestration(
+                                    session_id=session_id,
+                                    roles_executed=[art.role for art in orch_res.artifacts],
+                                    facts_extracted_count=len(orch_res.verified_facts),
+                                    new_stems_count=len(orch_res.newly_ingested_stems),
+                                    input_tokens=orch_res.subagent_input_tokens,
+                                    output_tokens=orch_res.subagent_output_tokens,
+                                    duration_s=t_orch_dur,
+                                    channels_attempted=list(orch_res.attempted_search_channels),
+                                )
+                            accumulated_input_tokens += orch_res.subagent_input_tokens
+                            accumulated_output_tokens += orch_res.subagent_output_tokens
+                            attempted_search_channels.update(orch_res.attempted_search_channels)
+                            for t_line in orch_res.tree_lines:
+                                self.task_manager.log(task_id, re.sub(r"\[/?[^\]]+\]", "", t_line))
+                            if orch_res.newly_ingested_stems:
+                                self._sync_vault_cache(session_id=session.id if session else None)
+                                self.add_session_active_documents(
+                                    orch_res.newly_ingested_stems,
+                                    session_id=session.id if session else None,
+                                )
+                                sess_docs_now = self.get_session_active_documents(session.id if session else None)
+                                active_paths_now = [self.workspace.get_cache_path(f"{s}.md") for s in sess_docs_now]
+                                current_docs = [p for p in active_paths_now if p.exists()]
+                                curr_evidence = self.engine.evidence_synthesizer.retrieve_evidence(
+                                    query=query,
+                                    documents=current_docs,
+                                    max_chunks=self.config.citation.max_evidence_chunks,
+                                    vector_vault=getattr(self.vault_manager, "vector_vault", None),
+                                )
+                                citation_guide = self._format_vault_citation_guide(
+                                    active_evidence_stems={c.source for c in curr_evidence} if curr_evidence else None
+                                )
+                            if orch_res.assembly_directive:
+                                current_query = f"{current_query}\n\n{orch_res.assembly_directive}"
 
                     turn_tokens: list[str] = []
                     step_msg = f"Menyintesis argumen ilmiah (Turn {turn + 1})..." if turn == 0 else f"Menyintesis perbaikan draf (Turn {turn + 1})..."
                     self.task_manager.update_progress(task_id, step_msg)
                     self.task_manager.log(task_id, step_msg)
+
+                    # Preserve contract and state in session runtime so network failures can be recovered seamlessly
+                    if session_runtime is not None:
+                        session_runtime.set_pending_contract({
+                            "query": query,
+                            "current_query": current_query,
+                            "contract": task_contract,
+                            "current_docs": list(current_docs),
+                            "evidence": list(curr_evidence),
+                            "verified_facts": list(orch_res.verified_facts) if orch_res and hasattr(orch_res, "verified_facts") else (resume_payload.get("verified_facts", []) if resume_payload else []),
+                            "assembly_directive": orch_res.assembly_directive if orch_res and hasattr(orch_res, "assembly_directive") else (resume_payload.get("assembly_directive") if resume_payload else None),
+                            "model_name": model_name,
+                            "subagent_input_tokens": accumulated_input_tokens,
+                            "subagent_output_tokens": accumulated_output_tokens,
+                            "history_msgs": list(history_msgs),
+                            "turn": turn,
+                        })
 
                     t_stream_s = time.time()
                     if hasattr(self, "logger") and self.logger:
@@ -2082,8 +2351,8 @@ class StudioAgentLoopMixin:
                     if hasattr(self, "logger") and self.logger:
                         self.logger.log_llm_stream_finish(session_id, turn, model_name, out_tok, t_stream_dur, len(raw_resp))
 
-                    # 1. Internal vault tool call check (bypassed during Golden Pass when workers already executed)
-                    tool_cmd = None if ("orch_res" in locals() and orch_res is not None) else self._detect_internal_tool_call(raw_resp)
+                    # 1. Internal vault tool call check
+                    tool_cmd = self._detect_internal_tool_call(raw_resp)
                     if tool_cmd and turn < max_agent_turns - 1:
                         if cancel_event and cancel_event.is_set():
                             return
@@ -2203,9 +2472,22 @@ class StudioAgentLoopMixin:
 
                     # One-Pass Golden Drafting: If Worker Orchestrator was executed (orch_res is not None),
                     # workers have gathered evidence and audited findings via Tier-2 Devil's Advocate.
-                    # On final draft, FactChecker audits grounding. Devil's Advocate is omitted per architecture,
-                    # and no re-drafting cycles are triggered.
-                    if orch_res is not None:
+                    # On final draft, FactChecker audits grounding. If grounding is solid (>= 0.70),
+                    # no hallucination warnings exist, and no citation mapping is needed, complete in one pass.
+                    # Otherwise, proceed to Devil's Advocate and refinement cycles.
+                    critic_inst = getattr(self, "devils_advocate", None) or DevilsAdvocate(engine=self.engine)
+                    pre_c_report = critic_inst.critique_heuristic(
+                        query=query,
+                        answer=p_resp,
+                        contract=task_contract,
+                        fact_check_verdict=v_rep,
+                    )
+                    if (
+                        orch_res is not None
+                        and not v_rep.hallucination_warning
+                        and v_rep.grounding_score >= 0.7
+                        and not getattr(pre_c_report, "needs_citation_mapping", False)
+                    ):
                         final_response = self._sanitize_final_response(p_resp)
                         if self.vault_manager and final_response:
                             final_response = append_vault_bibliography(
@@ -2216,13 +2498,7 @@ class StudioAgentLoopMixin:
                                 active_documents=self.get_session_active_documents(session.id if session else None),
                             )
                         last_v_report = v_rep
-                        critic_inst = getattr(self, "devils_advocate", None) or DevilsAdvocate(engine=self.engine)
-                        last_c_report = critic_inst.critique_heuristic(
-                            query=query,
-                            answer=p_resp,
-                            contract=task_contract,
-                            fact_check_verdict=v_rep,
-                        )
+                        last_c_report = pre_c_report
                         stream_in_est = estimate_tokens(current_query) + sum(c.token_estimate or estimate_tokens(c.text) for c in (curr_evidence or [])) + 250
                         accumulated_input_tokens += stream_in_est + getattr(v_rep, "input_tokens", 0)
                         accumulated_output_tokens += out_tok + getattr(v_rep, "output_tokens", 0)
@@ -2416,6 +2692,10 @@ class StudioAgentLoopMixin:
                                 or getattr(self.config, "default_model", "").startswith("mock")
                             )
 
+                            max_gap_queries = getattr(task_contract, "max_search_queries", 4)
+                            target_gap_min = getattr(task_contract, "min_sources", 3)
+                            max_gap_dl = getattr(task_contract, "max_download_items", 5)
+
                             if directed_queries and self.scout:
                                 is_scout_mocked = (
                                     hasattr(self.scout, "_is_mock")
@@ -2424,10 +2704,10 @@ class StudioAgentLoopMixin:
                                     or "Mock" in type(self.scout).__name__
                                 )
                                 if not (is_mock_env and not is_scout_mocked):
-                                    for target_gap_q in directed_queries[:2]:
+                                    for target_gap_q in directed_queries[:max_gap_queries]:
                                         try:
-                                            sq = ScoutQuery(keywords=target_gap_q, limit=5)
-                                            candidates = await self.scout.search_multi_source(sq, limit=5)
+                                            sq = ScoutQuery(keywords=target_gap_q, limit=max(5, target_gap_min + 2))
+                                            candidates = await self.scout.search_multi_source(sq, limit=max(5, target_gap_min + 2))
                                             if candidates:
                                                 existing_titles = {p.title for p in mapped_papers}
                                                 mapped_papers.extend([p for p in candidates if p.title not in existing_titles])
@@ -2444,9 +2724,9 @@ class StudioAgentLoopMixin:
                                     or "Mock" in type(self.web_scout).__name__
                                 )
                                 if not (is_mock_env and not is_web_mocked):
-                                    for w_gap_q in target_web_queries[:2]:
+                                    for w_gap_q in target_web_queries[:max_gap_queries]:
                                         try:
-                                            w_hits = await self.web_scout.search_official_web(w_gap_q, limit=2, require_official=True)
+                                            w_hits = await self.web_scout.search_official_web(w_gap_q, limit=max(3, target_gap_min), require_official=True)
                                             if w_hits:
                                                 existing_urls = {w.url for w in web_candidates}
                                                 web_candidates.extend([w for w in w_hits if w.url not in existing_urls])
@@ -2469,7 +2749,7 @@ class StudioAgentLoopMixin:
                                 )
                                 if not (is_mock_env and not is_map_mocked):
                                     try:
-                                        cit_papers = await self.scout.map_vault_citation_network(stems, limit=5)
+                                        cit_papers = await self.scout.map_vault_citation_network(stems, limit=max(5, target_gap_min + 2))
                                         if cit_papers:
                                             existing_titles = {p.title for p in mapped_papers}
                                             mapped_papers.extend([p for p in cit_papers if p.title not in existing_titles])
@@ -2478,30 +2758,30 @@ class StudioAgentLoopMixin:
 
                             # 3. Retrieve additional evidence from existing vault if available
                             if directed_queries and self.vault_manager and getattr(self.vault_manager, "vector_vault", None):
-                                for dq in directed_queries[:2]:
+                                for dq in directed_queries[:max_gap_queries]:
                                     more_evidence = self.engine.evidence_synthesizer.retrieve_evidence(
                                         query=dq,
                                         documents=current_docs,
-                                        max_chunks=2,
+                                        max_chunks=max(3, target_gap_min),
                                         vector_vault=self.vault_manager.vector_vault,
                                     )
                                     if more_evidence:
                                         curr_evidence.extend(more_evidence)
 
-                            # 4. Curate candidates against original query and gaps to take only top 2 most relevant (safe, low memory)
+                            # 4. Curate candidates against original query and gaps to take up to max_gap_dl
                             if mapped_papers and self.scout:
                                 try:
-                                    curated = self.scout.curate_and_rank(mapped_papers, query=query, target_count=2)
+                                    curated = self.scout.curate_and_rank(mapped_papers, query=query, target_count=max_gap_dl)
                                     if curated:
                                         mapped_papers = curated
                                     else:
-                                        mapped_papers = mapped_papers[:2]
+                                        mapped_papers = mapped_papers[:max_gap_dl]
                                 except Exception:
-                                    mapped_papers = mapped_papers[:2]
+                                    mapped_papers = mapped_papers[:max_gap_dl]
 
                             # Ingest authoritative official web pages discovered for gap filling
                             if web_candidates and getattr(self, "web_scout", None):
-                                for idx, w in enumerate(web_candidates[:2], 1):
+                                for idx, w in enumerate(web_candidates[:max_gap_dl], 1):
                                     try:
                                         self.emit_session_output(
                                             session.id if session else None,
@@ -2762,13 +3042,14 @@ class StudioAgentLoopMixin:
             grounding_badge = f"Grounding: {int(v_score * 100)}%"
             critic_badge = f"Critic: {last_c_report.score}/10" if last_c_report else ""
             actual_turns = max(total_turns_completed, turn + 1)
+            turns_badge = f"{actual_turns} turn" if actual_turns == 1 else f"{actual_turns} turns"
             if "orch_res" in locals() and orch_res and orch_res.plan and orch_res.plan.subcontracts:
                 n_sc = len(orch_res.plan.subcontracts)
                 contracts_badge = f"{n_sc} small contract" if n_sc == 1 else f"{n_sc} small contracts"
+                badge_elements = [contracts_badge, turns_badge, grounding_badge]
             else:
-                contracts_badge = f"{actual_turns} turn" if actual_turns == 1 else f"{actual_turns} turns"
-
-            badge_elements = [contracts_badge, grounding_badge]
+                contracts_badge = turns_badge
+                badge_elements = [turns_badge, grounding_badge]
             if critic_badge:
                 badge_elements.append(critic_badge)
             badge_joined = " • ".join(badge_elements)
@@ -2783,6 +3064,7 @@ class StudioAgentLoopMixin:
                 self.chat_manager.add_message(session.id, "assistant", final_response_persisted)
             if session_runtime is not None:
                 session_runtime.record_exchange(query, final_response_persisted)
+                session_runtime.clear_pending_contract()
             self.conversation_history.append({
                 "query": query,
                 "response": final_response_persisted,
@@ -2811,7 +3093,7 @@ class StudioAgentLoopMixin:
                 "total_tokens": total_tokens,
                 "elapsed": elapsed,
                 "model_label": model_label,
-                "turns_badge": contracts_badge,
+                "turns_badge": turns_badge,
                 "contracts_badge": contracts_badge,
                 "grounding_badge": grounding_badge,
                 "critic_badge": critic_badge,
@@ -2918,8 +3200,7 @@ class StudioAgentLoopMixin:
             self.console.print("\n\n[bold yellow]● Pertanyaan dibatalkan oleh pengguna (Ctrl+C).[/bold yellow]\n")
             return
         except Exception as exc:
-            self.task_manager.cancel_task(task.id)
-            self.console.print(f"\n[bold red][x] Generation error:[/bold red] {exc}\n")
+            self._handle_generation_error(exc, task.id, session.id if session else None)
             return
         finally:
             if hasattr(self, "_foreground_monitored_tasks"):
@@ -2932,6 +3213,8 @@ class StudioAgentLoopMixin:
                     pass
 
         if completed_task and completed_task.status == "completed":
+            if session_runtime is not None:
+                session_runtime.clear_pending_contract()
             final_resp = task_result_box.get("final_response", "")
             render_academic_markdown(final_resp, console=self.console)
             self.console.print()
@@ -2946,7 +3229,8 @@ class StudioAgentLoopMixin:
             el_s = task_result_box.get("elapsed", 0.0)
             st_name = task_result_box.get("style_name", "APA")
 
-            cli_badges = [b for b in [t_bdg, g_bdg, c_bdg] if b]
+            turns_bdg = task_result_box.get("turns_badge", "")
+            cli_badges = [b for b in [t_bdg, turns_bdg if turns_bdg != t_bdg else None, g_bdg, c_bdg] if b]
             cli_badge_str = " • ".join(cli_badges)
 
             self.console.print(
@@ -2974,18 +3258,40 @@ class StudioAgentLoopMixin:
             return
 
         elif completed_task and completed_task.status == "failed":
-            self.console.print(f"\n[bold red][x] Generation error:[/bold red] {completed_task.error}\n")
+            self._handle_generation_error(Exception(completed_task.error), completed_task.id, session.id if session else None)
 
     def _execute_action_list(self, actions: list[str]) -> None:
         """Present interactive confirmation for a list of Scripcy commands on the main thread."""
         if not actions:
             return
 
-        # Deduplicate while preserving order
+        valid_cmd_prefixes = (
+            "/vault ", "vault ",
+            "/web ", "web ",
+            "/webscout ", "webscout ",
+            "/web-scout ", "web-scout ",
+            "/docx ", "docx ",
+            "/export ", "export ",
+            "/scout ", "scout ",
+            "/findpaper ", "findpaper ",
+            "/clear", "clear",
+            "/models ", "models ",
+            "/reindex", "reindex",
+            "/gdrive ", "gdrive ",
+            "/settings ", "settings ",
+        )
+
+        # Deduplicate while preserving order & strictly filter to valid CLI commands
         unique_actions: list[str] = []
         for a in actions:
-            if a not in unique_actions:
-                unique_actions.append(a)
+            clean_cmd = a.strip()
+            if not clean_cmd or clean_cmd.startswith(("+", "|", "-", "*", ">", "=", "~", "•", "#")):
+                continue
+            cmd_lower = clean_cmd.lower()
+            if not any(cmd_lower.startswith(p) for p in valid_cmd_prefixes):
+                continue
+            if clean_cmd not in unique_actions:
+                unique_actions.append(clean_cmd)
 
         # Coalesce multiple separate /vault remove lines into a single bulk command
         remove_args: list[str] = []
@@ -3083,11 +3389,81 @@ class StudioAgentLoopMixin:
                 "/scout", "scout", "/findpaper", "findpaper", "/search", "search",
             ])
 
-        actions = [
-            cmd.strip() for m in matches for cmd in m.splitlines()
-            if cmd.strip() and not cmd.strip().startswith("#")
-            and not any(cmd.strip().lower().startswith(b) for b in banned_internal_roots)
-        ]
+        valid_cmd_prefixes = (
+            "/vault ", "vault ",
+            "/web ", "web ",
+            "/webscout ", "webscout ",
+            "/web-scout ", "web-scout ",
+            "/docx ", "docx ",
+            "/export ", "export ",
+            "/scout ", "scout ",
+            "/findpaper ", "findpaper ",
+            "/clear", "clear",
+            "/models ", "models ",
+            "/reindex", "reindex",
+            "/gdrive ", "gdrive ",
+            "/settings ", "settings ",
+        )
+
+        actions: list[str] = []
+        for m in matches:
+            for raw_line in m.splitlines():
+                cmd = raw_line.strip()
+                if not cmd or cmd.startswith("#"):
+                    continue
+                # Discard ASCII table/diagram lines: '+---', '| ... |', '-->', etc.
+                if cmd.startswith(("+", "|", "-", "*", ">", "=", "~", "•")):
+                    continue
+                cmd_lower = cmd.lower()
+                if not any(cmd_lower.startswith(p) for p in valid_cmd_prefixes):
+                    continue
+                if any(cmd_lower.startswith(b) for b in banned_internal_roots):
+                    continue
+                actions.append(cmd)
+
         if not actions:
             return
         self._execute_action_list(actions)
+
+    def _handle_generation_error(self, exc: Exception, task_id: str, session_id: str | None) -> None:
+        """Handle LLM generation / streaming failures gracefully without aborting contract or losing vault docs."""
+        err_msg = str(exc)
+        self.console.print(f"\n[bold red][x] Generation error:[/bold red] {err_msg}\n")
+
+        session_runtime = self.get_session_runtime(session_id) if session_id else None
+        pending = session_runtime.get_pending_contract() if session_runtime else None
+
+        if pending:
+            p_contract = pending.get("contract")
+            goal = getattr(p_contract, "primary_goal", "Sintesis Riset")
+            n_docs = len(pending.get("current_docs", []))
+            n_facts = len(pending.get("verified_facts", []))
+
+            self.console.print(
+                f"[bold cyan]● Status Pemulihan Kontrak:[/bold cyan] Kontrak tugas [bold white]{goal}[/bold white] tetap tersimpan aman.\n"
+                f"  [dim]• Vault & Fakta: {n_docs} dokumen terindeks, {n_facts} fakta tersimpan di memori.[/dim]\n"
+                f"  [dim]• Dokumen tidak perlu diunduh ulang dan kuota pencarian tidak terbuang.[/dim]\n"
+                f"  [bold yellow]Pilihan:[/bold yellow]\n"
+                f"    • Ketik [bold cyan]/retry[/bold cyan] untuk mencoba kembali sintesis sekarang.\n"
+                f"    • Ketik [bold cyan]/models use <model>[/bold cyan] jika ingin beralih model sebelum /retry.\n"
+                f"    • Ketik [bold cyan]/back[/bold cyan] untuk kembali ke menu tanpa menghapus vault.\n"
+            )
+
+    def _resume_pending_contract(self, session_id: str | None = None) -> None:
+        """Resume pending contract synthesis using cached documents and verified facts."""
+        session = getattr(self, "active_chat_session", None)
+        s_id = session.id if session else session_id
+        session_runtime = self.get_session_runtime(s_id) if s_id else None
+        if not session_runtime:
+            self.console.print("[yellow]Tidak ada sesi chat yang aktif.[/yellow]\n")
+            return
+
+        payload = session_runtime.get_pending_contract()
+        if not payload:
+            self.console.print("[dim]Tidak ada kontrak tugas yang tertunda dalam sesi ini.[/dim]\n")
+            return
+
+        p_contract = payload.get("contract")
+        p_goal = getattr(p_contract, "primary_goal", "Sintesis Riset")
+        self.console.print(f"[bold cyan]● Memulihkan kontrak tertunda:[/bold cyan] [bold bright_white]{p_goal}[/bold bright_white]\n")
+        self.handle_chat(query=payload.get("query", ""), resume_payload=payload)

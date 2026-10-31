@@ -81,6 +81,22 @@ class SessionRuntime:
         self.inbox: deque[SessionEvent] = deque(maxlen=250)
         self.output_buffer: deque[str] = deque(maxlen=200)
         self.wake_event = threading.Event()
+        self.pending_contract_payload: dict[str, Any] | None = None
+
+    def set_pending_contract(self, payload: dict[str, Any]) -> None:
+        """Store contract and retrieved evidence/facts to allow zero-token-waste retry on network failure."""
+        with self._lock:
+            self.pending_contract_payload = dict(payload)
+
+    def get_pending_contract(self) -> dict[str, Any] | None:
+        """Retrieve cached pending contract payload if available."""
+        with self._lock:
+            return dict(self.pending_contract_payload) if self.pending_contract_payload else None
+
+    def clear_pending_contract(self) -> None:
+        """Clear cached pending contract payload once task completes successfully."""
+        with self._lock:
+            self.pending_contract_payload = None
 
     def add_documents(self, stems: Iterable[str]) -> None:
         """Thread-safely register newly ingested document stems into this session's context."""

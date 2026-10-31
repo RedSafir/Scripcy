@@ -159,12 +159,12 @@ def match_table_to_caption(page: fitz.Page, table_rect: fitz.Rect) -> tuple[str,
 
 
 def get_shared_embedder() -> Any:
-    """Return shared FastEmbed BGE-small instance with optimized ONNX thread limits."""
+    """Return shared FastEmbed multilingual instance with optimized ONNX thread limits."""
     global _GLOBAL_EMBEDDER
     if _GLOBAL_EMBEDDER is None:
         from fastembed import TextEmbedding
-        # Limit internal ONNX threads to 2 to prevent excessive memory arena expansion
-        _GLOBAL_EMBEDDER = TextEmbedding(model_name="BAAI/bge-small-en-v1.5", threads=2)
+        # Paraphrase-multilingual-MiniLM-L12-v2: 384 dimensions, ~50 languages, fast CPU ONNX
+        _GLOBAL_EMBEDDER = TextEmbedding(model_name="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2", threads=2)
     return _GLOBAL_EMBEDDER
 
 
@@ -1216,7 +1216,7 @@ class ProjectVectorVault:
             is_factual_q = any(
                 w in lower_q for w in (
                     "data", "angka", "berapa", "statistik", "jumlah", "luas", "tahun",
-                    "tabel", "bps", "kementerian", "resmi", "pemerintah", "nasional", "ha", "hektar"
+                    "tabel", "resmi", "pemerintah", "nasional", "statistics", "report", "metrics"
                 )
             )
             if is_factual_q and rrf_scores:
@@ -1227,8 +1227,11 @@ class ProjectVectorVault:
                     for row in cur.fetchall():
                         cid = row["id"]
                         pid = str(row["paper_id"]).lower()
-                        if pid.startswith("web_") or "go_id" in pid or "gov" in pid or "bps" in pid or "menlhk" in pid or "kemen" in pid:
-                            rrf_scores[cid] = rrf_scores[cid] * 1.40
+                        if (
+                            pid.startswith("web_")
+                            or any(sfx in pid for sfx in ("gov", "bund_de", "admin_ch", "overheid_nl", "europa_eu", "_int", "_edu"))
+                        ):
+                            rrf_scores[cid] = rrf_scores[cid] * 1.25
                 except Exception:
                     pass
 

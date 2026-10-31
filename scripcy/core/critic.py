@@ -96,10 +96,15 @@ class DevilsAdvocate:
         matches = re.findall(r"(?:19\d{2}|20\d{2})", text)
         return [int(y) for y in matches if 1950 <= int(y) <= self.current_year]
 
-    def check_recency(self, citation_years: list[int]) -> tuple[bool, str | None]:
-        """Check if cited references are outdated relative to current year."""
+    def check_recency(self, citation_years: list[int], contract: Any | None = None) -> tuple[bool, str | None]:
+        """Check if cited references are outdated relative to current year, respecting task archetype."""
         if not citation_years:
             return False, "Tidak ditemukan sitasi tahun publikasi eksplisit dalam jawaban."
+
+        archetype = getattr(contract, "archetype", "") if contract else ""
+        if archetype in ("THEORETICAL_FOUNDATIONAL", "METHODOLOGY_COMPARISON", "CLASSICAL_HISTORICAL"):
+            # Foundational studies and classical methodologies (e.g. ResNet 2016, Transformer 2017) are naturally older
+            return False, None
 
         max_year = max(citation_years)
         cutoff_year = self.current_year - self.recency_threshold_years
@@ -215,7 +220,7 @@ class DevilsAdvocate:
                 "target_channel": "web_resmi" if hasattr(contract, "archetype") and contract.archetype == "DATA_FACTUAL" else "vault_lokal",
                 "dos": ["Ambil angka numerik, unit, dan tahun rilis resmi."],
                 "donts": ["Jangan berspekulasi atau mengambil opini kualitatif."],
-                "search_queries": [f"{query} data statistik resmi"],
+                "search_queries": [f"{query} official quantitative statistics metrics"],
             })
 
         summary = f"Plan audit selesai: {len(prune_ids)} dipangkas (tidak substansial/redundant), {len(additions)} usulan penambahan."
@@ -276,7 +281,7 @@ class DevilsAdvocate:
                     f"hanya mencakup hingga tahun {max_year or 'lama'}."
                 )
                 detected_gaps.append(gap_msg)
-                suggested_queries.append(f"{base_topic} data resmi statistik {self.current_year - 2} {self.current_year}")
+                suggested_queries.append(f"{base_topic} official statistics annual report {self.current_year - 2} {self.current_year}")
 
         # 3. Check quantitative requirements on DATA_FACTUAL queries
         archetype = getattr(contract, "archetype", "")
@@ -285,7 +290,7 @@ class DevilsAdvocate:
             if not has_quant and not all_facts:
                 gap_msg = "Belum ditemukan angka atau metrik statistik resmi yang memadai dari pencarian awal."
                 detected_gaps.append(gap_msg)
-                suggested_queries.append(f"{base_topic} data statistik resmi kementerian lembaga bps")
+                suggested_queries.append(f"{base_topic} official agency statistical indicators")
 
         all_satisfied = len(detected_gaps) == 0
         summary = (
@@ -311,7 +316,7 @@ class DevilsAdvocate:
     ) -> CritiqueReport:
         """Rule-based critique testing contract conformance, scope boundaries, and epistemic rigor."""
         years = self.extract_citation_years(answer)
-        is_outdated, recency_msg = self.check_recency(years)
+        is_outdated, recency_msg = self.check_recency(years, contract=contract)
 
         weaknesses: list[str] = []
         counter_args: list[str] = []
@@ -330,21 +335,37 @@ class DevilsAdvocate:
             eff_min = getattr(contract, "effective_min_words", int(getattr(contract, "min_words", 300) * 0.85))
             eff_max = getattr(contract, "effective_max_words", int(getattr(contract, "max_words", 750) * 1.15))
             is_strict_length = getattr(contract, "min_words", 0) >= 300 or getattr(contract, "is_modular_section_needed", False)
-            is_unlimited = getattr(contract, "unlimited_tokens", True)
-
             if is_strict_length and words < eff_min:
                 contract_conformance = False
                 msg = f"Panjang draf ({words} kata) berada di bawah batas minimum toleransi ({eff_min} kata dari target {getattr(contract, 'min_words', 300)}). Uraikan lebih mendalam."
                 conformance_details.append(msg)
                 weaknesses.append(msg)
                 score -= 2
-            elif not is_unlimited and words > eff_max:
+            elif words > eff_max:
                 msg = f"Panjang draf ({words} kata) melebihi batas maksimum toleransi ({eff_max} kata dari batas {getattr(contract, 'max_words', 750)}). Pangkas bagian yang keluar dari substansi pertanyaan."
                 conformance_details.append(msg)
                 weaknesses.append(msg)
                 score -= 1
             else:
                 conformance_details.append(f"Panjang draf ({words} kata) memenuhi standar elaborasi komprehensif.")
+
+            # Source count compliance check
+            min_s = getattr(contract, "min_sources", 1)
+            if min_s > 0:
+                matches_bracket = re.findall(r"\[([A-Za-z0-9_.,\s-]+)\](?!\()", answer)
+                matches_apa = re.findall(r"\(([A-Z][a-zA-Z\s\.\&]+,\s*(?:19|20)\d{2}[a-z]?)\)", answer)
+                cited_sources = {m.strip() for m in matches_bracket if not m.startswith("^") and len(m.strip()) > 2}
+                cited_sources.update(m.strip() for m in matches_apa)
+                if len(cited_sources) < min_s:
+                    source_msg = (
+                        f"Jumlah sumber independen yang disitasi ({len(cited_sources)}) belum memenuhi target kontrak "
+                        f"(minimal {min_s} sumber)."
+                    )
+                    conformance_details.append(source_msg)
+                    weaknesses.append(source_msg)
+                    score -= 1
+                    if not getattr(contract, "allow_honest_gap", False):
+                        contract_conformance = False
 
             dods = getattr(contract, "definition_of_done", [])
             for dod in dods:
@@ -434,13 +455,13 @@ class DevilsAdvocate:
         if words_q:
             base_kw = " ".join(words_q[:5])
             recommended_topics.append(f"{base_kw} recent advances limitations")
-            directed_queries.append(f"{base_kw} policy community management")
             directed_queries.append(f"{base_kw} empirical evaluation challenges")
-            directed_web_queries.append(f"{base_kw} data resmi statistik")
-            directed_web_queries.append(f"{base_kw} laporan tahunan portal pemerintah")
+            directed_queries.append(f"{base_kw} methodology comparative benchmarks")
+            directed_web_queries.append(f"{base_kw} official statistics technical report")
+            directed_web_queries.append(f"{base_kw} standards benchmarks overview")
         else:
             directed_queries.append(f"{query} review evidence")
-            directed_web_queries.append(f"{query} data statistik resmi")
+            directed_web_queries.append(f"{query} official statistics report")
 
         score = max(1, min(10, score))
         needs_more_scout = score < 7 or is_outdated or not epistemic_rigor
@@ -519,7 +540,7 @@ class DevilsAdvocate:
                     else ""
                 )
 
-                budget_note = "UNLIMITED / BEBAS (Prioritaskan elaborasi mendalam dan ketuntasan analisis)" if getattr(contract, "unlimited_tokens", True) else f"~{min_w}-{max_w} words"
+                budget_note = f"~{min_w}-{max_w} kata (fokus pada substansi dan kedalaman)"
                 contract_note = (
                     f"\nDYNAMIC TASK CONTRACT & SCOPE GUARD (Archetype: {archetype}):\n"
                     f"- Primary Goal: {p_goal}\n"
